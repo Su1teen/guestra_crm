@@ -86,8 +86,8 @@ export const SegmentedTabs = <T extends string>({
   className,
 }: {
   value: T;
-  onChange: (value: T) => void;
-  options: { value: T; label: string; count?: number }[];
+  onChange: (value: NoInfer<T>) => void;
+  options: { value: NoInfer<T>; label: string; count?: number }[];
   className?: string;
 }) => (
   <div className={cn("inline-flex flex-wrap items-center gap-1 rounded-xl bg-secondary p-1", className)}>
