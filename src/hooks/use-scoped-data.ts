@@ -1,6 +1,21 @@
 import { useMemo } from "react";
 import { useCrm } from "@/store/crm-store";
-import type { Campaign, Conversation, Guest, GuestStay, Lead, Offer, SalesMetricPoint, Task } from "@/types/crm";
+import type {
+  Campaign,
+  Conversation,
+  FollowUp,
+  Guest,
+  GuestStay,
+  HousekeepingTask,
+  Lead,
+  MaintenanceTicket,
+  Offer,
+  OperationalTask,
+  PmsDailySnapshot,
+  Room,
+  SalesMetricPoint,
+  Task,
+} from "@/types/crm";
 
 export interface ScopedData {
   leads: Lead[];
@@ -11,6 +26,12 @@ export interface ScopedData {
   stays: GuestStay[];
   campaigns: Campaign[];
   metrics: SalesMetricPoint[];
+  followUps: FollowUp[];
+  rooms: Room[];
+  housekeepingTasks: HousekeepingTask[];
+  maintenanceTickets: MaintenanceTicket[];
+  operationalTasks: OperationalTask[];
+  pmsSnapshots: PmsDailySnapshot[];
 }
 
 export const useScopedData = (): ScopedData => {
@@ -27,6 +48,12 @@ export const useScopedData = (): ScopedData => {
         stays: data.stays,
         campaigns: data.campaigns,
         metrics: data.metrics,
+        followUps: data.followUps,
+        rooms: data.rooms,
+        housekeepingTasks: data.housekeepingTasks,
+        maintenanceTickets: data.maintenanceTickets,
+        operationalTasks: data.operationalTasks,
+        pmsSnapshots: data.pmsSnapshots,
       };
     }
 
@@ -39,6 +66,12 @@ export const useScopedData = (): ScopedData => {
       stays: data.stays.filter((stay) => stay.propertyId === property),
       campaigns: data.campaigns.filter((campaign) => campaign.propertyId === property || campaign.propertyId === "all"),
       metrics: data.metrics.filter((point) => point.propertyId === property),
+      followUps: data.followUps.filter((item) => item.propertyId === property),
+      rooms: data.rooms.filter((room) => room.propertyId === property),
+      housekeepingTasks: data.housekeepingTasks.filter((task) => task.propertyId === property),
+      maintenanceTickets: data.maintenanceTickets.filter((ticket) => ticket.propertyId === property),
+      operationalTasks: data.operationalTasks.filter((task) => task.propertyId === property),
+      pmsSnapshots: data.pmsSnapshots.filter((snapshot) => snapshot.propertyId === property),
     };
   }, [data, property]);
 };

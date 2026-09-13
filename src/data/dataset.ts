@@ -8,33 +8,52 @@ import {
   serviceCatalog,
 } from "@/data/reference";
 import { addDays, startOfDay } from "@/lib/format";
+import { classify, slaMinutesFor } from "@/lib/classification";
+import { generateFollowUps } from "@/lib/followup";
 import type {
   ActivityEvent,
   Campaign,
   Channel,
+  ChecklistItem,
   Conversation,
+  ConversationSummary,
   CrmDataset,
+  FollowUp,
   Guest,
   GuestActivityEvent,
   GuestNote,
   GuestPayment,
   GuestService,
   GuestStay,
+  HousekeepingTask,
+  HousekeepingTaskType,
+  InterestDirection,
   Lead,
   LeadIntent,
+  LeadQuality,
   LeadServiceLine,
   LeadSource,
   LeadStage,
   LeadStageHistory,
   LostReason,
+  MaintenanceCategory,
+  MaintenancePriority,
+  MaintenanceTicket,
   Message,
   Offer,
   OfferStatus,
+  OperationalRoute,
+  OperationalTask,
   PaymentStatus,
+  PmsDailySnapshot,
   PropertyId,
+  Room,
+  RoomStatus,
   SalesMetricPoint,
   Segment,
   SegmentKey,
+  SpecialRequestEntry,
+  SpecialRequestType,
   Task,
   TaskPriority,
   TaskStatus,
@@ -65,6 +84,14 @@ const at = (dayOffset: number, hour: number, minute = 0) => {
 };
 
 const minutesAgo = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
+
+const MONTHS_SHORT_RU = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const formatStayRangeLocal = (from: Date, to: Date) => {
+  if (from.getMonth() === to.getMonth() && from.getFullYear() === to.getFullYear()) {
+    return `${from.getDate()}–${to.getDate()} ${MONTHS_SHORT_RU[from.getMonth()]}`;
+  }
+  return `${from.getDate()} ${MONTHS_SHORT_RU[from.getMonth()]} – ${to.getDate()} ${MONTHS_SHORT_RU[to.getMonth()]}`;
+};
 
 const TRANSLIT: Record<string, string> = {
   а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "y", к: "k", л: "l", м: "m",
@@ -443,6 +470,17 @@ const messageScripts: Record<Channel, { in: string[]; out: string[] }> = {
       "Бронирование подтверждено, отправила памятку по заезду.",
     ],
   },
+  instagram: {
+    in: [
+      "Здравствуйте! Видели ваш профиль, интересует SPA-программа на выходные",
+      "Подскажите стоимость проживания на двоих в сентябре",
+      "Можно ли забронировать баню на вечер пятницы?",
+    ],
+    out: [
+      "Добрый день! С удовольствием расскажем про SPA-программы, переведём диалог в WhatsApp для расчёта.",
+      "Здравствуйте! Переведём вас в WhatsApp для оперативного расчёта.",
+    ],
+  },
   phone: {
     in: [
       "Звонок гостя: уточнял наличие домиков на сентябрь",
@@ -483,6 +521,111 @@ const channelForSource = (source: LeadSource): Channel => {
   if (source === "phone") return "phone";
   if (source === "website" || source === "corporate") return "website";
   return "other";
+};
+
+// Распределение направлений интереса. Большинство — проживание, но часть
+// обращений относится к ресторану, SPA, бане, мероприятиям и т.д. Часть —
+// нецелевые (спам, вакансии, поставщики, ошибочные контакты).
+const directionWeights: Array<{ direction: InterestDirection; weight: number }> = [
+  { direction: "accommodation", weight: 62 },
+  { direction: "corporate_event", weight: 6 },
+  { direction: "wedding_or_banquet", weight: 5 },
+  { direction: "restaurant", weight: 6 },
+  { direction: "spa", weight: 4 },
+  { direction: "bathhouse", weight: 3 },
+  { direction: "karaoke", weight: 2 },
+  { direction: "activities", weight: 3 },
+  { direction: "transfer", weight: 2 },
+  { direction: "partnership", weight: 1 },
+  { direction: "vacancy", weight: 2 },
+  { direction: "supplier", weight: 2 },
+  { direction: "spam", weight: 1 },
+  { direction: "wrong_contact", weight: 1 },
+];
+
+const directionPool: InterestDirection[] = directionWeights.flatMap((item) =>
+  Array.from({ length: item.weight }, () => item.direction),
+);
+
+const pickDirectionForLead = (
+  stage: LeadStage,
+  source: LeadSource,
+  guest: Guest,
+  rng: () => number,
+): InterestDirection => {
+  // Корпоративные клиенты чаще интересуются мероприятияями.
+  if (guest.company && rng() < 0.35) return "corporate_event";
+  // Потерянные лиды с non_target — нецелевые направления.
+  if (stage === "lost" && rng() < 0.25) return rng() < 0.5 ? "spam" : "wrong_contact";
+  if (source === "corporate" && rng() < 0.4) return "corporate_event";
+  return directionPool[Math.floor(rng() * directionPool.length)];
+};
+
+const specialRequestTypes: SpecialRequestType[] = [
+  "baby_cot",
+  "extra_towels",
+  "twin_beds",
+  "early_check_in",
+  "late_check_out",
+  "transfer",
+  "meal",
+  "anniversary_prep",
+  "dietary_restriction",
+  "technical_issue",
+];
+
+const routeForSpecialRequest = (type: SpecialRequestType): OperationalRoute => {
+  const map: Record<SpecialRequestType, OperationalRoute> = {
+    baby_cot: "housekeeping",
+    extra_towels: "housekeeping",
+    twin_beds: "housekeeping",
+    early_check_in: "reception",
+    late_check_out: "reception",
+    transfer: "transport",
+    meal: "restaurant",
+    anniversary_prep: "housekeeping",
+    dietary_restriction: "restaurant",
+    technical_issue: "maintenance",
+    other: "front_desk",
+  };
+  return map[type];
+};
+
+const specialRequestLabel: Record<SpecialRequestType, string> = {
+  baby_cot: "Детская кроватка",
+  extra_towels: "Дополнительные полотенца",
+  twin_beds: "Раздельные кровати",
+  early_check_in: "Ранний заезд",
+  late_check_out: "Поздний выезд",
+  transfer: "Трансфер",
+  meal: "Питание",
+  anniversary_prep: "Подготовка к годовщине",
+  dietary_restriction: "Ограничения по питанию",
+  technical_issue: "Техническая проблема",
+  other: "Другое",
+};
+
+const generateSpecialRequests = (
+  hasChildren: boolean,
+  direction: InterestDirection,
+  rng: () => number,
+): SpecialRequestEntry[] => {
+  if (rng() < 0.45) return [];
+  const count = 1 + Math.floor(rng() * 2);
+  const result: SpecialRequestEntry[] = [];
+  const pool = [...specialRequestTypes];
+  if (hasChildren) pool.unshift("baby_cot");
+  if (direction === "spa") pool.push("anniversary_prep");
+  for (let i = 0; i < count; i += 1) {
+    const type = pool[Math.floor(rng() * pool.length)];
+    if (result.some((item) => item.type === type)) continue;
+    result.push({
+      type,
+      label: specialRequestLabel[type],
+      route: routeForSpecialRequest(type),
+    });
+  }
+  return result;
 };
 
 leadPlan.forEach(({ stage, count }) => {
@@ -690,6 +833,36 @@ leadPlan.forEach(({ stage, count }) => {
 
     activity.sort((first, second) => first.at.localeCompare(second.at));
 
+    // Назначение направления интереса и классификации обращения.
+    const direction = pickDirectionForLead(stage, source, guest, random);
+    const slaMinutes = slaMinutesFor(direction);
+    const classification = classify({
+      direction,
+      hasDates: true,
+      hasGuests: adults > 0,
+      hasCategory: Boolean(roomType),
+      requestedQuote: stageHistory.some((entry) => entry.stage === "offer") || stage === "offer",
+      readyForOffer: stage === "qualified" || stage === "offer",
+      askedAboutPayment: stage === "payment_pending",
+      readyForPrepayment: stage === "payment_pending",
+      planningEvent: direction === "corporate_event" || direction === "wedding_or_banquet",
+      bookedService: serviceLines.length > 0,
+      returnedToOffer: stage === "offer" && lastActivityMinutes < 600,
+      askedForDetails: stage === "new" || stage === "qualified",
+      nextStepAgreed: stage !== "lost" && stage !== "cancelled",
+      contactCollected: true,
+      isSpam: direction === "spam",
+      isWrongContact: direction === "wrong_contact",
+      isVacancy: direction === "vacancy",
+      isSupplier: direction === "supplier",
+      hoursSinceLastInbound: lastActivityMinutes / 60,
+      daysUntilCheckIn,
+      offerViewed: activity.some((entry) => entry.type === "offer_viewed"),
+      offerSent: activity.some((entry) => entry.type === "offer_sent"),
+      stage,
+    });
+    const leadSpecialRequests = generateSpecialRequests(children > 0, direction, random);
+
     const nextActionPool = nextActionsByStage[stage];
     const lead: Lead = {
       id: leadId,
@@ -721,11 +894,14 @@ leadPlan.forEach(({ stage, count }) => {
       probability:
         stage === "new" ? 15 : stage === "qualified" ? 35 : stage === "offer" ? 55 : stage === "payment_pending" ? 80 : stage === "confirmed" ? 100 : 0,
       firstResponseMinutes,
+      slaMinutes,
       lostReason: stage === "lost" ? pick(lostReasons) : undefined,
       bookingReference,
       specialRequest: chance(0.45) ? pick(specialRequests) : undefined,
       stageHistory,
       activity,
+      classification,
+      specialRequests: leadSpecialRequests,
     };
 
     leads.push(lead);
@@ -774,6 +950,16 @@ leadPlan.forEach(({ stage, count }) => {
         });
       }
       const unreadCount = stage === "new" || chance(0.3) ? int(1, 3) : 0;
+      const firstOutMessage = messages.find((message) => message.direction === "out");
+      const convSummary: ConversationSummary = {
+        text: `${guest.fullName} интересуется ${roomType} на ${nights} ноч.`,
+        dates: `${formatStayRangeLocal(checkIn, checkOut)}`,
+        guests: adults + children,
+        category: roomType,
+        budget: totalAmount,
+        wishes: leadSpecialRequests.map((item) => item.label),
+        nextAction: stage === "lost" ? undefined : pick(nextActionsByStage[stage]),
+      };
       conversations.push({
         id: conversationId,
         guestId: guest.id,
@@ -786,6 +972,11 @@ leadPlan.forEach(({ stage, count }) => {
         unreadCount,
         lastMessageAt: messages[messages.length - 1].at,
         messages,
+        classification,
+        summary: convSummary,
+        slaMinutes,
+        firstResponseAt: firstOutMessage?.at,
+        closeResult: stage === "confirmed" ? "booked" : stage === "lost" ? "lost" : undefined,
       });
     }
 
@@ -1110,6 +1301,318 @@ guests.forEach((guest) => {
   guest.propertyIds = Array.from(new Set(guestStays.map((stay) => stay.propertyId)));
 });
 
+// ---------------------------------------------------------------------------
+// Номерной фонд (rooms)
+// ---------------------------------------------------------------------------
+
+const roomCategoriesByProperty: Record<PropertyId, { category: string; floors: number; perFloor: number }[]> = {
+  les_borovoe: [
+    { category: "Премиум-домик", floors: 1, perFloor: 6 },
+    { category: "Стандартный домик", floors: 1, perFloor: 8 },
+    { category: "Семейный коттедж", floors: 1, perFloor: 5 },
+    { category: "Люкс-шале", floors: 1, perFloor: 4 },
+  ],
+  les_astana: [
+    { category: "Делюкс-номер", floors: 3, perFloor: 6 },
+    { category: "Стандартный номер", floors: 3, perFloor: 8 },
+    { category: "Люкс", floors: 3, perFloor: 3 },
+    { category: "Апартаменты", floors: 3, perFloor: 2 },
+  ],
+  les_alakol: [
+    { category: "Пляжный домик", floors: 1, perFloor: 8 },
+    { category: "Стандартный номер", floors: 2, perFloor: 6 },
+  ],
+};
+
+const rooms: Room[] = [];
+properties.forEach((property) => {
+  const layout = roomCategoriesByProperty[property.id];
+  layout.forEach((block) => {
+    for (let floor = 1; floor <= block.floors; floor += 1) {
+      for (let index = 0; index < block.perFloor; index += 1) {
+        const roomNumber = `${floor}${String(index + 1).padStart(2, "0")}`;
+        const roomId = `room_${property.id}_${roomNumber}`;
+        const status: RoomStatus = pick([
+          "occupied",
+          "occupied",
+          "guest_ready",
+          "vacant_clean",
+          "vacant_clean",
+          "clean",
+          "inspected",
+          "vacant_dirty",
+        ] as RoomStatus[]);
+        const occupiedByGuest = status === "occupied" ? pick(guests) : undefined;
+        rooms.push({
+          id: roomId,
+          number: roomNumber,
+          propertyId: property.id,
+          category: block.category,
+          floor,
+          zone: floor === 1 ? "Корпус A" : `Этаж ${floor}`,
+          status,
+          occupiedByGuestId: occupiedByGuest?.id,
+          checkOutAt: occupiedByGuest ? addDays(TODAY, int(0, 4)).toISOString() : undefined,
+        });
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Housekeeping tasks
+// ---------------------------------------------------------------------------
+
+const housekeepingStaffByProperty: Record<PropertyId, string[]> = {
+  les_borovoe: ["emp_aigerim", "emp_daniyar", "emp_dinara"],
+  les_astana: ["emp_aliya", "emp_kamila", "emp_erzhan"],
+  les_alakol: ["emp_daniyar", "emp_erzhan"],
+};
+
+const checklistTemplates: Record<HousekeepingTaskType, ChecklistItem[]> = {
+  checkout: [
+    { label: "Смена постельного белья", checked: false },
+    { label: "Замена полотенец", checked: false },
+    { label: "Уборка санузла", checked: false },
+    { label: "Проверка мини-бара", checked: false },
+    { label: "Влажная уборка пола", checked: false },
+    { label: "Проверка техники", checked: false },
+  ],
+  stayover: [
+    { label: "Заправка кроватей", checked: false },
+    { label: "Замена полотенец", checked: false },
+    { label: "Уборка санузла", checked: false },
+    { label: "Пополнение amenities", checked: false },
+  ],
+  deep_clean: [
+    { label: "Чистка ковров", checked: false },
+    { label: "Мытьё окон", checked: false },
+    { label: "Дезинфекция санузла", checked: false },
+    { label: "Чистка мебели", checked: false },
+    { label: "Проверка вентиляции", checked: false },
+  ],
+  touch_up: [
+    { label: "Пополнение amenities", checked: false },
+    { label: "Быстрая уборка", checked: false },
+  ],
+  inspection: [
+    { label: "Постельное бельё", checked: false },
+    { label: "Санузел", checked: false },
+    { label: "Техника", checked: false },
+    { label: "Освещение", checked: false },
+    { label: "Запах", checked: false },
+  ],
+  special_request: [
+    { label: "Особое пожелание гостя", checked: false },
+    { label: "Подготовка номера", checked: false },
+  ],
+};
+
+const housekeepingTasks: HousekeepingTask[] = [];
+const maintenanceTickets: MaintenanceTicket[] = [];
+
+// Генерируем задачи уборки для части номеров.
+rooms.forEach((room) => {
+  if (chance(0.55)) {
+    const taskType: HousekeepingTaskType =
+      room.status === "occupied"
+        ? "stayover"
+        : room.status === "vacant_dirty"
+          ? "checkout"
+          : room.status === "clean"
+            ? "inspection"
+            : pick(["checkout", "stayover", "deep_clean", "touch_up", "special_request"] as HousekeepingTaskType[]);
+    const staff = housekeepingStaffByProperty[room.propertyId];
+    const assigneeId = chance(0.7) ? pick(staff) : undefined;
+    const overdue = chance(0.18);
+    const inProgress = !overdue && chance(0.25);
+    const completed = !overdue && !inProgress && chance(0.2);
+    const inspected = completed && chance(0.5);
+    const status: HousekeepingTask["status"] = inspected
+      ? "inspected"
+      : completed
+        ? "completed"
+        : inProgress
+          ? "in_progress"
+          : assigneeId
+            ? "assigned"
+            : "pending";
+    const dueAt = overdue ? at(-int(1, 3), int(10, 18)) : at(int(0, 2), pick([9, 11, 14, 16]));
+    const startedAt = inProgress || completed || inspected ? at(-int(0, 1), int(9, 16)) : undefined;
+    const completedAt = completed || inspected ? at(int(0, 1), int(10, 18)) : undefined;
+    const inspectedAt = inspected ? at(int(0, 1), int(11, 19)) : undefined;
+    const maintenanceRequired = chance(0.15);
+    const taskId = `hk_${housekeepingTasks.length + 1}`;
+    const checklist = checklistTemplates[taskType].map((item) => ({
+      ...item,
+      checked: completed || inspected ? chance(0.85) : inProgress ? chance(0.5) : false,
+    }));
+
+    housekeepingTasks.push({
+      id: taskId,
+      roomId: room.id,
+      roomNumber: room.number,
+      propertyId: room.propertyId,
+      category: room.category,
+      floor: room.floor,
+      zone: room.zone,
+      type: taskType,
+      status,
+      priority: overdue ? 5 : taskType === "checkout" ? 4 : taskType === "deep_clean" ? 2 : 3,
+      dueAt,
+      serviceDate: TODAY.toISOString(),
+      assigneeId,
+      assignedAt: assigneeId ? at(-int(0, 1), int(8, 12)) : undefined,
+      startedAt,
+      completedAt,
+      inspectedAt,
+      checklist,
+      notes: chance(0.2) ? pick(["Гость просил тишины", "Срочно к заезду 15:00", "Номер для VIP-гостя"]) : undefined,
+      guestWishes: chance(0.15) ? pick(["Детская кроватка", "Доп. полотенца", "Цветы к заезду"]) : undefined,
+      maintenanceRequired,
+      maintenanceNotes: maintenanceRequired ? pick(["Не работает кондиционер", "Течь в санузле", "Сломанный стул"]) : undefined,
+      leadId: chance(0.2) ? pick(leads).id : undefined,
+      guestId: chance(0.2) ? pick(guests).id : undefined,
+      estimatedMinutes: taskType === "deep_clean" ? 90 : taskType === "checkout" ? 45 : 30,
+      actualMinutes: completed || inspected ? int(25, 70) : undefined,
+    });
+
+    // Связываем задачу с номером.
+    if (status === "in_progress" || status === "assigned" || status === "pending") {
+      room.activeTaskId = taskId;
+    }
+
+    // Создаём заявку на ремонт, если требуется.
+    if (maintenanceRequired) {
+      const maintCategory: MaintenanceCategory = pick([
+        "plumbing",
+        "electrical",
+        "air_conditioning",
+        "furniture",
+        "lighting",
+        "bathroom",
+      ] as MaintenanceCategory[]);
+      const maintPriority: MaintenancePriority = overdue ? "high" : pick(["low", "medium", "medium", "high"] as MaintenancePriority[]);
+      const blocksRoom = maintPriority === "high" && chance(0.4);
+      const maintId = `mnt_${maintenanceTickets.length + 1}`;
+      maintenanceTickets.push({
+        id: maintId,
+        code: `РЗ-${100 + maintenanceTickets.length + 1}`,
+        roomId: room.id,
+        roomNumber: room.number,
+        propertyId: room.propertyId,
+        zone: room.zone,
+        category: maintCategory,
+        description: pick([
+          "Не работает кондиционер, в номере жарко",
+          "Течь под раковиной в санузле",
+          "Не включается свет в ванной",
+          "Сломан стул, требуется замена",
+          "Перебои с горячей водой",
+          "Не закрывается дверь балкона",
+        ]),
+        priority: maintPriority,
+        status: pick(["open", "assigned", "in_progress", "waiting_parts", "resolved", "verified"] as MaintenanceTicket["status"][]),
+        assigneeId: chance(0.6) ? pick(staff) : undefined,
+        discoveredAt: at(-int(0, 5), int(9, 18)),
+        slaDueAt: maintPriority === "high" ? at(int(0, 1), 12) : at(int(2, 5), 18),
+        resolvedAt: chance(0.4) ? at(int(0, 2), int(10, 18)) : undefined,
+        verifiedAt: chance(0.2) ? at(int(0, 1), int(11, 19)) : undefined,
+        blocksRoom,
+        housekeepingTaskId: taskId,
+        result: chance(0.25) ? "Устранено, проверено" : undefined,
+      });
+      // Связываем заявку с задачей и номером.
+      const taskIndex = housekeepingTasks.length - 1;
+      housekeepingTasks[taskIndex].maintenanceId = maintId;
+      if (blocksRoom) {
+        room.status = "out_of_order";
+        room.activeMaintenanceId = maintId;
+      }
+    }
+  }
+});
+
+// Гарантируем согласованность статусов и временных меток maintenance tickets.
+maintenanceTickets.forEach((ticket) => {
+  if (ticket.status === "resolved" && !ticket.resolvedAt) {
+    ticket.resolvedAt = new Date(Date.now() - 86_400_000).toISOString();
+  }
+  if (ticket.status === "verified") {
+    if (!ticket.resolvedAt) ticket.resolvedAt = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    if (!ticket.verifiedAt) ticket.verifiedAt = new Date(Date.now() - 86_400_000).toISOString();
+  }
+  if (ticket.status === "assigned" && !ticket.assigneeId) {
+    ticket.assigneeId = employees[0].id;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Operational tasks — маршрутизация особых пожеланий гостей
+// ---------------------------------------------------------------------------
+
+const operationalTasks: OperationalTask[] = [];
+leads.forEach((lead) => {
+  if (lead.stage !== "confirmed") return;
+  lead.specialRequests.forEach((request) => {
+    if (chance(0.7)) {
+      const opId = `opt_${operationalTasks.length + 1}`;
+      operationalTasks.push({
+        id: opId,
+        leadId: lead.id,
+        guestId: lead.guestId,
+        propertyId: lead.propertyId,
+        route: request.route,
+        title: `${request.label} · ${lead.code}`,
+        description: `Особое пожелание гостя к заезду ${formatStayRangeLocal(new Date(lead.checkIn), new Date(lead.checkOut))}`,
+        status: pick(["open", "in_progress", "done", "done"] as OperationalTask["status"][]),
+        priority: request.route === "maintenance" ? "high" : "medium",
+        dueAt: addDays(new Date(lead.checkIn), -1).toISOString(),
+        assigneeId: pick(employees.filter((employee) => employee.propertyIds.includes(lead.propertyId))).id,
+        createdAt: lead.createdAt,
+        completedAt: chance(0.4) ? at(-int(0, 3), int(10, 18)) : undefined,
+        source: "lead",
+      });
+      request.linkedTaskId = opId;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Follow-ups — генерируем из лидов и предложений
+// ---------------------------------------------------------------------------
+
+const followUps: FollowUp[] = generateFollowUps(leads, offers, [], NOW);
+
+// ---------------------------------------------------------------------------
+// PMS-снимки (read-only блок для ежедневного отчёта)
+// ---------------------------------------------------------------------------
+
+const pmsSnapshots: PmsDailySnapshot[] = [];
+for (let dayOffset = 30; dayOffset >= 0; dayOffset -= 1) {
+  const date = addDays(TODAY, -dayOffset);
+  properties.forEach((property) => {
+    const propertyRooms = rooms.filter((room) => room.propertyId === property.id);
+    const totalRooms = propertyRooms.length;
+    const occupied = propertyRooms.filter((room) => room.status === "occupied").length;
+    const outOfOrder = propertyRooms.filter((room) => room.status === "out_of_order").length;
+    const occupancyRate = totalRooms === 0 ? null : occupied / totalRooms;
+    const scale = property.id === "les_borovoe" ? 1 : property.id === "les_astana" ? 0.85 : 0.5;
+    const adr = Math.round((180_000 + int(0, 120_000)) * scale);
+    pmsSnapshots.push({
+      date: date.toISOString(),
+      propertyId: property.id,
+      occupancy: occupancyRate,
+      adr,
+      revpar: occupancyRate !== null ? Math.round(adr * occupancyRate) : null,
+      arrivals: Math.round(int(2, 8) * scale),
+      departures: Math.round(int(2, 7) * scale),
+      availableRooms: totalRooms - occupied - outOfOrder,
+      outOfOrderRooms: outOfOrder,
+    });
+  });
+}
+
 export const crmDataset: CrmDataset = {
   organization,
   properties,
@@ -1127,6 +1630,12 @@ export const crmDataset: CrmDataset = {
   segments,
   campaigns,
   metrics,
+  followUps,
+  rooms,
+  housekeepingTasks,
+  maintenanceTickets,
+  operationalTasks,
+  pmsSnapshots,
 };
 
 export const findGuest = guestById;

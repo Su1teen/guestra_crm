@@ -4,16 +4,20 @@ import {
   BarChart3,
   CalendarDays,
   CheckSquare,
+  ClipboardList,
   FileText,
   Gauge,
   Inbox,
   LayoutDashboard,
   Layers,
+  ListChecks,
   Megaphone,
   Menu,
+  PhoneCall,
   Target,
   Trophy,
   Users,
+  Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -51,6 +55,9 @@ export const AppShell = () => {
   const unread = scoped.conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
   const openTasks = scoped.tasks.filter((task) => task.status !== "done" && task.ownerId === currentEmployee.id);
   const overdueTasks = openTasks.filter((task) => task.status === "overdue");
+  const overdueFollowUps = scoped.followUps.filter(
+    (item) => item.status === "open" && new Date(item.dueAt) < new Date(),
+  );
 
   const groups: NavGroup[] = useMemo(
     () => [
@@ -62,6 +69,7 @@ export const AppShell = () => {
           { to: "/pipeline", label: "Воронка", icon: Layers },
           { to: "/leads", label: "Лиды", icon: Target },
           { to: "/offers", label: "Предложения", icon: FileText },
+          { to: "/follow-up", label: "Follow-up", icon: PhoneCall, badge: overdueFollowUps.length },
           { to: "/tasks", label: "Задачи", icon: CheckSquare, badge: overdueTasks.length },
           { to: "/calendar", label: "Календарь", icon: CalendarDays },
         ],
@@ -70,6 +78,7 @@ export const AppShell = () => {
         title: "Клиенты",
         items: [
           { to: "/guests", label: "Гости", icon: Users },
+          { to: "/classification", label: "Классификация", icon: ListChecks },
           { to: "/segments", label: "Сегменты", icon: Gauge },
         ],
       },
@@ -78,11 +87,20 @@ export const AppShell = () => {
         title: "Аналитика",
         items: [
           { to: "/analytics/sales", label: "Продажи", icon: BarChart3 },
+          { to: "/daily-report", label: "Ежедневный отчёт", icon: FileText },
           { to: "/analytics/performance", label: "Эффективность", icon: Trophy },
+          { to: "/reports", label: "Отчёты", icon: ClipboardList },
+        ],
+      },
+      {
+        title: "Операции",
+        items: [
+          { to: "/housekeeping", label: "Housekeeping", icon: CheckSquare },
+          { to: "/maintenance", label: "Ремонт", icon: Wrench },
         ],
       },
     ],
-    [overdueTasks.length, unread],
+    [overdueFollowUps.length, overdueTasks.length, unread],
   );
 
   const sidebar = (

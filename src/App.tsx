@@ -20,6 +20,12 @@ import Segments from "@/pages/Segments";
 import Campaigns from "@/pages/Campaigns";
 import SalesAnalytics from "@/pages/SalesAnalytics";
 import Performance from "@/pages/Performance";
+import FollowUp from "@/pages/FollowUp";
+import Classification from "@/pages/Classification";
+import DailyReport from "@/pages/DailyReport";
+import Reports from "@/pages/Reports";
+import Housekeeping from "@/pages/Housekeeping";
+import Maintenance from "@/pages/Maintenance";
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
@@ -35,14 +41,20 @@ const AppRoutes = () => {
         <Route path="leads/:leadId" element={<LeadDetail />} />
         <Route path="offers" element={<Offers />} />
         <Route path="offers/:offerId" element={<OfferDetail />} />
+        <Route path="follow-up" element={<FollowUp />} />
         <Route path="tasks" element={<Tasks />} />
         <Route path="calendar" element={<Calendar />} />
         <Route path="guests" element={<Guests />} />
         <Route path="guests/:guestId" element={<GuestDetail />} />
+        <Route path="classification" element={<Classification />} />
         <Route path="segments" element={<Segments />} />
         <Route path="campaigns" element={<Campaigns />} />
         <Route path="analytics/sales" element={<SalesAnalytics />} />
+        <Route path="daily-report" element={<DailyReport />} />
         <Route path="analytics/performance" element={<Performance />} />
+        <Route path="reports" element={<Reports />} />
+        <Route path="housekeeping" element={<Housekeeping />} />
+        <Route path="maintenance" element={<Maintenance />} />
       </Route>
       <Route path="*" element={<NotFound />} />
     </Routes>

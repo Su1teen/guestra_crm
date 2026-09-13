@@ -1,4 +1,18 @@
-import type { Employee, Lead, LeadSource, LeadStage, Offer, PropertyId, SalesMetricPoint, Task } from "@/types/crm";
+import type {
+  Conversation,
+  Employee,
+  FollowUp,
+  InterestDirection,
+  Lead,
+  LeadQuality,
+  LeadSource,
+  LeadStage,
+  LeadTemperature,
+  Offer,
+  PropertyId,
+  SalesMetricPoint,
+  Task,
+} from "@/types/crm";
 import { PIPELINE_STAGES } from "@/lib/labels";
 import { daysBetween, startOfDay } from "@/lib/format";
 
@@ -9,6 +23,9 @@ export const isOpen = (lead: Lead) => OPEN_STAGES.includes(lead.stage);
 const average = (values: number[]) => (values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length);
 
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
+
+/** Возвращает null вместо 0, когда данных недостаточно. */
+const averageOrNull = (values: number[]): number | null => (values.length === 0 ? null : average(values));
 
 export interface SalesSummary {
   newLeads: number;
@@ -213,4 +230,328 @@ export const stageCounts = (leads: Lead[]) => {
   const counts = new Map<LeadStage, number>();
   leads.forEach((lead) => counts.set(lead.stage, (counts.get(lead.stage) ?? 0) + 1));
   return counts;
+};
+
+// ---------------------------------------------------------------------------
+// SLA первого ответа
+// ---------------------------------------------------------------------------
+
+export interface SlaSummary {
+  inSla: number;
+  outSla: number;
+  total: number;
+  inSlaRate: number | null;
+  avgResponseMinutes: number | null;
+}
+
+/**
+ * Доля ответов в SLA = ответы в SLA / все обращения с ответом.
+ * Среднее время ответа = время между первым входящим сообщением и первым
+ * ответом сотрудника. Если данных нет — null («Нет данных»).
+ */
+export const summarizeSla = (leads: Lead[]): SlaSummary => {
+  const withResponse = leads.filter((lead) => lead.firstResponseMinutes > 0);
+  if (withResponse.length === 0) {
+    return { inSla: 0, outSla: 0, total: 0, inSlaRate: null, avgResponseMinutes: null };
+  }
+  const inSla = withResponse.filter((lead) => lead.firstResponseMinutes <= lead.slaMinutes).length;
+  const outSla = withResponse.length - inSla;
+  return {
+    inSla,
+    outSla,
+    total: withResponse.length,
+    inSlaRate: (inSla / withResponse.length) * 100,
+    avgResponseMinutes: averageOrNull(withResponse.map((lead) => lead.firstResponseMinutes)),
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Follow-up completion
+// ---------------------------------------------------------------------------
+
+/**
+ * follow-up completion = завершённые в срок follow-up / все follow-up
+ * со сроком в периоде.
+ */
+export const followUpCompletion = (followUps: FollowUp[], now = new Date()): number | null => {
+  const withDue = followUps.filter((item) => new Date(item.dueAt) <= now || item.status !== "done");
+  if (withDue.length === 0) return null;
+  const completedOnTime = withDue.filter(
+    (item) => item.status === "done" && item.completedAt && new Date(item.completedAt) <= new Date(item.dueAt),
+  ).length;
+  return (completedOnTime / withDue.length) * 100;
+};
+
+export const overdueFollowUps = (followUps: FollowUp[], now = new Date()): FollowUp[] =>
+  followUps.filter((item) => item.status === "open" && new Date(item.dueAt) < now);
+
+// ---------------------------------------------------------------------------
+// Конверсия между стадиями
+// ---------------------------------------------------------------------------
+
+export interface StageConversion {
+  from: LeadStage;
+  to: LeadStage;
+  count: number;
+  rate: number | null;
+}
+
+/**
+ * Конверсия между соседними стадиями воронки. Считается по stageHistory:
+ * сколько лидов дошли до стадии N, имея стадию N-1.
+ */
+export const stageConversion = (leads: Lead[]): StageConversion[] => {
+  const result: StageConversion[] = [];
+  for (let index = 0; index < PIPELINE_STAGES.length - 1; index += 1) {
+    const from = PIPELINE_STAGES[index];
+    const to = PIPELINE_STAGES[index + 1];
+    const reachedFrom = leads.filter((lead) => lead.stageHistory.some((entry) => entry.stage === from));
+    const reachedTo = leads.filter(
+      (lead) => lead.stageHistory.some((entry) => entry.stage === from) && lead.stageHistory.some((entry) => entry.stage === to),
+    );
+    result.push({
+      from,
+      to,
+      count: reachedTo.length,
+      rate: reachedFrom.length === 0 ? null : (reachedTo.length / reachedFrom.length) * 100,
+    });
+  }
+  return result;
+};
+
+/**
+ * Общая конверсия продаж = подтверждённые сделки / закрытые коммерческие
+ * возможности (confirmed + lost, без cancelled и non_target).
+ */
+export const overallConversion = (leads: Lead[]): number | null => {
+  const closed = leads.filter((lead) => lead.stage === "confirmed" || lead.stage === "lost");
+  if (closed.length === 0) return null;
+  const confirmed = leads.filter((lead) => lead.stage === "confirmed").length;
+  return (confirmed / closed.length) * 100;
+};
+
+// ---------------------------------------------------------------------------
+// Группировки по направлениям, категориям, температурам, качеству
+// ---------------------------------------------------------------------------
+
+export interface DirectionBreakdown {
+  direction: InterestDirection;
+  count: number;
+  confirmed: number;
+  revenue: number;
+  conversion: number | null;
+}
+
+export const breakdownByDirection = (leads: Lead[]): DirectionBreakdown[] => {
+  const groups = groupBy(leads, (lead) => lead.classification.direction);
+  return [...groups]
+    .map(([direction, group]) => {
+      const confirmed = group.filter((lead) => lead.stage === "confirmed");
+      const closed = group.filter((lead) => lead.stage === "confirmed" || lead.stage === "lost");
+      return {
+        direction,
+        count: group.length,
+        confirmed: confirmed.length,
+        revenue: sum(confirmed.map((lead) => lead.totalAmount)),
+        conversion: closed.length === 0 ? null : (confirmed.length / closed.length) * 100,
+      };
+    })
+    .sort((a, b) => b.count - a.count);
+};
+
+export interface QualityBreakdown {
+  quality: LeadQuality;
+  count: number;
+  share: number;
+}
+
+export const breakdownByQuality = (leads: Lead[]): QualityBreakdown[] => {
+  if (leads.length === 0) return [];
+  const groups = groupBy(leads, (lead) => lead.classification.quality);
+  return [...groups].map(([quality, group]) => ({
+    quality,
+    count: group.length,
+    share: (group.length / leads.length) * 100,
+  }));
+};
+
+export interface TemperatureBreakdown {
+  temperature: LeadTemperature;
+  count: number;
+  share: number;
+}
+
+export const breakdownByTemperature = (leads: Lead[]): TemperatureBreakdown[] => {
+  if (leads.length === 0) return [];
+  const groups = groupBy(leads, (lead) => lead.classification.temperature);
+  return [...groups].map(([temperature, group]) => ({
+    temperature,
+    count: group.length,
+    share: (group.length / leads.length) * 100,
+  }));
+};
+
+export interface CategoryBreakdown {
+  category: string;
+  count: number;
+  confirmed: number;
+  revenue: number;
+}
+
+export const breakdownByCategory = (leads: Lead[]): CategoryBreakdown[] => {
+  const groups = groupBy(leads, (lead) => lead.roomType);
+  return [...groups]
+    .map(([category, group]) => {
+      const confirmed = group.filter((lead) => lead.stage === "confirmed");
+      return {
+        category,
+        count: group.length,
+        confirmed: confirmed.length,
+        revenue: sum(confirmed.map((lead) => lead.totalAmount)),
+      };
+    })
+    .sort((a, b) => b.revenue - a.revenue);
+};
+
+export const revenueByEmployee = (
+  employees: Employee[],
+  leads: Lead[],
+): { employee: Employee; revenue: number; confirmed: number; leads: number }[] =>
+  employees
+    .map((employee) => {
+      const ownLeads = leads.filter((lead) => lead.ownerId === employee.id);
+      const confirmed = ownLeads.filter((lead) => lead.stage === "confirmed");
+      return {
+        employee,
+        revenue: sum(confirmed.map((lead) => lead.totalAmount)),
+        confirmed: confirmed.length,
+        leads: ownLeads.length,
+      };
+    })
+    .sort((a, b) => b.revenue - a.revenue);
+
+// ---------------------------------------------------------------------------
+// Упущенная выручка
+// ---------------------------------------------------------------------------
+
+export const missedRevenue = (leads: Lead[]): number =>
+  sum(leads.filter((lead) => lead.stage === "lost").map((lead) => lead.totalAmount));
+
+// ---------------------------------------------------------------------------
+// Средний срок закрытия сделки (дни от создания до подтверждения)
+// ---------------------------------------------------------------------------
+
+export const avgCloseDays = (leads: Lead[]): number | null => {
+  const confirmed = leads.filter((lead) => lead.stage === "confirmed");
+  if (confirmed.length === 0) return null;
+  const durations = confirmed.map((lead) => {
+    const lastStage = lead.stageHistory[lead.stageHistory.length - 1];
+    return daysBetween(lead.createdAt, lastStage.at);
+  });
+  return average(durations);
+};
+
+// ---------------------------------------------------------------------------
+// Средний чек
+// ---------------------------------------------------------------------------
+
+export const avgCheck = (leads: Lead[]): number | null => {
+  const confirmed = leads.filter((lead) => lead.stage === "confirmed");
+  if (confirmed.length === 0) return null;
+  return Math.round(sum(confirmed.map((lead) => lead.totalAmount)) / confirmed.length);
+};
+
+// ---------------------------------------------------------------------------
+// Сравнение с предыдущим периодом (для дельт на дашборде)
+// ---------------------------------------------------------------------------
+
+export interface PeriodComparison {
+  current: number;
+  previous: number;
+  delta: number;
+  deltaPercent: number | null;
+  direction: "up" | "down" | "flat";
+}
+
+export const comparePeriods = (current: number, previous: number): PeriodComparison => {
+  const delta = current - previous;
+  const deltaPercent = previous === 0 ? null : (delta / previous) * 100;
+  return {
+    current,
+    previous,
+    delta,
+    deltaPercent,
+    direction: delta > 0 ? "up" : delta < 0 ? "down" : "flat",
+  };
+};
+
+/** Считает метрику за N дней и за предыдущие N дней для сравнения. */
+export const metricForPeriod = (
+  metrics: SalesMetricPoint[],
+  days: number,
+  selector: (point: SalesMetricPoint) => number,
+  now = new Date(),
+): PeriodComparison => {
+  const cutoff = startOfDay(now).getTime() - (days - 1) * 86_400_000;
+  const prevCutoff = cutoff - days * 86_400_000;
+  const currentPoints = metrics.filter((point) => new Date(point.date).getTime() >= cutoff);
+  const previousPoints = metrics.filter((point) => {
+    const time = new Date(point.date).getTime();
+    return time >= prevCutoff && time < cutoff;
+  });
+  return comparePeriods(sum(currentPoints.map(selector)), sum(previousPoints.map(selector)));
+};
+
+// ---------------------------------------------------------------------------
+// Время в стадии
+// ---------------------------------------------------------------------------
+
+export interface StageDuration {
+  stage: LeadStage;
+  enteredAt: string;
+  exitedAt?: string;
+  daysInStage: number;
+  employeeId: string;
+}
+
+export const stageDurations = (lead: Lead): StageDuration[] =>
+  lead.stageHistory.map((entry, index) => {
+    const next = lead.stageHistory[index + 1];
+    return {
+      stage: entry.stage,
+      enteredAt: entry.at,
+      exitedAt: next?.at,
+      daysInStage: next ? daysBetween(entry.at, next.at) : daysBetween(entry.at, new Date().toISOString()),
+      employeeId: entry.employeeId,
+    };
+  });
+
+// ---------------------------------------------------------------------------
+// Лиды без ответа / горячие лиды без следующего действия
+// ---------------------------------------------------------------------------
+
+export const leadsWithoutResponse = (leads: Lead[], hours = 18, now = new Date()): Lead[] =>
+  leads.filter(
+    (lead) =>
+      isOpen(lead) &&
+      lead.firstResponseMinutes === 0 &&
+      (now.getTime() - new Date(lead.createdAt).getTime()) / 3_600_000 >= hours,
+  );
+
+export const hotLeadsWithoutNextAction = (leads: Lead[]): Lead[] =>
+  leads.filter((lead) => isOpen(lead) && lead.classification.temperature === "hot" && !lead.nextAction);
+
+// ---------------------------------------------------------------------------
+// Conversations SLA (для Inbox)
+// ---------------------------------------------------------------------------
+
+export const conversationSlaRate = (conversations: Conversation[]): number | null => {
+  const withResponse = conversations.filter((conversation) => conversation.firstResponseAt);
+  if (withResponse.length === 0) return null;
+  const inSla = withResponse.filter((conversation) => {
+    const responseMinutes =
+      (new Date(conversation.firstResponseAt!).getTime() - new Date(conversation.lastMessageAt).getTime()) / 60_000;
+    return responseMinutes <= conversation.slaMinutes;
+  }).length;
+  return (inSla / withResponse.length) * 100;
 };

@@ -20,15 +20,49 @@ export type LeadStage = "new" | "qualified" | "offer" | "payment_pending" | "con
 
 export type LeadSource = "whatsapp" | "website" | "phone" | "instagram" | "returning" | "corporate" | "referral";
 
+/**
+ * Коммерческая температура обращения. Не путать с качеством обращения
+ * (target / needs_qualification / non_target) — это отдельное измерение.
+ */
 export type LeadIntent = "hot" | "warm" | "cold";
 
 export type PaymentStatus = "not_required" | "awaiting" | "partial" | "paid" | "refunded";
 
-export type LostReason = "price" | "no_availability" | "no_response" | "changed_plans" | "competitor" | "other";
+export type LostReason =
+  | "price"
+  | "no_availability"
+  | "no_response"
+  | "changed_plans"
+  | "competitor"
+  | "service_mismatch"
+  | "duplicate"
+  | "non_target"
+  | "other";
 
-export type SegmentKey = "new" | "repeat" | "vip" | "corporate" | "high_value" | "dormant" | "lost";
+export type SegmentKey =
+  | "new"
+  | "repeat"
+  | "vip"
+  | "corporate"
+  | "high_value"
+  | "dormant"
+  | "lost"
+  | "families"
+  | "couples"
+  | "large_groups"
+  | "corporate_events"
+  | "weddings_banquets"
+  | "spa_interest"
+  | "restaurant_interest"
+  | "bathhouse_interest"
+  | "price_sensitive"
+  | "weekend_regulars"
+  | "category_loyal"
+  | "cancellers"
+  | "no_response_after_offer"
+  | "reactivation_ready";
 
-export type Channel = "whatsapp" | "phone" | "website" | "other";
+export type Channel = "whatsapp" | "phone" | "website" | "instagram" | "other";
 
 export type OfferStatus = "draft" | "sent" | "viewed" | "accepted" | "expired" | "rejected";
 
@@ -39,6 +73,63 @@ export type TaskType = "follow_up" | "call" | "message" | "offer" | "payment_rem
 export type TaskPriority = "low" | "medium" | "high";
 
 export type CampaignStatus = "draft" | "scheduled" | "active" | "completed";
+
+// ---------------------------------------------------------------------------
+// Классификация обращений — три независимых измерения
+// ---------------------------------------------------------------------------
+
+/**
+ * Первое измерение — направление интереса гостя. Запрос по ресторану, SPA,
+ * бане или активности НЕ является нецелевым: это целевой запрос другого
+ * направления и должен быть направлен ответственному подразделению.
+ */
+export type InterestDirection =
+  | "accommodation"
+  | "corporate_event"
+  | "wedding_or_banquet"
+  | "restaurant"
+  | "spa"
+  | "bathhouse"
+  | "karaoke"
+  | "activities"
+  | "transfer"
+  | "partnership"
+  | "vacancy"
+  | "supplier"
+  | "spam"
+  | "wrong_contact"
+  | "other";
+
+/**
+ * Второе измерение — качество обращения с коммерческой точки зрения.
+ * target — реальный интерес к покупке; needs_qualification — интерес возможен,
+ * но данных недостаточно; non_target — обращения без коммерческого намерения.
+ */
+export type LeadQuality = "target" | "needs_qualification" | "non_target";
+
+/** Третье измерение — коммерческая температура (hot / warm / cold). */
+export type LeadTemperature = "hot" | "warm" | "cold";
+
+export interface ClassificationReason {
+  code: string;
+  label: string;
+}
+
+export interface ClassificationSnapshot {
+  direction: InterestDirection;
+  quality: LeadQuality;
+  temperature: LeadTemperature;
+  probability: number;
+  reasons: ClassificationReason[];
+  missingData: string[];
+  recommendedAction: string;
+  /** Кто и когда вручную скорректировал классификацию. */
+  manualOverride?: {
+    employeeId: string;
+    at: string;
+    previousQuality: LeadQuality;
+  };
+}
 
 export type ActivityType =
   | "lead_created"
@@ -200,11 +291,17 @@ export interface Lead {
   nextAction?: { label: string; dueAt: string };
   probability: number;
   firstResponseMinutes: number;
+  /** SLA первого ответа в минутах для данного канала/направления. */
+  slaMinutes: number;
   lostReason?: LostReason;
   bookingReference?: string;
   specialRequest?: string;
   stageHistory: LeadStageHistory[];
   activity: ActivityEvent[];
+  /** Классификация обращения (три измерения + объяснимость). */
+  classification: ClassificationSnapshot;
+  /** Структурированные особые пожелания гостя для маршрутизации в службы. */
+  specialRequests: SpecialRequestEntry[];
 }
 
 export interface OfferLine {
@@ -274,6 +371,26 @@ export interface Conversation {
   unreadCount: number;
   lastMessageAt: string;
   messages: Message[];
+  /** Классификация разговора (направление, качество, температура). */
+  classification?: ClassificationSnapshot;
+  /** Краткое резюме разговора, выделенные параметры запроса. */
+  summary?: ConversationSummary;
+  /** SLA первого ответа в минутах. */
+  slaMinutes: number;
+  /** Время первого ответа сотрудника (ISO) — для расчёта SLA. */
+  firstResponseAt?: string;
+  /** Результат закрытия разговора. */
+  closeResult?: "booked" | "qualified" | "lost" | "non_target" | "transferred" | "other";
+}
+
+export interface ConversationSummary {
+  text: string;
+  dates?: string;
+  guests?: number;
+  category?: string;
+  budget?: number;
+  wishes?: string[];
+  nextAction?: string;
 }
 
 export interface SegmentRule {
@@ -325,6 +442,288 @@ export interface SalesMetricPoint {
   lost: number;
 }
 
+// ---------------------------------------------------------------------------
+// Особые пожелания гостей — структурированные и маршрутизируемые
+// ---------------------------------------------------------------------------
+
+export type SpecialRequestRoute =
+  | "housekeeping"
+  | "maintenance"
+  | "reception"
+  | "restaurant"
+  | "spa"
+  | "transport"
+  | "finance"
+  | "front_desk";
+
+export type SpecialRequestType =
+  | "baby_cot"
+  | "extra_towels"
+  | "twin_beds"
+  | "early_check_in"
+  | "late_check_out"
+  | "transfer"
+  | "meal"
+  | "anniversary_prep"
+  | "dietary_restriction"
+  | "technical_issue"
+  | "other";
+
+export interface SpecialRequestEntry {
+  type: SpecialRequestType;
+  label: string;
+  route: SpecialRequestRoute;
+  note?: string;
+  /** Связанная операционная задача (housekeeping/maintenance), если создана. */
+  linkedTaskId?: string;
+  fulfilled?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up — рабочая очередь «не терять клиентов»
+// ---------------------------------------------------------------------------
+
+export type FollowUpReason =
+  | "no_response"
+  | "offer_not_prepared"
+  | "offer_not_sent"
+  | "offer_not_viewed"
+  | "no_reply_after_view"
+  | "no_prepayment"
+  | "callback_later"
+  | "client_silent"
+  | "offer_expiring"
+  | "cancelled_reactivation"
+  | "past_guest_offer";
+
+export type FollowUpQueue =
+  | "reply_now"
+  | "today"
+  | "overdue"
+  | "waiting_client"
+  | "waiting_payment"
+  | "reactivation"
+  | "done";
+
+export type FollowUpStatus = "open" | "done" | "skipped";
+
+export interface FollowUp {
+  id: string;
+  leadId: string;
+  guestId: string;
+  propertyId: PropertyId;
+  channel: Channel;
+  direction: InterestDirection;
+  reason: FollowUpReason;
+  queue: FollowUpQueue;
+  status: FollowUpStatus;
+  stage: LeadStage;
+  temperature: LeadTemperature;
+  potentialAmount: number;
+  dueAt: string;
+  createdAt: string;
+  completedAt?: string;
+  ownerId: string;
+  lastMessage?: string;
+  context: string;
+  recommendedAction: string;
+  lostReason?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Rooms — модель номерного фонда
+// ---------------------------------------------------------------------------
+
+export type RoomStatus =
+  | "vacant_clean"
+  | "vacant_dirty"
+  | "clean"
+  | "inspected"
+  | "guest_ready"
+  | "occupied"
+  | "out_of_order"
+  | "out_of_service";
+
+export interface Room {
+  id: string;
+  number: string;
+  propertyId: PropertyId;
+  category: string;
+  floor: number;
+  zone: string;
+  status: RoomStatus;
+  /** Связанная незавершённая housekeeping-задача, если есть. */
+  activeTaskId?: string;
+  /** Связанная открытая maintenance-заявка, если есть. */
+  activeMaintenanceId?: string;
+  /** Гость, занимающий номер (если занят). */
+  occupiedByGuestId?: string;
+  checkOutAt?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Housekeeping — уборка номеров
+// ---------------------------------------------------------------------------
+
+export type HousekeepingTaskType =
+  | "checkout"
+  | "stayover"
+  | "deep_clean"
+  | "touch_up"
+  | "inspection"
+  | "special_request";
+
+export type HousekeepingTaskStatus =
+  | "pending"
+  | "assigned"
+  | "in_progress"
+  | "completed"
+  | "inspected"
+  | "skipped";
+
+export interface ChecklistItem {
+  label: string;
+  checked: boolean;
+  notes?: string;
+}
+
+export interface HousekeepingTask {
+  id: string;
+  roomId: string;
+  roomNumber: string;
+  propertyId: PropertyId;
+  category: string;
+  floor: number;
+  zone: string;
+  type: HousekeepingTaskType;
+  status: HousekeepingTaskStatus;
+  priority: number;
+  dueAt: string;
+  serviceDate: string;
+  assigneeId?: string;
+  assignedAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  inspectedAt?: string;
+  checklist: ChecklistItem[];
+  notes?: string;
+  guestWishes?: string;
+  maintenanceRequired: boolean;
+  maintenanceNotes?: string;
+  /** Связанная заявка на ремонт. */
+  maintenanceId?: string;
+  /** Связанный лид/гость с особым пожеланием. */
+  leadId?: string;
+  guestId?: string;
+  /** Время на уборку в минутах (норматив). */
+  estimatedMinutes: number;
+  actualMinutes?: number;
+  skippedReason?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance — ремонт и неисправности
+// ---------------------------------------------------------------------------
+
+export type MaintenanceCategory =
+  | "plumbing"
+  | "electrical"
+  | "heating"
+  | "air_conditioning"
+  | "furniture"
+  | "appliance"
+  | "internet"
+  | "lighting"
+  | "bathroom"
+  | "safety"
+  | "other";
+
+export type MaintenanceStatus =
+  | "open"
+  | "assigned"
+  | "in_progress"
+  | "waiting_parts"
+  | "resolved"
+  | "verified"
+  | "cancelled";
+
+export type MaintenancePriority = "low" | "medium" | "high" | "critical";
+
+export interface MaintenanceTicket {
+  id: string;
+  code: string;
+  roomId?: string;
+  roomNumber?: string;
+  propertyId: PropertyId;
+  zone: string;
+  category: MaintenanceCategory;
+  description: string;
+  priority: MaintenancePriority;
+  status: MaintenanceStatus;
+  assigneeId?: string;
+  discoveredAt: string;
+  slaDueAt: string;
+  resolvedAt?: string;
+  verifiedAt?: string;
+  /** Выводит ли неисправность номер из продажи. */
+  blocksRoom: boolean;
+  /** Связанная housekeeping-задача. */
+  housekeepingTaskId?: string;
+  result?: string;
+  photoStub?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Операционные задачи — маршрутизация пожеланий гостей по службам
+// ---------------------------------------------------------------------------
+
+export type OperationalRoute =
+  | "housekeeping"
+  | "maintenance"
+  | "reception"
+  | "restaurant"
+  | "spa"
+  | "transport"
+  | "finance"
+  | "front_desk";
+
+export type OperationalTaskStatus = "open" | "in_progress" | "done" | "cancelled";
+
+export interface OperationalTask {
+  id: string;
+  leadId?: string;
+  guestId?: string;
+  propertyId: PropertyId;
+  route: OperationalRoute;
+  title: string;
+  description?: string;
+  status: OperationalTaskStatus;
+  priority: TaskPriority;
+  dueAt: string;
+  assigneeId?: string;
+  createdAt: string;
+  completedAt?: string;
+  source: "lead" | "conversation" | "manual";
+  linkedHousekeepingId?: string;
+  linkedMaintenanceId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// PMS-метрики (read-only блок для ежедневного отчёта)
+// ---------------------------------------------------------------------------
+
+export interface PmsDailySnapshot {
+  date: string;
+  propertyId: PropertyId;
+  occupancy: number | null;
+  adr: number | null;
+  revpar: number | null;
+  arrivals: number;
+  departures: number;
+  availableRooms: number;
+  outOfOrderRooms: number;
+}
+
 export interface CrmDataset {
   organization: Organization;
   properties: Property[];
@@ -342,4 +741,10 @@ export interface CrmDataset {
   segments: Segment[];
   campaigns: Campaign[];
   metrics: SalesMetricPoint[];
+  followUps: FollowUp[];
+  rooms: Room[];
+  housekeepingTasks: HousekeepingTask[];
+  maintenanceTickets: MaintenanceTicket[];
+  operationalTasks: OperationalTask[];
+  pmsSnapshots: PmsDailySnapshot[];
 }
