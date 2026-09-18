@@ -15,7 +15,7 @@ import {
   Menu,
   PhoneCall,
   Target,
-  Trophy,
+  Star,
   Users,
   Wrench,
 } from "lucide-react";
@@ -78,6 +78,7 @@ export const AppShell = () => {
         title: "Клиенты",
         items: [
           { to: "/guests", label: "Гости", icon: Users },
+          { to: "/reputation", label: "Репутация", icon: Star },
           { to: "/classification", label: "Классификация", icon: ListChecks },
           { to: "/segments", label: "Сегменты", icon: Gauge },
         ],
@@ -87,9 +88,8 @@ export const AppShell = () => {
         title: "Аналитика",
         items: [
           { to: "/analytics/sales", label: "Продажи", icon: BarChart3 },
-          { to: "/daily-report", label: "Ежедневный отчёт", icon: FileText },
-          { to: "/analytics/performance", label: "Эффективность", icon: Trophy },
-          { to: "/reports", label: "Отчёты", icon: ClipboardList },
+          { to: "/management-report", label: "Доходы и расходы", icon: BarChart3 },
+          { to: "/reports", label: "Выгрузки Excel", icon: ClipboardList },
         ],
       },
       {

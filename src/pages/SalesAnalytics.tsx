@@ -45,7 +45,7 @@ const brandColors = ["#4C6EF5", "#3B5BDB", "#7C8CF8", "#A5B4FC", "#C7D2FE", "#2F
 
 type Period = "7" | "30" | "90";
 
-const SalesAnalytics = () => {
+const SalesAnalytics = ({ embedded = false }: { embedded?: boolean }) => {
   const { status, reload } = useCrm();
   const scoped = useScopedData();
   const [period, setPeriod] = useState<Period>("30");
@@ -65,7 +65,7 @@ const SalesAnalytics = () => {
 
   return (
     <div className="space-y-5">
-      <PageHeader
+      {embedded ? <div className="flex justify-end rounded-xl border border-border bg-card p-3"><SegmentedTabs value={period} onChange={setPeriod} options={[{ value: "7", label: "7 дней" }, { value: "30", label: "30 дней" }, { value: "90", label: "90 дней" }]} /></div> : <PageHeader
         title="Аналитика продаж"
         description="Объём лидов, конверсия, средний чек и потери по сети ЛЕС"
         actions={
@@ -79,7 +79,7 @@ const SalesAnalytics = () => {
             ]}
           />
         }
-      />
+      />}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Лидов всего" value={String(scoped.leads.length)} icon={TrendingUp} hint={`квалифицировано ${summary.qualified}`} />

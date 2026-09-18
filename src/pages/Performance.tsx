@@ -20,7 +20,7 @@ import { stageLabels, stageTone, taskStatusLabels, taskStatusTone } from "@/lib/
 const average = (values: number[]) =>
   values.length === 0 ? 0 : values.reduce((total, value) => total + value, 0) / values.length;
 
-const Performance = () => {
+const Performance = ({ embedded = false }: { embedded?: boolean }) => {
   const { status, reload } = useCrm();
   const scoped = useScopedData();
   const { data } = useCrm();
@@ -73,10 +73,10 @@ const Performance = () => {
 
   return (
     <div className="space-y-5">
-      <PageHeader
+      {!embedded && <PageHeader
         title="Эффективность продаж"
         description="Результаты команды, скорость ответа и дисциплина follow-up по выбранному объекту"
-      />
+      />}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <StatCard label="Подтверждено" value={String(totals.confirmed)} icon={Target} />

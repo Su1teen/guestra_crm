@@ -28,9 +28,9 @@ import { downloadReportWorkbook } from "@/lib/report-excel";
 import { propertyById } from "@/data/reference";
 import { useToast } from "@/hooks/use-toast";
 
-const DailyReport = () => {
+const DailyReport = ({ embedded = false }: { embedded?: boolean }) => {
   const { toast } = useToast();
-  const { status, reload, property } = useCrm();
+  const { status, reload, property, data } = useCrm();
   const scoped = useScopedData();
   const [reportDate] = useState(() => startOfDay(new Date()));
 
@@ -71,7 +71,7 @@ const DailyReport = () => {
   const byEmployee = useMemo(() => {
     const map = new Map<string, { name: string; leads: number; confirmed: number; revenue: number; offers: number }>();
     scoped.leads.forEach((lead) => {
-      const entry = map.get(lead.ownerId) ?? { name: lead.ownerId, leads: 0, confirmed: 0, revenue: 0, offers: 0 };
+      const entry = map.get(lead.ownerId) ?? { name: data.employees.find((employee) => employee.id === lead.ownerId)?.name ?? lead.ownerId, leads: 0, confirmed: 0, revenue: 0, offers: 0 };
       entry.leads += 1;
       if (lead.stage === "confirmed") {
         entry.confirmed += 1;
@@ -84,7 +84,7 @@ const DailyReport = () => {
       if (entry) entry.offers += 1;
     });
     return [...map.values()];
-  }, [scoped.leads, scoped.offers]);
+  }, [scoped.leads, scoped.offers, data.employees]);
 
   // По источникам
   const bySource = useMemo(() => {
@@ -179,7 +179,7 @@ const DailyReport = () => {
 
   return (
     <div className="space-y-5">
-      <PageHeader
+      {embedded ? <p className="text-sm text-muted-foreground">Показатели на {reportDate.toLocaleDateString("ru-RU")}. Общая выгрузка Excel включает дневную детализацию отдельным листом.</p> : <PageHeader
         title="Ежедневный отчёт"
         description={` ${reportDate.toLocaleDateString("ru-RU")}`}
         actions={
@@ -188,7 +188,7 @@ const DailyReport = () => {
             Скачать Excel
           </Button>
         }
-      />
+      />}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
@@ -306,7 +306,7 @@ const DailyReport = () => {
       </SectionCard>
 
       {todayPms.length > 0 && (
-        <SectionCard title="PMS-блок (read-only)" description="Occupancy, ADR, RevPAR — из синхронизированных данных PMS">
+        <SectionCard title="PMS-блок · демо-снимок" description="Пример Occupancy, ADR и RevPAR; синхронизация с PMS пока не подключена">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {todayPms.map((snapshot) => (
               <div key={snapshot.propertyId} className="rounded-xl border border-border bg-card p-4">

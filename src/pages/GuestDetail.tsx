@@ -35,8 +35,10 @@ import {
   stayStatusLabels,
 } from "@/lib/labels";
 import { isOpen } from "@/lib/analytics";
+import CashbackWallet from "@/components/common/CashbackWallet";
+import { buildReputationReviews, CHANNELS } from "@/lib/reputation-demo";
 
-type TabKey = "overview" | "stays" | "conversations" | "services" | "payments" | "notes";
+type TabKey = "overview" | "stays" | "conversations" | "services" | "payments" | "loyalty" | "reviews" | "notes";
 
 const GuestDetail = () => {
   const { guestId = "" } = useParams();
@@ -88,6 +90,7 @@ const GuestDetail = () => {
     );
   }
 
+  const guestReviews = buildReputationReviews(data.guests).filter((review) => review.guestId === guest.id);
   const activeLead = related.leads.find(isOpen);
   const lastStay = related.stays.find((stay) => stay.status === "completed");
 
@@ -97,6 +100,8 @@ const GuestDetail = () => {
     { value: "conversations", label: "Переписка", count: related.conversations.length },
     { value: "services", label: "Услуги", count: related.services.length },
     { value: "payments", label: "Платежи", count: related.payments.length },
+    { value: "loyalty", label: "Кэшбек" },
+    { value: "reviews", label: "Отзывы", count: guestReviews.length },
     { value: "notes", label: "Заметки", count: related.notes.length },
   ];
 
@@ -365,6 +370,26 @@ const GuestDetail = () => {
               <li className="px-5 py-8 text-center text-sm text-muted-foreground">Платежей нет</li>
             )}
           </ul>
+        </SectionCard>
+      )}
+
+      {tab === "loyalty" && <CashbackWallet guestId={guest.id} guestName={guest.fullName} eligibleSpend={related.stays.filter((stay) => stay.status === "completed").reduce((sum, stay) => sum + stay.amount, 0)} lastStayDate={guest.lastStayDate} />}
+
+      {tab === "reviews" && (
+        <SectionCard title="Отзывы гостя" description="Оценки и обратная связь по каналам присутствия">
+          {guestReviews.length === 0 ? <p className="text-sm text-muted-foreground">Отзывов пока нет.</p> : (
+            <div className="space-y-3">{guestReviews.map((review) => (
+              <div key={review.id} className="rounded-xl border border-border p-4">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-semibold text-foreground">{CHANNELS.find((item) => item.id === review.channel)?.name}</span>
+                  <span>· {review.rating} / {review.maxRating}</span>
+                  <span>· {propertyById(review.propertyId).name}</span>
+                  <span>· {formatDateNumeric(review.date)}</span>
+                </div>
+                <p className="mt-2 text-sm">{review.text}</p>
+              </div>
+            ))}<Link to="/reputation" className="text-sm font-semibold text-brand-600 hover:underline">Открыть репутацию →</Link></div>
+          )}
         </SectionCard>
       )}
 

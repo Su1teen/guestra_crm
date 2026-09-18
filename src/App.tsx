@@ -19,11 +19,14 @@ import GuestDetail from "@/pages/GuestDetail";
 import Segments from "@/pages/Segments";
 import Campaigns from "@/pages/Campaigns";
 import SalesAnalytics from "@/pages/SalesAnalytics";
+import SalesWorkspace from "@/pages/SalesWorkspace";
 import Performance from "@/pages/Performance";
 import FollowUp from "@/pages/FollowUp";
 import Classification from "@/pages/Classification";
 import DailyReport from "@/pages/DailyReport";
 import Reports from "@/pages/Reports";
+import ManagementReport from "@/pages/ManagementReport";
+import Reputation from "@/pages/Reputation";
 import Housekeeping from "@/pages/Housekeeping";
 import Maintenance from "@/pages/Maintenance";
 import NotFound from "./pages/NotFound.tsx";
@@ -49,10 +52,13 @@ const AppRoutes = () => {
         <Route path="classification" element={<Classification />} />
         <Route path="segments" element={<Segments />} />
         <Route path="campaigns" element={<Campaigns />} />
-        <Route path="analytics/sales" element={<SalesAnalytics />} />
+        <Route path="analytics/sales" element={<SalesWorkspace />} />
+        <Route path="analytics/sales/legacy" element={<SalesAnalytics />} />
         <Route path="daily-report" element={<DailyReport />} />
         <Route path="analytics/performance" element={<Performance />} />
         <Route path="reports" element={<Reports />} />
+        <Route path="management-report" element={<ManagementReport />} />
+        <Route path="reputation" element={<Reputation />} />
         <Route path="housekeeping" element={<Housekeeping />} />
         <Route path="maintenance" element={<Maintenance />} />
       </Route>
