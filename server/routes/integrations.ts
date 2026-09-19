@@ -7,7 +7,7 @@ import * as s from "../db/schema.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
-const terminalStages = ["confirmed", "lost", "cancelled"];
+const terminalStages = ["confirmed", "completed", "lost", "cancelled"];
 const sha256 = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const safeEqual = (left: string | undefined, right: string) => {
   if (!left) return false;
@@ -22,7 +22,7 @@ const leadUpsertSchema = z.object({
   externalMessageId: z.string().min(1), username: nullableString, firstName: nullableString,
   propertyId: z.string().min(1),
   stage: z.enum(["new", "qualified", "planning", "offer", "payment_pending", "confirmed", "completed", "lost", "cancelled"]),
-  direction: z.enum(["accommodation", "corporate_event", "wedding_or_banquet", "restaurant", "spa", "bathhouse", "karaoke", "activities", "transfer", "partnership", "vacancy", "supplier", "spam", "wrong_contact", "other"]),
+  direction: z.enum(["accommodation", "corporate_event", "wedding_or_banquet", "restaurant", "spa", "massage", "bathhouse", "karaoke", "activities", "transfer", "partnership", "vacancy", "supplier", "spam", "wrong_contact", "other"]),
   quality: z.enum(["target", "needs_qualification", "non_target"]),
   temperature: z.enum(["hot", "warm", "cold"]), probability: z.number().int().min(0).max(100),
   classificationReasons: z.array(z.string()).default([]), missingData: z.array(z.string()).default([]),
@@ -54,9 +54,11 @@ const leadUpsertSchema = z.object({
 
 const offerUpsertSchema = z.object({
   channel: z.literal("telegram"), externalUserId: z.string().min(1), propertyId: z.string().min(1), externalQuoteId: z.string().optional(),
-  roomType: z.string().min(1), checkIn: z.string().min(1), checkOut: z.string().min(1), adults: z.number().int().min(0), children: z.number().int().min(0),
-  lines: z.array(z.object({ label: z.string(), quantity: z.string().optional(), amount: z.number().int() })).min(1),
-  total: z.number().int().min(0), deposit: z.number().int().min(0), currency: z.literal("KZT"), expiresAt: z.string().datetime().optional(),
+  roomType: z.string().min(1).nullable().optional(), checkIn: nullableString, checkOut: nullableString,
+  adults: z.number().int().min(0).default(0), children: z.number().int().min(0).default(0),
+  lines: z.array(z.object({ label: z.string(), quantity: z.string().optional(), amount: z.number().int(), leadItemId: z.string().optional() })).min(1),
+  total: z.number().int().min(0), deposit: z.number().int().min(0).default(0), currency: z.literal("KZT"),
+  expiresAt: z.string().datetime().optional(), terms: z.string().nullable().optional(),
 });
 
 const bookingSchema = z.object({
@@ -149,14 +151,17 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
       await db.update(s.leadClassifications).set({ direction: input.direction, quality: existingClassification.manualOverrideEmployeeId ? existingClassification.quality : input.quality, temperature: input.temperature, probability: input.probability, reasons, missingData: input.missingData, recommendedAction: input.recommendedAction, updatedAt: timestamp }).where(eq(s.leadClassifications.leadId, lead.id));
     }
     
-    if (input.directions && input.directions.length > 0) {
-      for (const dir of input.directions) {
-        await db.insert(s.leadInterests).values({ id: id("interest"), leadId: lead.id, direction: dir, isPrimary: dir === (input.primaryDirection || input.directions[0]), status: "active" }).onConflictDoNothing();
-      }
+    const incomingDirections = [...new Set([input.primaryDirection ?? input.direction, ...(input.directions ?? [])])];
+    for (const direction of incomingDirections) {
+      await db.insert(s.leadInterests).values({ id: id("interest"), leadId: lead.id, direction, isPrimary: direction === (input.primaryDirection ?? input.direction), status: "active" }).onConflictDoNothing();
     }
-    if (input.items && input.items.length > 0) {
-      const itemsToInsert = input.items.map(item => ({ id: id("item"), leadId: lead.id, ...item }));
-      await db.insert(s.leadItems).values(itemsToInsert);
+    const existingItems = await db.select().from(s.leadItems).where(eq(s.leadItems.leadId, lead.id));
+    const incomingItems = input.items ?? (input.roomType ? [{
+      type: "accommodation", name: input.roomType, quantity: 1, startAt: input.checkIn ?? undefined, endAt: input.checkOut ?? undefined,
+      adults: input.adults ?? undefined, children: input.children ?? undefined, roomType: input.roomType,
+    }] : []);
+    if (incomingItems.length > 0 && existingItems.length === 0) {
+      await db.insert(s.leadItems).values(incomingItems.map((item) => ({ id: id("item"), leadId: lead.id, status: "interest", ...item })));
     }
     if (input.primaryDirection) {
       await db.update(s.leadClassifications).set({ direction: input.primaryDirection, updatedAt: timestamp }).where(eq(s.leadClassifications.leadId, lead.id));
@@ -176,18 +181,18 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
     if (!identity) return response.status(404).json({ error: "Guest identity not found" });
     const lead = await activeLead(db, identity.guestId, input.propertyId);
     if (!lead) return response.status(404).json({ error: "Active lead not found" });
-    const externalQuoteId = input.externalQuoteId ?? sha256({ leadId: lead.id, roomType: input.roomType, checkIn: input.checkIn, checkOut: input.checkOut, total: input.total });
+    const externalQuoteId = input.externalQuoteId ?? sha256({ leadId: lead.id, lines: input.lines, total: input.total });
     const [existing] = await db.select().from(s.offers).where(eq(s.offers.externalQuoteId, externalQuoteId)).limit(1);
     const timestamp = now();
-    const checkIn = new Date(input.checkIn).toISOString();
-    const checkOut = new Date(input.checkOut).toISOString();
-    const nights = Math.max(1, Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000));
+    const checkIn = input.checkIn ? new Date(input.checkIn).toISOString() : null;
+    const checkOut = input.checkOut ? new Date(input.checkOut).toISOString() : null;
+    const nights = checkIn && checkOut ? Math.max(1, Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000)) : 0;
     let offer;
     if (existing) {
-      [offer] = await db.update(s.offers).set({ roomType: input.roomType, checkIn, checkOut, nights, adults: input.adults, children: input.children, total: input.total, deposit: input.deposit, expiresAt: input.expiresAt ?? existing.expiresAt, updatedAt: timestamp }).where(eq(s.offers.id, existing.id)).returning();
+      [offer] = await db.update(s.offers).set({ roomType: input.roomType ?? null, checkIn, checkOut, nights, adults: input.adults, children: input.children, total: input.total, deposit: input.deposit, terms: input.terms ?? null, expiresAt: input.expiresAt ?? existing.expiresAt, updatedAt: timestamp }).where(eq(s.offers.id, existing.id)).returning();
       await db.delete(s.offerLines).where(eq(s.offerLines.offerId, existing.id));
     } else {
-      [offer] = await db.insert(s.offers).values({ id: id("offer"), code: `КП-AI-${Date.now().toString().slice(-6)}`, leadId: lead.id, guestId: lead.guestId, propertyId: lead.propertyId, externalQuoteId, roomType: input.roomType, checkIn, checkOut, nights, adults: input.adults, children: input.children, status: "draft", ownerId: lead.ownerId, expiresAt: input.expiresAt ?? new Date(Date.now() + 4 * 86_400_000).toISOString(), total: input.total, deposit: input.deposit, currency: input.currency }).returning();
+      [offer] = await db.insert(s.offers).values({ id: id("offer"), code: `КП-AI-${Date.now().toString().slice(-6)}`, leadId: lead.id, guestId: lead.guestId, propertyId: lead.propertyId, externalQuoteId, roomType: input.roomType ?? null, checkIn, checkOut, nights, adults: input.adults, children: input.children, status: "draft", ownerId: lead.ownerId, expiresAt: input.expiresAt ?? new Date(Date.now() + 4 * 86_400_000).toISOString(), total: input.total, deposit: input.deposit, currency: input.currency, terms: input.terms ?? null }).returning();
       await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "offer_created", title: "Предложение подготовлено", amount: input.total, occurredAt: timestamp });
       if (["new", "qualified"].includes(lead.stage)) {
         await db.update(s.leads).set({ stage: "offer", lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));

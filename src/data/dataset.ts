@@ -487,7 +487,7 @@ const messageScripts: Record<Channel, { in: string[]; out: string[] }> = {
       "Добрый день! Да, на эти даты есть свободные домики. Уточните, пожалуйста, количество гостей.",
       "Завтраки включены, для детей до 6 лет — бесплатно.",
       "Отправила расчёт и предложение, оно действует 3 дня.",
-      "Напоминаю про предоплату 50% — после неё бронь фиксируется.",
+      "Напоминаю про согласованную предоплату — после неё бронь фиксируется.",
       "Бронирование подтверждено, отправила памятку по заезду.",
     ],
   },
@@ -524,6 +524,10 @@ const messageScripts: Record<Channel, { in: string[]; out: string[] }> = {
       "Ответила на заявку с сайта и отправила варианты размещения.",
       "Отправила предложение на email, продублировала в WhatsApp.",
     ],
+  },
+  email: {
+    in: ["Письмо с запросом на бронирование", "Запрос расчета для группы на email"],
+    out: ["Коммерческое предложение отправлено ответным письмом.", "Уточнили детали по почте."],
   },
   other: {
     in: ["Сообщение в Instagram: спрашивают про SPA-программу", "Рекомендация от гостя: просят связаться"],
@@ -695,7 +699,7 @@ leadPlan.forEach(({ stage, count }) => {
 
     const paymentStatus: PaymentStatus =
       stage === "confirmed" || stage === "completed" ? (chance(0.4) ? "paid" : "partial") : stage === "payment_pending" ? "awaiting" : stage === "cancelled" ? "refunded" : "not_required";
-    const deposit = Math.round(totalAmount / 2 / 1000) * 1000;
+    const deposit = Math.min(totalAmount, pick([50000, 75000, 100000, 150000]));
     const stageHistory = buildStageHistory(stage, createdAt, owner.id);
     const leadId = `lead_${String(leadCounter).padStart(3, "0")}`;
     const code = `G-${2_900 + leadCounter}`;

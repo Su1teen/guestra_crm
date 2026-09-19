@@ -182,6 +182,7 @@ export const channelLabels: Record<Channel, string> = {
   phone: "Телефон",
   website: "Сайт",
   instagram: "Instagram",
+  email: "Email",
   other: "Другое",
 };
 

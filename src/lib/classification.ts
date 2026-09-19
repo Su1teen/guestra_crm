@@ -1,6 +1,7 @@
 import type {
   ClassificationReason,
   ClassificationSnapshot,
+  Guest,
   InterestDirection,
   Lead,
   LeadQuality,
@@ -154,7 +155,7 @@ const buildMissingData = (signals: ClassificationSignals): string[] => {
   } else if (signals.direction === "restaurant") {
     if (!signals.hasDates) missing.push("дата и время");
     if (!signals.hasGuests) missing.push("размер компании");
-  } else if (["spa", "bathhouse", "karaoke"].includes(signals.direction)) {
+  } else if (["spa", "massage", "bathhouse", "karaoke"].includes(signals.direction)) {
     if (!signals.hasDates) missing.push("дата и время");
     if (!signals.hasGuests) missing.push("участники");
   } else if (signals.direction === "activities") {
@@ -260,8 +261,8 @@ export const applyManualOverride = (
 });
 
 /** Извлекает сигналы из готового лида (для пересчёта и отображения). */
-export const signalsFromLead = (lead: Lead, hoursSinceLastInbound: number, guest?: any): ClassificationSignals => {
-  const primaryDirection = lead.interests?.length ? lead.interests[0].direction : lead.classification.direction;
+export const signalsFromLead = (lead: Lead, hoursSinceLastInbound: number, guest?: Pick<Guest, "phone" | "email" | "contactIdentities">): ClassificationSignals => {
+  const primaryDirection = lead.interests?.find((interest) => interest.isPrimary)?.direction ?? lead.classification.direction;
   const directions = lead.interests?.map(i => i.direction) ?? [lead.classification.direction];
   const items = lead.items ?? [];
   

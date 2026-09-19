@@ -330,15 +330,33 @@ const GuestDetail = () => {
       {tab === "services" && (
         <SectionCard padded={false} bodyClassName="p-0">
           <ul className="divide-y divide-border">
-            {related.services.map((service) => (
-              <li key={service.id} className="flex items-center justify-between gap-3 px-5 py-3">
-                <div>
-                  <p className="text-sm text-foreground">{service.name}</p>
-                  <p className="text-xs text-muted-foreground">{formatDateNumeric(service.date)}</p>
-                </div>
-                <span className="text-sm font-medium tabular-nums">{formatTenge(service.amount)}</span>
-              </li>
-            ))}
+            {related.services.map((service) => {
+              const stay = service.stayId ? data.stays.find((s) => s.id === service.stayId) : undefined;
+              return (
+                <li key={service.id} className="flex items-center justify-between gap-3 px-5 py-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-foreground">{service.name}</p>
+                      {service.stayId ? (
+                        <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {stay?.bookingReference ?? "К проживанию"}
+                        </span>
+                      ) : (
+                        <span className="rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-medium text-brand-700">
+                          Без проживания
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {formatDateNumeric(service.date)}
+                      {service.quantity && service.quantity > 1 ? ` · ${service.quantity} шт.` : ""}
+                      {service.participants ? ` · ${service.participants} чел.` : ""}
+                    </p>
+                  </div>
+                  <span className="text-sm font-medium tabular-nums">{formatTenge(service.amount)}</span>
+                </li>
+              );
+            })}
             {related.services.length === 0 && (
               <li className="px-5 py-8 text-center text-sm text-muted-foreground">Дополнительных услуг нет</li>
             )}

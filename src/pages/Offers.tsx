@@ -81,21 +81,21 @@ const Offers = () => {
       render: (offer) => (
         <div>
           <p className="text-sm">{propertyById(offer.propertyId)?.name ?? offer.propertyId}</p>
-          <p className="text-xs text-muted-foreground">{offer.roomType}</p>
+          <p className="text-xs text-muted-foreground">{offer.roomType || (offer.lines[0]?.label ?? "Услуги")}</p>
         </div>
       ),
       hideBelow: "md",
     },
     {
       key: "dates",
-      header: "Проживание",
+      header: "Даты / Услуги",
       render: (offer) => (
         <div>
-          <p className="text-sm">{formatStayRange(offer.checkIn, offer.checkOut)}</p>
-          <p className="text-xs text-muted-foreground">{offer.nights} ноч.</p>
+          <p className="text-sm">{offer.checkIn ? formatStayRange(offer.checkIn, offer.checkOut) : (offer.lines[0]?.label || "Без дат")}</p>
+          <p className="text-xs text-muted-foreground">{offer.nights ? `${offer.nights} ноч.` : `${offer.lines.length} поз.`}</p>
         </div>
       ),
-      sortValue: (offer) => offer.checkIn,
+      sortValue: (offer) => offer.checkIn ?? "",
       hideBelow: "lg",
     },
     {

@@ -6,6 +6,7 @@ import { EmptyState, ErrorState, LoadingScreen } from "@/components/common/State
 import { DataTable, type Column } from "@/components/common/DataTable";
 import { PersonCell } from "@/components/common/Identity";
 import { StatusPill } from "@/components/common/StatusPill";
+import { CreateLeadDialog } from "@/components/crm/CreateLeadDialog";
 import {
   FilterBar,
   FilterSelect,
@@ -25,11 +26,11 @@ import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import type { Lead, LeadStage } from "@/types/crm";
 import { formatRelative, formatStayRange, formatTenge, occupancyLabel } from "@/lib/format";
-import { intentLabels, intentTone, sourceLabels, stageLabels, stageTone } from "@/lib/labels";
+import { directionLabels, intentLabels, intentTone, sourceLabels, stageLabels, stageTone } from "@/lib/labels";
 import { formatTengeCompact } from "@/lib/format";
 
 const Leads = () => {
-  const { status, reload, guestById, employeeById, propertyById } = useCrm();
+  const { status, reload, guestById, employeeById, propertyById, dataMode } = useCrm();
   const ownerOptions = useOwnerOptions();
   const scoped = useScopedData();
   const navigate = useNavigate();
@@ -65,27 +66,35 @@ const Leads = () => {
     {
       key: "property",
       header: "Объект",
-      render: (lead) => (
-        <div>
-          <p className="text-sm text-foreground">{propertyById(lead.propertyId)?.name ?? lead.propertyId}</p>
-          <p className="text-xs text-muted-foreground">{lead.roomType}</p>
-        </div>
-      ),
+      render: (lead) => {
+        const primaryDir = lead.classification?.direction;
+        const dirLabel = primaryDir ? directionLabels[primaryDir] : (lead.roomType || "Услуги");
+        return (
+          <div>
+            <p className="text-sm text-foreground">{propertyById(lead.propertyId)?.name ?? lead.propertyId}</p>
+            <p className="text-xs text-muted-foreground">{dirLabel}</p>
+          </div>
+        );
+      },
       sortValue: (lead) => propertyById(lead.propertyId)?.name ?? lead.propertyId,
       hideBelow: "md",
     },
     {
       key: "stay",
-      header: "Проживание",
-      render: (lead) => (
-        <div>
-          <p className="text-sm text-foreground">{formatStayRange(lead.checkIn, lead.checkOut)}</p>
-          <p className="text-xs text-muted-foreground">
-            {lead.nights} ноч. · {occupancyLabel(lead.adults, lead.children)}
-          </p>
-        </div>
-      ),
-      sortValue: (lead) => lead.checkIn,
+      header: "Запрос",
+      render: (lead) => {
+        const itemsSummary = lead.items && lead.items.length > 0
+          ? lead.items.map((it) => it.name).join(", ")
+          : (lead.roomType ? `${lead.roomType} · ${lead.nights} ноч.` : "Без позиций");
+        const dateRange = lead.checkIn ? formatStayRange(lead.checkIn, lead.checkOut) : "Даты не указаны";
+        return (
+          <div className="max-w-[220px]">
+            <p className="text-sm font-medium text-foreground truncate">{itemsSummary}</p>
+            <p className="text-xs text-muted-foreground">{dateRange}</p>
+          </div>
+        );
+      },
+      sortValue: (lead) => lead.checkIn ?? "",
       hideBelow: "lg",
     },
     {
@@ -135,7 +144,7 @@ const Leads = () => {
     <div className="space-y-5">
       <PageHeader
         title="Лиды"
-        description="Все обращения гостей с полным контекстом проживания"
+        description="Все обращения гостей по проживанию, ресторану, SPA и активностям"
         meta={
           <>
             <StatusPill tone="brand">{filtered.length} лидов</StatusPill>
@@ -144,6 +153,7 @@ const Leads = () => {
             </StatusPill>
           </>
         }
+        actions={dataMode === "database" ? <CreateLeadDialog /> : undefined}
       />
 
       <FilterBar>

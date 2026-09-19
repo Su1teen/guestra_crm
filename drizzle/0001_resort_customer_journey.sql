@@ -106,6 +106,7 @@ SELECT
   'accommodation',
   COALESCE("room_type", 'Номер'),
   CASE
+    WHEN "stage" = 'completed' THEN 'completed'
     WHEN "stage" = 'confirmed' THEN 'confirmed'
     WHEN "stage" = 'offer' THEN 'quoted'
     ELSE 'interest'
@@ -121,4 +122,26 @@ SELECT
   'KZT'
 FROM "leads"
 WHERE "room_type" IS NOT NULL
+ON CONFLICT DO NOTHING;
+
+-- 10. Backfill legacy lead_services without deleting or mutating source rows
+INSERT INTO "lead_items" ("id", "lead_id", "type", "category", "name", "status", "quantity", "total_amount", "currency", "metadata")
+SELECT
+  'backfill_service_' || ls."id",
+  ls."lead_id",
+  'other',
+  'legacy_service',
+  ls."name",
+  CASE
+    WHEN l."stage" = 'completed' THEN 'completed'
+    WHEN l."stage" = 'confirmed' THEN 'confirmed'
+    WHEN l."stage" IN ('offer', 'payment_pending') THEN 'quoted'
+    ELSE 'selected'
+  END,
+  1,
+  ls."amount",
+  'KZT',
+  jsonb_build_object('legacyLeadServiceId', ls."id")
+FROM "lead_services" ls
+JOIN "leads" l ON l."id" = ls."lead_id"
 ON CONFLICT DO NOTHING;

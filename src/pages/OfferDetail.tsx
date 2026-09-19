@@ -58,7 +58,7 @@ const OfferDetail = () => {
 
       <PageHeader
         title={`Предложение ${offer.code}`}
-        description={`${property.name} · ${formatStayRange(offer.checkIn, offer.checkOut)} · ${offer.roomType}`}
+        description={`${property.name} · ${offer.roomType && offer.checkIn ? `${formatStayRange(offer.checkIn, offer.checkOut)} · ${offer.roomType}` : "Коммерческое предложение"}`}
         meta={
           <>
             <StatusPill tone={offerStatusTone[offer.status]} withDot size="md">
@@ -139,13 +139,17 @@ const OfferDetail = () => {
 
           <div className="grid gap-4 border-b border-border px-6 py-5 sm:grid-cols-3">
             <Field label="Гость">{guest.fullName}</Field>
-            <Field label="Телефон">{guest.phone}</Field>
-            <Field label="Email">{guest.email}</Field>
-            <Field label="Категория">{offer.roomType}</Field>
-            <Field label="Проживание">
-              {formatStayRange(offer.checkIn, offer.checkOut)} · {nightsLabel(offer.nights)}
-            </Field>
-            <Field label="Гости">{occupancyLabel(offer.adults, offer.children)}</Field>
+            <Field label="Телефон">{guest.phone || "—"}</Field>
+            <Field label="Email">{guest.email || "—"}</Field>
+            {offer.roomType && <Field label="Категория">{offer.roomType}</Field>}
+            {offer.checkIn && (
+              <Field label="Проживание">
+                {formatStayRange(offer.checkIn, offer.checkOut)} {offer.nights ? `· ${nightsLabel(offer.nights)}` : ""}
+              </Field>
+            )}
+            {Boolean(offer.adults || offer.children) && (
+              <Field label="Гости">{occupancyLabel(offer.adults ?? 0, offer.children ?? 0)}</Field>
+            )}
           </div>
 
           <div className="px-6 py-5">
@@ -173,24 +177,25 @@ const OfferDetail = () => {
                 <span className="font-semibold">Итого к оплате</span>
                 <span className="font-semibold tabular-nums">{formatTenge(offer.total)}</span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Предоплата для подтверждения брони (50%)</span>
-                <span className="font-medium tabular-nums">{formatTenge(offer.deposit)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Остаток при заезде</span>
-                <span className="font-medium tabular-nums">{formatTenge(offer.total - offer.deposit)}</span>
-              </div>
+              {offer.deposit > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Предоплата</span>
+                  <span className="font-medium tabular-nums">{formatTenge(offer.deposit)}</span>
+                </div>
+              )}
+              {offer.deposit > 0 && offer.total > offer.deposit && (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Остаток</span>
+                  <span className="font-medium tabular-nums">{formatTenge(offer.total - offer.deposit)}</span>
+                </div>
+              )}
             </div>
 
             {offer.comment && (
               <p className="mt-4 rounded-xl bg-secondary/70 px-3 py-2 text-sm text-muted-foreground">{offer.comment}</p>
             )}
 
-            <p className="mt-4 text-xs text-muted-foreground">
-              Условия: заезд с 15:00, выезд до 12:00. Бронирование фиксируется после получения предоплаты. Отмена без
-              удержания — не позднее чем за 7 дней до заезда.
-            </p>
+            {offer.terms && <p className="mt-4 text-xs text-muted-foreground">Условия: {offer.terms}</p>}
           </div>
         </SectionCard>
 

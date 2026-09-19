@@ -19,9 +19,35 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useCrm } from "@/store/crm-store";
 import { directionLabels } from "@/lib/labels";
-import type { Guest } from "@/types/crm";
+import type { Guest, InterestDirection, LeadItemType, LeadSource, LeadStage } from "@/types/crm";
 
-const DIRECTIONS = ["accommodation", "restaurant", "spa", "massage", "sauna", "karaoke", "activities", "transfer", "corporate", "wedding", "other"];
+const DIRECTIONS: readonly InterestDirection[] = [
+  "accommodation",
+  "restaurant",
+  "spa",
+  "massage",
+  "bathhouse",
+  "karaoke",
+  "activities",
+  "transfer",
+  "corporate_event",
+  "wedding_or_banquet",
+  "other",
+] as const;
+
+const ITEM_TYPE_BY_DIRECTION: Partial<Record<InterestDirection, LeadItemType>> = {
+  accommodation: "accommodation",
+  restaurant: "restaurant",
+  spa: "spa",
+  massage: "massage",
+  bathhouse: "bathhouse",
+  karaoke: "karaoke",
+  activities: "activity",
+  transfer: "transfer",
+  corporate_event: "corporate_event",
+  wedding_or_banquet: "wedding_or_banquet",
+  other: "other",
+};
 
 export const CreateLeadDialog = () => {
   const navigate = useNavigate();
@@ -32,7 +58,15 @@ export const CreateLeadDialog = () => {
   // Step 1
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedGuest, setSelectedGuest] = useState<Guest | null>(null);
-  const [guestForm, setGuestForm] = useState({
+  const [guestForm, setGuestForm] = useState<{
+    fullName: string;
+    phone: string;
+    email: string;
+    company: string;
+    language: string;
+    source: LeadSource;
+    propertyId: string;
+  }>({
     fullName: "",
     phone: "",
     email: "",
@@ -45,22 +79,26 @@ export const CreateLeadDialog = () => {
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const query = searchQuery.toLowerCase();
-    return data.guests.filter((g) => 
-      g.fullName.toLowerCase().includes(query) || 
-      g.phone.includes(query) || 
-      g.email.toLowerCase().includes(query)
+    return data.guests.filter((g) =>
+      g.fullName.toLowerCase().includes(query) ||
+      g.phone?.toLowerCase().includes(query) ||
+      g.email?.toLowerCase().includes(query)
     ).slice(0, 5);
   }, [searchQuery, data.guests]);
 
   // Step 2
-  const [interests, setInterests] = useState<string[]>([]);
-  const [primaryInterest, setPrimaryInterest] = useState<string>("");
+  const [interests, setInterests] = useState<InterestDirection[]>([]);
+  const [primaryInterest, setPrimaryInterest] = useState<InterestDirection | "">("");
 
   // Step 3
-  const [detailsForm, setDetailsForm] = useState<Record<string, any>>({});
+  const [detailsForm, setDetailsForm] = useState<Record<string, string>>({});
 
   // Step 4
-  const [crmForm, setCrmForm] = useState({
+  const [crmForm, setCrmForm] = useState<{
+    stage: LeadStage;
+    ownerId: string;
+    note: string;
+  }>({
     stage: "new",
     ownerId: data.employees[0]?.id || "",
     note: "",
@@ -71,11 +109,11 @@ export const CreateLeadDialog = () => {
 
   const handleSubmit = async () => {
     // Collect data
-    const input: any = {
+    const input: Parameters<typeof createLead>[0] = {
       propertyId: guestForm.propertyId,
       source: guestForm.source,
       stage: crmForm.stage,
-      primaryDirection: primaryInterest || interests[0] || "other",
+      primaryDirection: (primaryInterest || interests[0] || "other") as InterestDirection,
       directions: interests,
       interests: interests.map(dir => ({ direction: dir, isPrimary: dir === primaryInterest })),
       ownerId: crmForm.ownerId,
@@ -94,26 +132,37 @@ export const CreateLeadDialog = () => {
       };
     }
 
-    const items: any[] = [];
+    const items: NonNullable<Parameters<typeof createLead>[0]["items"]> = [];
     if (interests.includes("accommodation")) {
+      const roomType = detailsForm.roomType || undefined;
+      const checkIn = detailsForm.checkIn ? new Date(`${detailsForm.checkIn}T15:00:00`).toISOString() : undefined;
+      const checkOut = detailsForm.checkOut ? new Date(`${detailsForm.checkOut}T12:00:00`).toISOString() : undefined;
       items.push({
         type: "accommodation",
-        name: detailsForm.roomType || "Проживание",
-        roomType: detailsForm.roomType,
-        startAt: detailsForm.checkIn ? new Date(`${detailsForm.checkIn}T15:00:00`).toISOString() : undefined,
-        endAt: detailsForm.checkOut ? new Date(`${detailsForm.checkOut}T12:00:00`).toISOString() : undefined,
+        name: roomType || "Проживание",
+        roomType: roomType,
+        startAt: checkIn,
+        endAt: checkOut,
         adults: detailsForm.adults ? Number(detailsForm.adults) : undefined,
         children: detailsForm.children ? Number(detailsForm.children) : undefined,
+        quantity: detailsForm.accommodation_quantity ? Number(detailsForm.accommodation_quantity) : 1,
+        totalAmount: detailsForm.accommodation_amount ? Number(detailsForm.accommodation_amount) : undefined,
       });
+      input.roomType = roomType;
+      input.checkIn = checkIn;
+      input.checkOut = checkOut;
+      input.adults = items[0].adults;
+      input.children = items[0].children;
     }
-    // Simple push for others
-    ["restaurant", "spa", "massage", "activities"].forEach(dir => {
-      if (interests.includes(dir)) {
+    DIRECTIONS.filter((direction) => direction !== "accommodation").forEach((direction) => {
+      if (interests.includes(direction)) {
         items.push({
-          type: "service",
-          name: directionLabels[dir as keyof typeof directionLabels],
-          startAt: detailsForm[`${dir}_date`] ? new Date(detailsForm[`${dir}_date`]).toISOString() : undefined,
-          participants: detailsForm[`${dir}_guests`] ? Number(detailsForm[`${dir}_guests`]) : undefined,
+          type: ITEM_TYPE_BY_DIRECTION[direction] || "other",
+          name: detailsForm[`${direction}_name`] || directionLabels[direction],
+          startAt: detailsForm[`${direction}_date`] ? new Date(detailsForm[`${direction}_date`]).toISOString() : undefined,
+          participants: detailsForm[`${direction}_guests`] ? Number(detailsForm[`${direction}_guests`]) : undefined,
+          quantity: detailsForm[`${direction}_quantity`] ? Number(detailsForm[`${direction}_quantity`]) : 1,
+          totalAmount: detailsForm[`${direction}_amount`] ? Number(detailsForm[`${direction}_amount`]) : undefined,
         });
       }
     });
@@ -220,15 +269,19 @@ export const CreateLeadDialog = () => {
                 </div>
                 <div className="space-y-1.5">
                   <Label>Источник</Label>
-                  <Select value={guestForm.source} onValueChange={(v) => setGuestForm({ ...guestForm, source: v })}>
+                  <Select value={guestForm.source} onValueChange={(v) => setGuestForm({ ...guestForm, source: v as LeadSource })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="email">Email</SelectItem>
                       <SelectItem value="walk_in">Визит</SelectItem>
                       <SelectItem value="whatsapp">WhatsApp</SelectItem>
+                      <SelectItem value="telegram">Telegram</SelectItem>
+                      <SelectItem value="website">Сайт</SelectItem>
                       <SelectItem value="instagram">Instagram</SelectItem>
                       <SelectItem value="phone">Телефон</SelectItem>
-                      <SelectItem value="booking">Booking.com</SelectItem>
+                      <SelectItem value="returning">Повторный гость</SelectItem>
+                      <SelectItem value="corporate">Корпоративный клиент</SelectItem>
+                      <SelectItem value="referral">Рекомендация</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -265,7 +318,7 @@ export const CreateLeadDialog = () => {
               {interests.length > 1 && (
                 <div className="pt-4 border-t space-y-2">
                   <Label>Основное направление</Label>
-                  <RadioGroup value={primaryInterest} onValueChange={setPrimaryInterest} className="flex flex-wrap gap-4">
+                  <RadioGroup value={primaryInterest} onValueChange={(value) => setPrimaryInterest(value as InterestDirection)} className="flex flex-wrap gap-4">
                     {interests.map(dir => (
                       <div key={`primary-${dir}`} className="flex items-center space-x-2">
                         <RadioGroupItem value={dir} id={`primary-${dir}`} />
@@ -295,6 +348,14 @@ export const CreateLeadDialog = () => {
                       <Input type="date" value={detailsForm.checkOut || ""} onChange={e => setDetailsForm({ ...detailsForm, checkOut: e.target.value })} />
                     </div>
                     <div className="space-y-1">
+                      <Label className="text-xs">Категория</Label>
+                      <Input value={detailsForm.roomType || ""} onChange={e => setDetailsForm({ ...detailsForm, roomType: e.target.value })} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Количество единиц</Label>
+                      <Input type="number" min={1} value={detailsForm.accommodation_quantity || ""} onChange={e => setDetailsForm({ ...detailsForm, accommodation_quantity: e.target.value })} />
+                    </div>
+                    <div className="space-y-1">
                       <Label className="text-xs">Взрослые</Label>
                       <Input type="number" min={1} value={detailsForm.adults || ""} onChange={e => setDetailsForm({ ...detailsForm, adults: e.target.value })} />
                     </div>
@@ -302,21 +363,33 @@ export const CreateLeadDialog = () => {
                       <Label className="text-xs">Дети</Label>
                       <Input type="number" min={0} value={detailsForm.children || ""} onChange={e => setDetailsForm({ ...detailsForm, children: e.target.value })} />
                     </div>
+                    <div className="space-y-1 sm:col-span-2">
+                      <Label className="text-xs">Сумма, ₸</Label>
+                      <Input type="number" min={0} value={detailsForm.accommodation_amount || ""} onChange={e => setDetailsForm({ ...detailsForm, accommodation_amount: e.target.value })} />
+                    </div>
                   </div>
                 </div>
               )}
               
-              {["restaurant", "spa", "massage", "activities"].map(dir => interests.includes(dir) && (
+              {DIRECTIONS.filter((direction) => direction !== "accommodation").map((dir) => interests.includes(dir) && (
                 <div key={dir} className="space-y-3 rounded-lg border p-3">
-                  <h4 className="font-medium text-sm">{directionLabels[dir as keyof typeof directionLabels]}</h4>
+                  <h4 className="font-medium text-sm">{directionLabels[dir]}</h4>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <Label className="text-xs">Дата</Label>
-                      <Input type="date" value={detailsForm[`${dir}_date`] || ""} onChange={e => setDetailsForm({ ...detailsForm, [`${dir}_date`]: e.target.value })} />
+                      <Label className="text-xs">Услуга / формат</Label>
+                      <Input value={detailsForm[`${dir}_name`] || ""} onChange={e => setDetailsForm({ ...detailsForm, [`${dir}_name`]: e.target.value })} />
                     </div>
                     <div className="space-y-1">
-                      <Label className="text-xs">Гостей / Участников</Label>
+                      <Label className="text-xs">Дата и время</Label>
+                      <Input type="datetime-local" value={detailsForm[`${dir}_date`] || ""} onChange={e => setDetailsForm({ ...detailsForm, [`${dir}_date`]: e.target.value })} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Гостей / участников</Label>
                       <Input type="number" min={1} value={detailsForm[`${dir}_guests`] || ""} onChange={e => setDetailsForm({ ...detailsForm, [`${dir}_guests`]: e.target.value })} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Сумма, ₸</Label>
+                      <Input type="number" min={0} value={detailsForm[`${dir}_amount`] || ""} onChange={e => setDetailsForm({ ...detailsForm, [`${dir}_amount`]: e.target.value })} />
                     </div>
                   </div>
                 </div>
@@ -333,7 +406,7 @@ export const CreateLeadDialog = () => {
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label>Начальная стадия</Label>
-                  <Select value={crmForm.stage} onValueChange={(v) => setCrmForm({ ...crmForm, stage: v })}>
+                  <Select value={crmForm.stage} onValueChange={(v) => setCrmForm({ ...crmForm, stage: v as LeadStage })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="new">Новый лид</SelectItem>

@@ -133,7 +133,7 @@ export const bootstrapDatabase = async (db: Database, config: Pick<AppConfig,
   await db.insert(s.guestProperties).values({ guestId: "guest_live_3", propertyId: "les_borovoe" }).onConflictDoNothing();
 
   await db.insert(s.leads).values({
-    id: "lead_live_3", code: "G-LIVE-003", guestId: "guest_live_3", propertyId: "les_borovoe", source: "instagram", stage: "planning", intent: "warm", probability: 45, ownerId: "emp_live_aigerim", totalAmount: 0
+    id: "lead_live_3", code: "G-LIVE-003", guestId: "guest_live_3", propertyId: "les_borovoe", source: "instagram", stage: "planning", intent: "warm", probability: 45, ownerId: "emp_live_aigerim", totalAmount: 0, lastActivityAt: date("2026-09-19T10:00:00Z")
   }).onConflictDoNothing();
 
   await db.insert(s.leadClassifications).values({

@@ -1,9 +1,9 @@
-import { CalendarDays, Users, BedDouble, Clock, ArrowRight } from "lucide-react";
+import { CalendarDays, Users, BedDouble, Clock, ArrowRight, Sparkles, Tag } from "lucide-react";
 import type { Lead } from "@/types/crm";
 import { StatusPill } from "@/components/common/StatusPill";
 import { InitialsAvatar } from "@/components/common/Identity";
 import { formatDueDate, formatRelative, formatStayRange, formatTenge, occupancyLabel } from "@/lib/format";
-import { intentLabels, intentTone, sourceLabels } from "@/lib/labels";
+import { directionLabels, intentLabels, intentTone, sourceLabels } from "@/lib/labels";
 import { useCrm } from "@/store/crm-store";
 import { cn } from "@/lib/utils";
 
@@ -55,18 +55,36 @@ export const LeadCard = ({ lead, onOpen, draggable, onDragStart, className }: Le
       <p className="mt-2.5 text-[13px] font-medium text-foreground">{propertyName(lead.propertyId)}</p>
 
       <div className="mt-1.5 space-y-1 text-xs text-muted-foreground">
-        <p className="flex items-center gap-1.5">
-          <CalendarDays className="h-3.5 w-3.5" />
-          {formatStayRange(lead.checkIn, lead.checkOut)} · {lead.nights} ноч.
-        </p>
-        <p className="flex items-center gap-1.5">
-          <Users className="h-3.5 w-3.5" />
-          {occupancyLabel(lead.adults, lead.children)}
-        </p>
-        <p className="flex items-center gap-1.5">
-          <BedDouble className="h-3.5 w-3.5" />
-          {lead.roomType}
-        </p>
+        {(lead.checkIn || (lead.items && lead.items[0]?.startAt)) && (
+          <p className="flex items-center gap-1.5">
+            <CalendarDays className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">
+              {lead.checkIn ? `${formatStayRange(lead.checkIn, lead.checkOut)} · ${lead.nights} ноч.` : formatDueDate(lead.items?.[0]?.startAt)}
+            </span>
+          </p>
+        )}
+        {(lead.adults > 0 || (lead.items && lead.items.some((i) => i.participants || i.adults))) && (
+          <p className="flex items-center gap-1.5">
+            <Users className="h-3.5 w-3.5 shrink-0" />
+            <span>{occupancyLabel(lead.adults, lead.children)}</span>
+          </p>
+        )}
+        {lead.roomType ? (
+          <p className="flex items-center gap-1.5">
+            <BedDouble className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{lead.roomType}</span>
+          </p>
+        ) : lead.items && lead.items.length > 0 ? (
+          <p className="flex items-center gap-1.5 truncate">
+            <Sparkles className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{lead.items.map((i) => i.name).join(", ")}</span>
+          </p>
+        ) : (
+          <p className="flex items-center gap-1.5">
+            <Tag className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">{lead.classification?.direction ? directionLabels[lead.classification.direction] : "Услуги"}</span>
+          </p>
+        )}
       </div>
 
       <div className="mt-3 flex items-center justify-between border-t border-border pt-2.5">

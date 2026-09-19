@@ -3,13 +3,19 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   CheckSquare,
+  CreditCard,
   FileText,
   MessageSquare,
+  PackageCheck,
   Pencil,
+  Plus,
   StickyNote,
   Phone,
   Mail,
   ChevronRight,
+  Sparkles,
+  Tag,
+  Trash2,
 } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { SectionCard } from "@/components/common/SectionCard";
@@ -55,11 +61,16 @@ import {
 import {
   PIPELINE_STAGES,
   TERMINAL_STAGES,
+  directionLabels,
+  directionTone,
   intentLabels,
   intentTone,
+  itemStatusLabels,
+  itemTypeLabels,
   lostReasonLabels,
   offerStatusLabels,
   offerStatusTone,
+  paymentMethodLabels,
   paymentStatusLabels,
   paymentStatusTone,
   sourceLabels,
@@ -69,7 +80,7 @@ import {
   taskStatusTone,
   taskTypeLabels,
 } from "@/lib/labels";
-import type { LeadStage } from "@/types/crm";
+import type { InterestDirection, LeadItemType, LeadStage } from "@/types/crm";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
@@ -91,11 +102,40 @@ const LeadDetail = () => {
     addLeadActivity,
     updateLead,
     createOfferFromLead,
+    recordPayment,
+    addLeadInterest,
+    removeLeadInterest,
+    addLeadItem,
+    removeLeadItem,
   } = useCrm();
 
   const [note, setNote] = useState("");
   const [editOpen, setEditOpen] = useState(false);
   const [pendingStage, setPendingStage] = useState<LeadStage | null>(null);
+
+  // Payment dialog state
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [paymentForm, setPaymentForm] = useState({
+    amount: 0,
+    method: "card" as "card" | "transfer" | "cash",
+    reference: "",
+    notes: "",
+  });
+
+  // Add Interest dialog state
+  const [interestOpen, setInterestOpen] = useState(false);
+  const [selectedDirection, setSelectedDirection] = useState<InterestDirection>("spa");
+
+  // Add Item dialog state
+  const [itemOpen, setItemOpen] = useState(false);
+  const [itemForm, setItemForm] = useState({
+    type: "spa" as LeadItemType,
+    name: "",
+    quantity: 1,
+    unitAmount: 0,
+    totalAmount: 0,
+    startAt: "",
+  });
 
   const lead = leadById(leadId);
   const guest = lead ? guestById(lead.guestId) : undefined;
@@ -179,6 +219,42 @@ const LeadDetail = () => {
     toast({ title: "Заметка добавлена" });
   };
 
+  const submitPayment = async () => {
+    if (!lead || paymentForm.amount <= 0) return;
+    await recordPayment(lead.id, paymentForm);
+    setPaymentOpen(false);
+    setPaymentForm({ amount: 0, method: "card", reference: "", notes: "" });
+    toast({
+      title: "Оплата зарегистрирована",
+      description: `${formatTenge(paymentForm.amount)} (${paymentMethodLabels[paymentForm.method]})`,
+    });
+  };
+
+  const submitInterest = async () => {
+    if (!lead || !selectedDirection) return;
+    await addLeadInterest(lead.id, { direction: selectedDirection });
+    setInterestOpen(false);
+    toast({ title: "Интерес добавлен" });
+  };
+
+  const submitItem = async () => {
+    if (!lead || !itemForm.name) return;
+    const qty = Number(itemForm.quantity) || 1;
+    const unitAmt = Number(itemForm.unitAmount) || 0;
+    const totalAmt = Number(itemForm.totalAmount) || qty * unitAmt;
+    await addLeadItem(lead.id, {
+      type: itemForm.type,
+      name: itemForm.name,
+      quantity: qty,
+      unitAmount: unitAmt,
+      totalAmount: totalAmt,
+      startAt: itemForm.startAt ? new Date(`${itemForm.startAt}T12:00:00`).toISOString() : undefined,
+    });
+    setItemOpen(false);
+    setItemForm({ type: "spa", name: "", quantity: 1, unitAmount: 0, totalAmount: 0, startAt: "" });
+    toast({ title: "Позиция добавлена в сделку" });
+  };
+
   const servicesAmount = lead.services.reduce((sum, line) => sum + line.amount, 0);
 
   return (
@@ -190,7 +266,7 @@ const LeadDetail = () => {
 
       <PageHeader
         title={`${guest.fullName} · ${lead.code}`}
-        description={`${property.name} · ${formatStayRange(lead.checkIn, lead.checkOut)} · ${lead.roomType}`}
+        description={`${property.name} · ${lead.checkIn ? `${formatStayRange(lead.checkIn, lead.checkOut)} · ` : ""}${lead.roomType || (lead.items?.[0]?.name ?? "Сделка")}`}
         meta={
           <>
             <StatusPill tone={stageTone[lead.stage]} withDot size="md">
@@ -204,6 +280,22 @@ const LeadDetail = () => {
         }
         actions={
           <>
+            <Button
+              variant="outline"
+              className="gap-2"
+              onClick={() => {
+                setPaymentForm({
+                  amount: Math.max(0, lead.totalAmount - (lead.paidAmount ?? 0)),
+                  method: "card",
+                  reference: "",
+                  notes: "",
+                });
+                setPaymentOpen(true);
+              }}
+            >
+              <CreditCard className="h-4 w-4" />
+              Оплата
+            </Button>
             <Button variant="outline" className="gap-2" onClick={openEdit}>
               <Pencil className="h-4 w-4" />
               Изменить
@@ -297,57 +389,184 @@ const LeadDetail = () => {
 
       <div className="grid gap-5 xl:grid-cols-3">
         <div className="space-y-5 xl:col-span-2">
-          <SectionCard title="Запрос на проживание">
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Field label="Объект">{property.name}</Field>
-              <Field label="Категория">{lead.roomType}</Field>
-              <Field label="Даты">{formatStayRange(lead.checkIn, lead.checkOut)}</Field>
-              <Field label="Заезд">{formatDateLong(lead.checkIn)}, 15:00</Field>
-              <Field label="Выезд">{formatDateLong(lead.checkOut)}, 12:00</Field>
-              <Field label="Ночей">{lead.nights}</Field>
-              <Field label="Гости">{occupancyLabel(lead.adults, lead.children)}</Field>
-              <Field label="Ответственный">{owner.name}</Field>
-              <Field label="Ссылка на бронирование">{lead.bookingReference ?? "—"}</Field>
+          <SectionCard
+            title="Интересы и направления"
+            description="Категории услуг в рамках данного обращения"
+            actions={
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setInterestOpen(true)}>
+                <Plus className="h-3.5 w-3.5" />
+                Добавить интерес
+              </Button>
+            }
+          >
+            <div className="flex flex-wrap gap-2">
+              {lead.interests && lead.interests.length > 0 ? (
+                lead.interests.map((interest) => (
+                  <div
+                    key={interest.id}
+                    className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-1.5 text-sm"
+                  >
+                    <Tag className="h-3.5 w-3.5 text-brand-600" />
+                    <span className="font-medium text-foreground">{directionLabels[interest.direction]}</span>
+                    {interest.isPrimary && (
+                      <span className="rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">
+                        Основной
+                      </span>
+                    )}
+                    {lead.interests.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removeLeadInterest(lead.id, interest.id)}
+                        className="text-muted-foreground hover:text-rose-600"
+                        title="Удалить интерес"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-1.5 text-sm">
+                  <Tag className="h-3.5 w-3.5 text-brand-600" />
+                  <span className="font-medium text-foreground">
+                    {lead.classification?.direction ? directionLabels[lead.classification.direction] : "Проживание"}
+                  </span>
+                  <span className="rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">
+                    Основной
+                  </span>
+                </div>
+              )}
             </div>
-            {lead.specialRequest && (
-              <p className="mt-4 rounded-xl bg-secondary/70 px-3 py-2 text-sm text-muted-foreground">
-                Особый запрос: {lead.specialRequest}
-              </p>
+          </SectionCard>
+
+          <SectionCard
+            title="Состав сделки"
+            description="Выбранные услуги, проживание и позиции сметы"
+            actions={
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setItemOpen(true)}>
+                <Plus className="h-3.5 w-3.5" />
+                Добавить услугу
+              </Button>
+            }
+          >
+            {lead.items && lead.items.length > 0 ? (
+              <div className="divide-y divide-border rounded-xl border border-border">
+                {lead.items.map((item) => (
+                  <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-foreground">{item.name}</p>
+                        <span className="rounded-md bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground">
+                          {itemTypeLabels[item.type] || item.type}
+                        </span>
+                        <StatusPill tone={item.status === "confirmed" ? "success" : item.status === "quoted" ? "brand" : "neutral"} size="sm">
+                          {itemStatusLabels[item.status] || item.status}
+                        </StatusPill>
+                      </div>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        Кол-во: {item.quantity}
+                        {item.startAt ? ` · Дата: ${formatDateLong(item.startAt)}` : ""}
+                        {item.participants ? ` · Участников: ${item.participants}` : ""}
+                        {item.nights ? ` · Ночей: ${item.nights}` : ""}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="font-semibold tabular-nums text-foreground">
+                        {item.totalAmount !== undefined ? formatTenge(item.totalAmount) : "По запросу"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeLeadItem(lead.id, item.id)}
+                        className="text-muted-foreground hover:text-rose-600"
+                        title="Удалить позицию"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                Позиции пока не добавлены в сделку. Нажмите «Добавить услугу», чтобы наполнить заказ.
+              </div>
             )}
           </SectionCard>
 
-          <SectionCard title="Коммерческие условия">
-            <div className="space-y-2 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">
-                  Проживание · {lead.roomType}, {lead.nights} ноч.
-                </span>
-                <span className="font-medium tabular-nums">{formatTenge(lead.roomAmount)}</span>
+          {(lead.roomType || lead.checkIn) && (
+            <SectionCard title="Параметры проживания">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <Field label="Объект">{property.name}</Field>
+                <Field label="Категория">{lead.roomType || "Не указана"}</Field>
+                <Field label="Даты">{formatStayRange(lead.checkIn, lead.checkOut)}</Field>
+                <Field label="Заезд">{lead.checkIn ? `${formatDateLong(lead.checkIn)}, 15:00` : "—"}</Field>
+                <Field label="Выезд">{lead.checkOut ? `${formatDateLong(lead.checkOut)}, 12:00` : "—"}</Field>
+                <Field label="Ночей">{lead.nights}</Field>
+                <Field label="Гости">{occupancyLabel(lead.adults, lead.children)}</Field>
+                <Field label="Ответственный">{owner.name}</Field>
+                <Field label="Бронирование">{lead.bookingReference ?? "—"}</Field>
               </div>
-              {lead.services.map((service) => (
-                <div key={service.name} className="flex items-center justify-between">
-                  <span className="text-muted-foreground">{service.name}</span>
-                  <span className="font-medium tabular-nums">{formatTenge(service.amount)}</span>
-                </div>
-              ))}
-              {lead.discount > 0 && (
-                <div className="flex items-center justify-between text-emerald-600">
-                  <span>Скидка</span>
-                  <span className="font-medium tabular-nums">−{formatTenge(lead.discount)}</span>
-                </div>
+              {lead.specialRequest && (
+                <p className="mt-4 rounded-xl bg-secondary/70 px-3 py-2 text-sm text-muted-foreground">
+                  Особый запрос: {lead.specialRequest}
+                </p>
               )}
-              <div className="flex items-center justify-between border-t border-border pt-2 text-base">
-                <span className="font-semibold">Итого</span>
+            </SectionCard>
+          )}
+
+          <SectionCard
+            title="Финансы и оплата"
+            actions={
+              <Button
+                size="sm"
+                className="gap-1.5"
+                onClick={() => {
+                  setPaymentForm({
+                    amount: Math.max(0, lead.totalAmount - (lead.paidAmount ?? 0)),
+                    method: "card",
+                    reference: "",
+                    notes: "",
+                  });
+                  setPaymentOpen(true);
+                }}
+              >
+                <CreditCard className="h-3.5 w-3.5" />
+                Внести оплату
+              </Button>
+            }
+          >
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center justify-between text-base">
+                <span className="font-semibold">Сумма сделки</span>
                 <span className="font-semibold tabular-nums">{formatTenge(lead.totalAmount)}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Предоплата 50%</span>
-                <span className="font-medium tabular-nums">{formatTenge(lead.deposit)}</span>
+                <span className="text-muted-foreground">Оплачено</span>
+                <span className="font-semibold tabular-nums text-emerald-600">{formatTenge(lead.paidAmount ?? 0)}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Доп. услуги</span>
-                <span className="font-medium tabular-nums">{formatTenge(servicesAmount)}</span>
+                <span className="text-muted-foreground">Остаток к оплате</span>
+                <span className="font-semibold tabular-nums text-foreground">
+                  {formatTenge(Math.max(0, lead.totalAmount - (lead.paidAmount ?? 0)))}
+                </span>
               </div>
+              <div className="flex items-center justify-between border-t border-border pt-2">
+                <span className="text-muted-foreground">Статус оплаты</span>
+                <StatusPill tone={paymentStatusTone[lead.paymentStatus]}>
+                  {paymentStatusLabels[lead.paymentStatus]}
+                </StatusPill>
+              </div>
+              {lead.paymentDueAt && (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Срок оплаты</span>
+                  <span className="font-medium">{formatDateLong(lead.paymentDueAt)}</span>
+                </div>
+              )}
+              {lead.paymentTerms && (
+                <p className="mt-2 rounded-lg bg-secondary/60 p-2.5 text-xs text-muted-foreground">
+                  {lead.paymentTerms}
+                </p>
+              )}
             </div>
           </SectionCard>
 
@@ -567,10 +786,14 @@ const LeadDetail = () => {
             <AlertDialogTitle>Перевести в «{pendingStage ? stageLabels[pendingStage] : ""}»?</AlertDialogTitle>
             <AlertDialogDescription>
               {pendingStage === "confirmed"
-                ? "Бронирование будет зафиксировано, гость получит подтверждение и памятку по заезду."
-                : pendingStage === "payment_pending"
-                  ? "Сделка перейдёт в ожидание предоплаты 50%."
-                  : "Стадия сделки будет изменена, событие попадёт в историю активности."}
+                ? "Сделка и услуги будут зафиксированы. Убедитесь, что условия согласованы и необходимая оплата внесена."
+                : pendingStage === "completed"
+                  ? "Услуги оказаны в полном объёме. Сделка успешно завершена."
+                  : pendingStage === "payment_pending"
+                    ? "Сделка перейдёт в ожидание оплаты счета."
+                    : pendingStage === "planning"
+                      ? "Комплектация: подбор услуг, расчет сметы и согласование."
+                      : "Стадия сделки будет изменена, событие попадёт в историю активности."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -579,6 +802,239 @@ const LeadDetail = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Payment Dialog */}
+      <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Внести оплату по сделке</DialogTitle>
+            <DialogDescription>
+              Зафиксируйте получение оплаты от гостя. Сделка не будет автоматически переведена в стадию «Подтверждено».
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label>Сумма к оплате, ₸</Label>
+              <Input
+                type="number"
+                step={1000}
+                value={paymentForm.amount}
+                onChange={(e) => setPaymentForm({ ...paymentForm, amount: Number(e.target.value) })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Способ оплаты</Label>
+              <Select
+                value={paymentForm.method}
+                onValueChange={(val: "card" | "transfer" | "cash") => setPaymentForm({ ...paymentForm, method: val })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="card">Банковская карта</SelectItem>
+                  <SelectItem value="transfer">Безналичный перевод / Kaspi</SelectItem>
+                  <SelectItem value="cash">Наличные</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Номер квитанции / транзакции</Label>
+              <Input
+                placeholder="INV-..."
+                value={paymentForm.reference}
+                onChange={(e) => setPaymentForm({ ...paymentForm, reference: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Примечание</Label>
+              <Input
+                placeholder="Предоплата, аванс за банный чан и т.д."
+                value={paymentForm.notes}
+                onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPaymentOpen(false)}>
+              Отмена
+            </Button>
+            <Button onClick={submitPayment} disabled={paymentForm.amount <= 0}>
+              Подтвердить оплату
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Interest Dialog */}
+      <Dialog open={interestOpen} onOpenChange={setInterestOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Добавить направление интереса</DialogTitle>
+            <DialogDescription>
+              Выберите услугу или интерес гостя для добавления в сделку.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <Label className="mb-2 block">Направление</Label>
+            <Select
+              value={selectedDirection}
+              onValueChange={(val) => setSelectedDirection(val as InterestDirection)}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(directionLabels).map(([dir, label]) => (
+                  <SelectItem key={dir} value={dir}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setInterestOpen(false)}>
+              Отмена
+            </Button>
+            <Button onClick={submitInterest}>
+              Добавить
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Item Dialog */}
+      <Dialog open={itemOpen} onOpenChange={setItemOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Добавить услугу / позицию в сделку</DialogTitle>
+            <DialogDescription>
+              Укажите параметры услуги или выберите из каталога.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            {data.serviceCatalog && data.serviceCatalog.length > 0 && (
+              <div className="space-y-1.5">
+                <Label>Быстрый выбор из каталога услуг</Label>
+                <Select
+                  onValueChange={(val) => {
+                    const catalogItem = data.serviceCatalog.find((c) => c.id === val);
+                    if (catalogItem) {
+                      setItemForm({
+                        type: (catalogItem.category as LeadItemType) || "activity",
+                        name: catalogItem.name,
+                        quantity: 1,
+                        unitAmount: catalogItem.defaultPrice || 0,
+                        totalAmount: catalogItem.defaultPrice || 0,
+                        startAt: itemForm.startAt,
+                      });
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Выберите услугу..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {data.serviceCatalog.map((cat) => (
+                      <SelectItem key={cat.id} value={cat.id}>
+                        {cat.name} ({formatTenge(cat.defaultPrice || 0)})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>Тип позиции</Label>
+                <Select
+                  value={itemForm.type}
+                  onValueChange={(val) => setItemForm({ ...itemForm, type: val as LeadItemType })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(itemTypeLabels).map(([type, label]) => (
+                      <SelectItem key={type} value={type}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Название услуги</Label>
+                <Input
+                  placeholder="Например: SPA визит, SOVA ужин"
+                  value={itemForm.name}
+                  onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label>Количество</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={itemForm.quantity}
+                  onChange={(e) => {
+                    const q = Number(e.target.value);
+                    setItemForm({
+                      ...itemForm,
+                      quantity: q,
+                      totalAmount: q * (itemForm.unitAmount || 0),
+                    });
+                  }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Цена за единицу, ₸</Label>
+                <Input
+                  type="number"
+                  step={500}
+                  value={itemForm.unitAmount}
+                  onChange={(e) => {
+                    const u = Number(e.target.value);
+                    setItemForm({
+                      ...itemForm,
+                      unitAmount: u,
+                      totalAmount: (itemForm.quantity || 1) * u,
+                    });
+                  }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Итого, ₸</Label>
+                <Input
+                  type="number"
+                  step={500}
+                  value={itemForm.totalAmount}
+                  onChange={(e) => setItemForm({ ...itemForm, totalAmount: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Дата оказания услуги</Label>
+              <Input
+                type="date"
+                value={itemForm.startAt}
+                onChange={(e) => setItemForm({ ...itemForm, startAt: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setItemOpen(false)}>
+              Отмена
+            </Button>
+            <Button onClick={submitItem} disabled={!itemForm.name.trim()}>
+              Добавить позицию
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

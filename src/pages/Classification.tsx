@@ -93,12 +93,21 @@ const Classification = () => {
     },
     {
       key: "direction",
-      header: "Направление",
-      render: (lead: Lead) => (
-        <StatusPill tone={directionTone[lead.classification.direction]}>
-          {directionLabels[lead.classification.direction]}
-        </StatusPill>
-      ),
+      header: "Направления",
+      render: (lead: Lead) => {
+        const interests = lead.interests && lead.interests.length > 0
+          ? lead.interests
+          : [{ direction: lead.classification.direction, isPrimary: true }];
+        return (
+          <div className="flex flex-wrap gap-1 max-w-[220px]">
+            {interests.map((int, i) => (
+              <StatusPill key={i} tone={directionTone[int.direction]} size="sm">
+                {directionLabels[int.direction] || int.direction}
+              </StatusPill>
+            ))}
+          </div>
+        );
+      },
     },
     {
       key: "quality",

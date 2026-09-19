@@ -37,6 +37,8 @@ beforeAll(async () => {
   for (const statement of migration.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
     await client.exec(statement);
   }
+  const migration1 = await readFile(new URL("../drizzle/0001_resort_customer_journey.sql", import.meta.url), "utf8");
+  await client.exec(migration1);
   db = drizzle(client, { schema: s }) as unknown as Database;
   await bootstrapDatabase(db, config);
   app = createApp(db, config);
@@ -66,7 +68,7 @@ describe("authentication and database bootstrap", () => {
     const adminAgent = request.agent(app);
     await adminAgent.post("/api/auth/login").send({ email: config.ADMIN_BOOTSTRAP_EMAIL, password: config.ADMIN_BOOTSTRAP_PASSWORD }).expect(200);
     const initial = await adminAgent.get("/api/crm/bootstrap").expect(200);
-    expect(initial.body.guests).toHaveLength(2);
+    expect(initial.body.guests).toHaveLength(3);
     expect(initial.body.conversations).toEqual([]);
     await adminAgent.patch("/api/crm/leads/lead_live_2").send({ roomType: "Делюкс — сохранено" }).expect(200);
     const reloaded = await adminAgent.get("/api/crm/bootstrap").expect(200);
@@ -78,6 +80,69 @@ describe("authentication and database bootstrap", () => {
     await bootstrapDatabase(db, config);
     const after = { organizations: await tableCount(s.organizations), users: await tableCount(s.appUsers), guests: await tableCount(s.guests) };
     expect(after).toEqual(before);
+  });
+});
+
+describe("manual resort leads", () => {
+  const admin = async () => {
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: config.ADMIN_BOOTSTRAP_EMAIL, password: config.ADMIN_BOOTSTRAP_PASSWORD }).expect(200);
+    return agent;
+  };
+
+  it("creates a new guest, multi-interest lead, items, history, activity, and task atomically", async () => {
+    const agent = await admin();
+    const created = await agent.post("/api/crm/leads").send({
+      guest: { fullName: "Тест Ресторан", email: "restaurant-test@example.com" }, propertyId: "les_borovoe", source: "walk_in",
+      stage: "planning", ownerId: "emp_admin", primaryDirection: "restaurant", directions: ["restaurant", "spa"],
+      items: [
+        { type: "restaurant", name: "SOVA", quantity: 1, participants: 6 },
+        { type: "spa", name: "SPA visit", quantity: 6, participants: 6, totalAmount: 72000 },
+      ],
+      nextActionLabel: "Подтвердить время", nextActionDueAt: "2026-10-20T10:00:00.000Z", note: "Создано тестом",
+    }).expect(201);
+    expect(created.body.lead).toMatchObject({ stage: "planning", totalAmount: 72000 });
+    expect(created.body.interests).toHaveLength(2);
+    expect(created.body.items.map((item: { type: string }) => item.type)).toEqual(["restaurant", "spa"]);
+    const leadId = created.body.lead.id;
+    expect(await db.select().from(s.leadStageHistory).where(eq(s.leadStageHistory.leadId, leadId))).toHaveLength(1);
+    expect(await db.select().from(s.leadActivities).where(eq(s.leadActivities.leadId, leadId))).toHaveLength(2);
+    expect(await db.select().from(s.tasks).where(eq(s.tasks.leadId, leadId))).toHaveLength(1);
+  });
+
+  it("creates for an existing guest, reports exact duplicate contact, and rolls back failed creation", async () => {
+    const agent = await admin();
+    const existing = await agent.post("/api/crm/leads").send({
+      guestId: "guest_live_1", propertyId: "les_borovoe", source: "returning", ownerId: "emp_admin",
+      primaryDirection: "activities", directions: ["activities"], items: [{ type: "horse_riding", name: "Конная прогулка", quantity: 2 }],
+    }).expect(201);
+    expect(existing.body.guest.id).toBe("guest_live_1");
+    await agent.post("/api/crm/leads").send({
+      guest: { fullName: "Дубликат", phone: "+7 (701) 555-10-10" }, propertyId: "les_borovoe", source: "phone",
+      ownerId: "emp_admin", primaryDirection: "spa",
+    }).expect(409);
+
+    const before = (await db.select().from(s.guests)).length;
+    await agent.post("/api/crm/leads").send({
+      guest: { fullName: "Rollback Guest", email: "rollback@example.com" }, propertyId: "les_borovoe", source: "email",
+      ownerId: "missing_employee", primaryDirection: "restaurant",
+    }).expect(500);
+    expect((await db.select().from(s.guests)).length).toBe(before);
+  });
+
+  it("supports item mutations and payments without changing the pipeline stage", async () => {
+    const agent = await admin();
+    const created = await agent.post("/api/crm/leads").send({
+      guestId: "guest_live_2", propertyId: "les_astana", source: "telegram", ownerId: "emp_admin",
+      primaryDirection: "spa", items: [{ type: "spa", name: "SPA", quantity: 1, totalAmount: 50000 }], totalAmount: 50000,
+    }).expect(201);
+    const leadId = created.body.lead.id;
+    const added = await agent.post(`/api/crm/leads/${leadId}/items`).send({ type: "massage", name: "Massage", quantity: 2 }).expect(201);
+    await agent.patch(`/api/crm/leads/${leadId}/items/${added.body.id}`).send({ status: "quoted", totalAmount: 30000 }).expect(200);
+    await agent.delete(`/api/crm/leads/${leadId}/items/${added.body.id}`).expect(200);
+    await agent.post(`/api/crm/leads/${leadId}/payments`).send({ amount: 20000, method: "card" }).expect(201);
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, leadId));
+    expect(lead).toMatchObject({ stage: "new", paidAmount: 20000, paymentStatus: "partial" });
   });
 });
 
