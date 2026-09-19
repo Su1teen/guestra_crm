@@ -1,4 +1,5 @@
 import { hash } from "bcryptjs";
+import { sql } from "drizzle-orm";
 import { pathToFileURL } from "node:url";
 import type { Database } from "./client.js";
 import { createDatabase } from "./client.js";
@@ -34,7 +35,7 @@ export const bootstrapDatabase = async (db: Database, config: Pick<AppConfig,
   await db.insert(s.appUsers).values([
     { id: "user_sales", email: config.SALES_BOOTSTRAP_EMAIL.toLowerCase(), passwordHash: salesHash, role: "sales", dataMode: "mock", employeeId: null, name: "Султан Аманжолов" },
     { id: "user_admin", email: config.ADMIN_BOOTSTRAP_EMAIL.toLowerCase(), passwordHash: adminHash, role: "admin", dataMode: "database", employeeId: "emp_admin", name: "Администратор Guestra" },
-  ]).onConflictDoNothing();
+  ]).onConflictDoUpdate({ target: s.appUsers.id, set: { email: sql`excluded.email`, passwordHash: sql`excluded.password_hash` } });
 
   await db.insert(s.guests).values([
     { id: "guest_live_1", organizationId: "org_les_live", firstName: "Аружан", lastName: "Серикова", fullName: "Аружан Серикова", phone: "+7 701 555 10 10", email: "aruzhan@example.com", language: "Русский", preferredPropertyId: "les_borovoe", lifetimeValue: 420000, lastStayDate: date("2026-08-18T12:00:00Z"), preferences: { language: "Русский", roomPreference: "Тихий домик", bedPreference: "King size", foodPreference: "Без свинины", specialRequests: ["Детская кроватка"] }, identityMetadata: { primaryPhone: "+7 701 555 10 10", emails: ["aruzhan@example.com"], citizenship: "Казахстан" } },
