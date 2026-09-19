@@ -9,6 +9,25 @@ import * as s from "./schema.js";
 const date = (value: string) => new Date(value).toISOString();
 
 /**
+ * Идемпотентный сид interest: на уже развёрнутых базах у лида может быть
+ * interest с тем же (leadId, direction), но другим id — onConflictDoNothing
+ * тогда молча пропускает вставку, и FK lead_items.interest_id падает.
+ * Возвращаем id реально существующей строки.
+ */
+const interestIdFor = async (
+  db: Database,
+  seed: { id: string; leadId: string; direction: string; isPrimary?: boolean; status?: string; details?: Record<string, unknown> },
+): Promise<string | null> => {
+  await db.insert(s.leadInterests).values(seed).onConflictDoNothing();
+  const [row] = await db
+    .select({ id: s.leadInterests.id })
+    .from(s.leadInterests)
+    .where(and(eq(s.leadInterests.leadId, seed.leadId), eq(s.leadInterests.direction, seed.direction)))
+    .limit(1);
+  return row?.id ?? null;
+};
+
+/**
  * Canonical demo credentials. Эти два аккаунта — демо-вход в CRM, поэтому
  * пароли зафиксированы и НЕ зависят от переменных окружения: иначе
  * SALES_BOOTSTRAP_PASSWORD на Railway мог молча перезаписать хэш и сломать
@@ -253,16 +272,22 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   
   await seedServiceCatalog(db);
 
-  await db.insert(s.leadInterests).values([
-    { id: "interest_live_1_acc", leadId: "lead_live_1", direction: "accommodation", isPrimary: true, status: "active" },
-    { id: "interest_live_1_spa", leadId: "lead_live_1", direction: "spa", isPrimary: false, status: "active" },
-    { id: "interest_live_1_rest", leadId: "lead_live_1", direction: "restaurant", isPrimary: false, status: "active" }
-  ]).onConflictDoNothing();
+  // Каталог может уже существовать с другими id (unique по property_id+code) —
+  // резолвим реальные id для ссылок из позиций и folio lines.
+  const catalogRows = await db
+    .select({ id: s.serviceCatalog.id, propertyId: s.serviceCatalog.propertyId, code: s.serviceCatalog.code })
+    .from(s.serviceCatalog);
+  const catalogIdByKey = new Map(catalogRows.map((row) => [`${row.propertyId}:${row.code}`, row.id]));
+  const catId = (propertyId: string, code: string) => catalogIdByKey.get(`${propertyId}:${code}`) ?? null;
+
+  const interestLive1Spa = await interestIdFor(db, { id: "interest_live_1_spa", leadId: "lead_live_1", direction: "spa", isPrimary: false, status: "active" });
+  const interestLive1Rest = await interestIdFor(db, { id: "interest_live_1_rest", leadId: "lead_live_1", direction: "restaurant", isPrimary: false, status: "active" });
+  await interestIdFor(db, { id: "interest_live_1_acc", leadId: "lead_live_1", direction: "accommodation", isPrimary: true, status: "active" });
 
   await db.insert(s.leadItems).values([
-    { id: "item_live_1_sky", leadId: "lead_live_1", type: "accommodation", name: "Sky House", status: "quoted", quantity: 2, startAt: date("2026-10-10T12:00:00Z"), endAt: date("2026-10-12T12:00:00Z"), adults: 4, children: 0, roomType: "Sky House", nights: 2, unitAmount: 85000, totalAmount: 340000, catalogItemId: "svc_acc_sky_house", pricingModeSnapshot: "per_night_per_unit", catalogDefaultPrice: 85000 },
-    { id: "item_live_1_spa", leadId: "lead_live_1", interestId: "interest_live_1_spa", type: "spa", name: "SPA визит", status: "quoted", quantity: 4, participants: 4, unitAmount: 12000, totalAmount: 48000, catalogItemId: "svc_spa_visit", pricingModeSnapshot: "per_person", catalogDefaultPrice: 12000 },
-    { id: "item_live_1_rest", leadId: "lead_live_1", interestId: "interest_live_1_rest", type: "restaurant", name: "SOVA", status: "interest", quantity: 1, participants: 4, catalogItemId: "svc_restaurant_sova", pricingModeSnapshot: "per_person", catalogDefaultPrice: 15000 }
+    { id: "item_live_1_sky", leadId: "lead_live_1", type: "accommodation", name: "Sky House", status: "quoted", quantity: 2, startAt: date("2026-10-10T12:00:00Z"), endAt: date("2026-10-12T12:00:00Z"), adults: 4, children: 0, roomType: "Sky House", nights: 2, unitAmount: 85000, totalAmount: 340000, catalogItemId: catId("les_borovoe", "acc_sky_house"), pricingModeSnapshot: "per_night_per_unit", catalogDefaultPrice: 85000 },
+    { id: "item_live_1_spa", leadId: "lead_live_1", interestId: interestLive1Spa, type: "spa", name: "SPA визит", status: "quoted", quantity: 4, participants: 4, unitAmount: 12000, totalAmount: 48000, catalogItemId: catId("les_borovoe", "spa_visit"), pricingModeSnapshot: "per_person", catalogDefaultPrice: 12000 },
+    { id: "item_live_1_rest", leadId: "lead_live_1", interestId: interestLive1Rest, type: "restaurant", name: "SOVA", status: "interest", quantity: 1, participants: 4, catalogItemId: catId("les_borovoe", "restaurant_sova"), pricingModeSnapshot: "per_person", catalogDefaultPrice: 15000 }
   ]).onConflictDoNothing();
 
   await db.insert(s.guests).values({
@@ -279,24 +304,24 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
     leadId: "lead_live_3", direction: "activities", quality: "target", temperature: "warm", probability: 45, recommendedAction: "Уточнить дату и количество участников"
   }).onConflictDoNothing();
 
-  await db.insert(s.leadInterests).values({
-    id: "interest_live_3_act", leadId: "lead_live_3", direction: "activities", isPrimary: true, status: "active"
-  }).onConflictDoNothing();
+  const interestLive3Act = await interestIdFor(db, {
+    id: "interest_live_3_act", leadId: "lead_live_3", direction: "activities", isPrimary: true, status: "active",
+  });
 
   await db.insert(s.leadItems).values([
-    { id: "item_live_3_horse", leadId: "lead_live_3", interestId: "interest_live_3_act", type: "horse_riding", name: "Конная прогулка", status: "selected", quantity: 4, participants: 4, unitAmount: 10000, totalAmount: 40000, catalogItemId: "svc_horse_riding", pricingModeSnapshot: "per_person", catalogDefaultPrice: 10000 },
-    { id: "item_live_3_atv", leadId: "lead_live_3", interestId: "interest_live_3_act", type: "atv", name: "Квадроциклы", status: "selected", quantity: 2, participants: 4, unitAmount: 15000, totalAmount: 30000, catalogItemId: "svc_atv", pricingModeSnapshot: "per_unit", catalogDefaultPrice: 15000 }
+    { id: "item_live_3_horse", leadId: "lead_live_3", interestId: interestLive3Act, type: "horse_riding", name: "Конная прогулка", status: "selected", quantity: 4, participants: 4, unitAmount: 10000, totalAmount: 40000, catalogItemId: catId("les_borovoe", "act_horse"), pricingModeSnapshot: "per_person", catalogDefaultPrice: 10000 },
+    { id: "item_live_3_atv", leadId: "lead_live_3", interestId: interestLive3Act, type: "atv", name: "Квадроциклы", status: "selected", quantity: 2, participants: 4, unitAmount: 15000, totalAmount: 30000, catalogItemId: catId("les_borovoe", "act_atv"), pricingModeSnapshot: "per_unit", catalogDefaultPrice: 15000 }
   ]).onConflictDoNothing();
 
   await db.insert(s.leadStageHistory).values({ id: "lsh_live_3_planning", leadId: "lead_live_3", stage: "planning", employeeId: "emp_live_aigerim", changedAt: date("2026-09-18T10:00:00Z") }).onConflictDoNothing();
   await db.insert(s.leadActivities).values({ id: "la_live_3", leadId: "lead_live_3", employeeId: "emp_live_aigerim", type: "lead_created", title: "Лид создан", occurredAt: date("2026-09-18T10:00:00Z") }).onConflictDoNothing();
 
-  await db.insert(s.leadInterests).values({
+  const interestLive2Event = await interestIdFor(db, {
     id: "interest_live_2_event", leadId: "lead_live_2", direction: "corporate_event", isPrimary: true, status: "active",
     details: { eventType: "corporate", date: "2026-11-05", guests: 1 },
-  }).onConflictDoNothing();
+  });
   await db.insert(s.leadItems).values({
-    id: "item_live_2_lux", leadId: "lead_live_2", interestId: "interest_live_2_event", type: "accommodation", name: "Люкс", status: "selected", quantity: 1, startAt: date("2026-11-05T12:00:00Z"), endAt: date("2026-11-06T12:00:00Z"), adults: 1, roomType: "Люкс", nights: 1, unitAmount: 165000, totalAmount: 165000, catalogItemId: "svca_acc_lux", pricingModeSnapshot: "per_night_per_unit", catalogDefaultPrice: 165000,
+    id: "item_live_2_lux", leadId: "lead_live_2", interestId: interestLive2Event, type: "accommodation", name: "Люкс", status: "selected", quantity: 1, startAt: date("2026-11-05T12:00:00Z"), endAt: date("2026-11-06T12:00:00Z"), adults: 1, roomType: "Люкс", nights: 1, unitAmount: 165000, totalAmount: 165000, catalogItemId: catId("les_astana", "acc_lux"), pricingModeSnapshot: "per_night_per_unit", catalogDefaultPrice: 165000,
   }).onConflictDoNothing();
 
   // Folio-сущности для сидовых лидов (idempotente — миграция 0002 уже делает
@@ -305,12 +330,12 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
     { id: "folio_lead_live_3", code: "F-G-LIVE-003", leadId: "lead_live_3", guestId: "guest_live_3", propertyId: "les_borovoe", status: "open", subtotal: 70000, totalAmount: 70000, depositRequired: 0, paidAmount: 0, balance: 70000 },
   ]).onConflictDoNothing();
   await db.insert(s.folioLines).values([
-    { id: "fline_item_live_1_sky", folioId: "folio_lead_live_1", leadItemId: "item_live_1_sky", catalogItemId: "svc_acc_sky_house", category: "accommodation", description: "Sky House · 2 ночи × 2 ед.", quantity: 4, unit: "night", unitPrice: 85000, lineTotal: 340000, metadata: { units: 2, nights: 2 } },
-    { id: "fline_item_live_1_spa", folioId: "folio_lead_live_1", leadItemId: "item_live_1_spa", catalogItemId: "svc_spa_visit", category: "spa", description: "SPA визит", quantity: 4, unit: "person", unitPrice: 12000, lineTotal: 48000, metadata: { participants: 4 } },
-    { id: "fline_item_live_1_rest", folioId: "folio_lead_live_1", leadItemId: "item_live_1_rest", catalogItemId: "svc_restaurant_sova", category: "restaurant", description: "Ресторан SOVA", quantity: 4, unit: "person", unitPrice: 0, lineTotal: 0, metadata: { participants: 4 } },
-    { id: "fline_item_live_2_lux", folioId: "folio_lead_live_2", leadItemId: "item_live_2_lux", catalogItemId: "svca_acc_lux", category: "accommodation", description: "Люкс · 1 ночь", quantity: 1, unit: "night", unitPrice: 165000, lineTotal: 165000, metadata: { units: 1, nights: 1 } },
-    { id: "fline_item_live_3_horse", folioId: "folio_lead_live_3", leadItemId: "item_live_3_horse", catalogItemId: "svc_horse_riding", category: "activities", description: "Конная прогулка", quantity: 4, unit: "person", unitPrice: 10000, lineTotal: 40000, metadata: { participants: 4 } },
-    { id: "fline_item_live_3_atv", folioId: "folio_lead_live_3", leadItemId: "item_live_3_atv", catalogItemId: "svc_atv", category: "activities", description: "Квадроциклы", quantity: 2, unit: "unit", unitPrice: 15000, lineTotal: 30000, metadata: { units: 2 } },
+    { id: "fline_item_live_1_sky", folioId: "folio_lead_live_1", leadItemId: "item_live_1_sky", catalogItemId: catId("les_borovoe", "acc_sky_house"), category: "accommodation", description: "Sky House · 2 ночи × 2 ед.", quantity: 4, unit: "night", unitPrice: 85000, lineTotal: 340000, metadata: { units: 2, nights: 2 } },
+    { id: "fline_item_live_1_spa", folioId: "folio_lead_live_1", leadItemId: "item_live_1_spa", catalogItemId: catId("les_borovoe", "spa_visit"), category: "spa", description: "SPA визит", quantity: 4, unit: "person", unitPrice: 12000, lineTotal: 48000, metadata: { participants: 4 } },
+    { id: "fline_item_live_1_rest", folioId: "folio_lead_live_1", leadItemId: "item_live_1_rest", catalogItemId: catId("les_borovoe", "restaurant_sova"), category: "restaurant", description: "Ресторан SOVA", quantity: 4, unit: "person", unitPrice: 0, lineTotal: 0, metadata: { participants: 4 } },
+    { id: "fline_item_live_2_lux", folioId: "folio_lead_live_2", leadItemId: "item_live_2_lux", catalogItemId: catId("les_astana", "acc_lux"), category: "accommodation", description: "Люкс · 1 ночь", quantity: 1, unit: "night", unitPrice: 165000, lineTotal: 165000, metadata: { units: 1, nights: 1 } },
+    { id: "fline_item_live_3_horse", folioId: "folio_lead_live_3", leadItemId: "item_live_3_horse", catalogItemId: catId("les_borovoe", "act_horse"), category: "activities", description: "Конная прогулка", quantity: 4, unit: "person", unitPrice: 10000, lineTotal: 40000, metadata: { participants: 4 } },
+    { id: "fline_item_live_3_atv", folioId: "folio_lead_live_3", leadItemId: "item_live_3_atv", catalogItemId: catId("les_borovoe", "act_atv"), category: "activities", description: "Квадроциклы", quantity: 2, unit: "unit", unitPrice: 15000, lineTotal: 30000, metadata: { units: 2 } },
   ]).onConflictDoNothing();
 
   await db.insert(s.salesMetricSnapshots).values([
