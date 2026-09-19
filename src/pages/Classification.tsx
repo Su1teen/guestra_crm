@@ -93,7 +93,7 @@ const Classification = () => {
     },
     {
       key: "direction",
-      header: "Направления",
+      header: "Категории услуг",
       render: (lead: Lead) => {
         const interests = lead.interests && lead.interests.length > 0
           ? lead.interests
@@ -158,7 +158,7 @@ const Classification = () => {
     <div className="space-y-5">
       <PageHeader
         title="Классификация обращений"
-        description="Три измерения: направление интереса, качество и температура. Объяснимая классификация с возможностью ручной корректировки"
+        description="Три измерения: категория услуг, качество и температура. Объяснимая классификация с возможностью ручной корректировки"
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -168,7 +168,7 @@ const Classification = () => {
         <StatCard label="Горячие" value={String(hotCount)} />
       </div>
 
-      <SectionCard title="Обращения" description="Фильтруйте по качеству, направлению и температуре">
+      <SectionCard title="Обращения" description="Фильтруйте по качеству, категории услуг и температуре">
         <div className="flex flex-wrap items-center gap-2">
           <SearchInput value={search} onChange={setSearch} placeholder="Поиск по коду, имени, телефону" className="min-w-[220px]" />
           <FilterSelect
@@ -184,10 +184,10 @@ const Classification = () => {
             value={directionFilter}
             onChange={(value) => setDirectionFilter(value as InterestDirection | "all")}
             options={[
-              { value: "all", label: "Все направления" },
+              { value: "all", label: "Все категории" },
               ...Object.entries(directionLabels).map(([value, label]) => ({ value, label })),
             ]}
-            ariaLabel="Направление"
+            ariaLabel="Категория услуг"
           />
           <FilterSelect
             value={tempFilter}

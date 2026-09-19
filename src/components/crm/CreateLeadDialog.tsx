@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Search, ChevronRight, ChevronLeft, Check } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,447 +15,252 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useCrm } from "@/store/crm-store";
-import { directionLabels } from "@/lib/labels";
-import type { Guest, InterestDirection, LeadItemType, LeadSource, LeadStage } from "@/types/crm";
+import { sourceLabels } from "@/lib/labels";
+import { SERVICE_GROUPS } from "@shared/service-groups";
+import type { Guest, InterestDirection, LeadSource } from "@/types/crm";
 
-const DIRECTIONS: readonly InterestDirection[] = [
-  "accommodation",
-  "restaurant",
-  "spa",
-  "massage",
-  "bathhouse",
-  "karaoke",
-  "activities",
-  "transfer",
-  "corporate_event",
-  "wedding_or_banquet",
-  "other",
-] as const;
+const SOURCES: LeadSource[] = [
+  "whatsapp",
+  "telegram",
+  "phone",
+  "website",
+  "instagram",
+  "email",
+  "walk_in",
+  "returning",
+  "corporate",
+  "referral",
+];
 
-const ITEM_TYPE_BY_DIRECTION: Partial<Record<InterestDirection, LeadItemType>> = {
-  accommodation: "accommodation",
-  restaurant: "restaurant",
-  spa: "spa",
-  massage: "massage",
-  bathhouse: "bathhouse",
-  karaoke: "karaoke",
-  activities: "activity",
-  transfer: "transfer",
-  corporate_event: "corporate_event",
-  wedding_or_banquet: "wedding_or_banquet",
-  other: "other",
-};
+/** Коммерческие категории услуг для выбора на создании (без transfer и служебных). */
+const CATEGORY_OPTIONS = SERVICE_GROUPS.filter((group) => group.code !== "other");
 
 export const CreateLeadDialog = () => {
   const navigate = useNavigate();
-  const { data, createLead } = useCrm();
+  const { data, createLead, currentEmployee } = useCrm();
   const [open, setOpen] = useState(false);
-  const [step, setStep] = useState(1);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Step 1
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedGuest, setSelectedGuest] = useState<Guest | null>(null);
-  const [guestForm, setGuestForm] = useState<{
-    fullName: string;
-    phone: string;
-    email: string;
-    company: string;
-    language: string;
-    source: LeadSource;
-    propertyId: string;
-  }>({
-    fullName: "",
-    phone: "",
-    email: "",
-    company: "",
-    language: "Русский",
-    source: "email",
-    propertyId: data.properties[0]?.id || "",
-  });
+  const [guestForm, setGuestForm] = useState({ fullName: "", phone: "", email: "", company: "" });
+  const [propertyId, setPropertyId] = useState<string>(data.properties[0]?.id || "");
+  const [source, setSource] = useState<LeadSource>("whatsapp");
+  const [ownerId, setOwnerId] = useState<string>(currentEmployee.id);
+  const [categories, setCategories] = useState<InterestDirection[]>([]);
+  const [requestText, setRequestText] = useState("");
 
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const query = searchQuery.toLowerCase();
-    return data.guests.filter((g) =>
-      g.fullName.toLowerCase().includes(query) ||
-      g.phone?.toLowerCase().includes(query) ||
-      g.email?.toLowerCase().includes(query)
-    ).slice(0, 5);
+    return data.guests
+      .filter(
+        (guest) =>
+          guest.fullName.toLowerCase().includes(query) ||
+          guest.phone?.toLowerCase().includes(query) ||
+          guest.email?.toLowerCase().includes(query),
+      )
+      .slice(0, 5);
   }, [searchQuery, data.guests]);
 
-  // Step 2
-  const [interests, setInterests] = useState<InterestDirection[]>([]);
-  const [primaryInterest, setPrimaryInterest] = useState<InterestDirection | "">("");
-
-  // Step 3
-  const [detailsForm, setDetailsForm] = useState<Record<string, string>>({});
-
-  // Step 4
-  const [crmForm, setCrmForm] = useState<{
-    stage: LeadStage;
-    ownerId: string;
-    note: string;
-  }>({
-    stage: "new",
-    ownerId: data.employees[0]?.id || "",
-    note: "",
-  });
-
-  const handleNext = () => setStep((s) => s + 1);
-  const handleBack = () => setStep((s) => s - 1);
-
-  const handleSubmit = async () => {
-    // Collect data
-    const input: Parameters<typeof createLead>[0] = {
-      propertyId: guestForm.propertyId,
-      source: guestForm.source,
-      stage: crmForm.stage,
-      primaryDirection: (primaryInterest || interests[0] || "other") as InterestDirection,
-      directions: interests,
-      interests: interests.map(dir => ({ direction: dir, isPrimary: dir === primaryInterest })),
-      ownerId: crmForm.ownerId,
-      note: crmForm.note,
-    };
-
-    if (selectedGuest) {
-      input.guestId = selectedGuest.id;
-    } else {
-      input.guest = {
-        fullName: guestForm.fullName,
-        phone: guestForm.phone,
-        email: guestForm.email,
-        company: guestForm.company,
-        language: guestForm.language,
-      };
-    }
-
-    const items: NonNullable<Parameters<typeof createLead>[0]["items"]> = [];
-    if (interests.includes("accommodation")) {
-      const roomType = detailsForm.roomType || undefined;
-      const checkIn = detailsForm.checkIn ? new Date(`${detailsForm.checkIn}T15:00:00`).toISOString() : undefined;
-      const checkOut = detailsForm.checkOut ? new Date(`${detailsForm.checkOut}T12:00:00`).toISOString() : undefined;
-      items.push({
-        type: "accommodation",
-        name: roomType || "Проживание",
-        roomType: roomType,
-        startAt: checkIn,
-        endAt: checkOut,
-        adults: detailsForm.adults ? Number(detailsForm.adults) : undefined,
-        children: detailsForm.children ? Number(detailsForm.children) : undefined,
-        quantity: detailsForm.accommodation_quantity ? Number(detailsForm.accommodation_quantity) : 1,
-        totalAmount: detailsForm.accommodation_amount ? Number(detailsForm.accommodation_amount) : undefined,
-      });
-      input.roomType = roomType;
-      input.checkIn = checkIn;
-      input.checkOut = checkOut;
-      input.adults = items[0].adults;
-      input.children = items[0].children;
-    }
-    DIRECTIONS.filter((direction) => direction !== "accommodation").forEach((direction) => {
-      if (interests.includes(direction)) {
-        items.push({
-          type: ITEM_TYPE_BY_DIRECTION[direction] || "other",
-          name: detailsForm[`${direction}_name`] || directionLabels[direction],
-          startAt: detailsForm[`${direction}_date`] ? new Date(detailsForm[`${direction}_date`]).toISOString() : undefined,
-          participants: detailsForm[`${direction}_guests`] ? Number(detailsForm[`${direction}_guests`]) : undefined,
-          quantity: detailsForm[`${direction}_quantity`] ? Number(detailsForm[`${direction}_quantity`]) : 1,
-          totalAmount: detailsForm[`${direction}_amount`] ? Number(detailsForm[`${direction}_amount`]) : undefined,
-        });
-      }
-    });
-    input.items = items;
-
-    const lead = await createLead(input);
-    setOpen(false);
-    navigate(`/leads/${lead.id}`);
+  const toggleCategory = (direction: InterestDirection) => {
+    setCategories((current) =>
+      current.includes(direction) ? current.filter((item) => item !== direction) : [...current, direction],
+    );
   };
 
+  const canSubmit = Boolean(selectedGuest || guestForm.fullName.trim()) && Boolean(propertyId) && !submitting;
+
   const resetState = () => {
-    setStep(1);
     setSearchQuery("");
     setSelectedGuest(null);
-    setGuestForm({ ...guestForm, fullName: "", phone: "", email: "", company: "" });
-    setInterests([]);
-    setPrimaryInterest("");
-    setDetailsForm({});
-    setCrmForm({ ...crmForm, note: "" });
+    setGuestForm({ fullName: "", phone: "", email: "", company: "" });
+    setCategories([]);
+    setRequestText("");
+    setError(null);
+    setSubmitting(false);
+  };
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const lead = await createLead({
+        guestId: selectedGuest?.id,
+        guest: selectedGuest
+          ? undefined
+          : {
+              fullName: guestForm.fullName.trim(),
+              phone: guestForm.phone || undefined,
+              email: guestForm.email || undefined,
+              company: guestForm.company || undefined,
+            },
+        propertyId,
+        source,
+        ownerId,
+        serviceCategories: categories.length ? categories : undefined,
+        requestText: requestText.trim() || undefined,
+      });
+      setOpen(false);
+      resetState();
+      navigate(`/leads/${lead.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Не удалось создать обращение");
+      setSubmitting(false);
+    }
   };
 
   return (
-    <Dialog open={open} onOpenChange={(val) => { setOpen(val); if (!val) resetState(); }}>
+    <Dialog open={open} onOpenChange={(value) => { setOpen(value); if (!value) resetState(); }}>
       <DialogTrigger asChild>
         <Button className="gap-2">
           <Plus className="h-4 w-4" />
-          Добавить лида
+          Новое обращение
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Новое обращение (Шаг {step} из 4)</DialogTitle>
+          <DialogTitle>Новое обращение</DialogTitle>
           <DialogDescription>
-            {step === 1 && "Укажите данные гостя и источник"}
-            {step === 2 && "Выберите интересующие направления"}
-            {step === 3 && "Уточните детали запроса"}
-            {step === 4 && "Настройте параметры сделки"}
+            Достаточно гостя, объекта и источника — детали и услуги собираются на следующих этапах.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="py-2">
-          {step === 1 && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>Поиск существующего гостя</Label>
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input 
-                    placeholder="Телефон, email или имя" 
-                    className="pl-9" 
-                    value={searchQuery}
-                    onChange={(e) => { setSearchQuery(e.target.value); setSelectedGuest(null); }}
-                  />
-                </div>
-                {searchResults.length > 0 && !selectedGuest && (
-                  <div className="rounded-md border bg-card p-2 shadow-sm space-y-1">
-                    {searchResults.map(g => (
-                      <button
-                        key={g.id}
-                        type="button"
-                        className="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm hover:bg-secondary text-left"
-                        onClick={() => { setSelectedGuest(g); setSearchQuery(""); }}
-                      >
-                        <span>{g.fullName}</span>
-                        <span className="text-xs text-muted-foreground">{g.phone}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {selectedGuest && (
-                  <div className="flex items-center justify-between rounded-md border border-brand-200 bg-brand-50 p-2 text-sm">
-                    <span>Выбран: <strong>{selectedGuest.fullName}</strong> ({selectedGuest.phone})</span>
-                    <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setSelectedGuest(null)}>Сбросить</Button>
-                  </div>
-                )}
-              </div>
-              
-              {!selectedGuest && (
-                <div className="grid gap-4 sm:grid-cols-2 pt-2 border-t">
-                  <div className="space-y-1.5 sm:col-span-2">
-                    <Label>ФИО гостя *</Label>
-                    <Input value={guestForm.fullName} onChange={(e) => setGuestForm({ ...guestForm, fullName: e.target.value })} />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Телефон</Label>
-                    <Input value={guestForm.phone} onChange={(e) => setGuestForm({ ...guestForm, phone: e.target.value })} />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Email</Label>
-                    <Input type="email" value={guestForm.email} onChange={(e) => setGuestForm({ ...guestForm, email: e.target.value })} />
-                  </div>
-                </div>
-              )}
-
-              <div className="grid gap-4 sm:grid-cols-2 pt-2 border-t">
-                <div className="space-y-1.5">
-                  <Label>Объект</Label>
-                  <Select value={guestForm.propertyId} onValueChange={(v) => setGuestForm({ ...guestForm, propertyId: v })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {data.properties.map(p => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Источник</Label>
-                  <Select value={guestForm.source} onValueChange={(v) => setGuestForm({ ...guestForm, source: v as LeadSource })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="email">Email</SelectItem>
-                      <SelectItem value="walk_in">Визит</SelectItem>
-                      <SelectItem value="whatsapp">WhatsApp</SelectItem>
-                      <SelectItem value="telegram">Telegram</SelectItem>
-                      <SelectItem value="website">Сайт</SelectItem>
-                      <SelectItem value="instagram">Instagram</SelectItem>
-                      <SelectItem value="phone">Телефон</SelectItem>
-                      <SelectItem value="returning">Повторный гость</SelectItem>
-                      <SelectItem value="corporate">Корпоративный клиент</SelectItem>
-                      <SelectItem value="referral">Рекомендация</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
+        <div className="space-y-4 py-2 max-h-[60vh] overflow-y-auto pr-1">
+          <div className="space-y-2">
+            <Label>Гость *</Label>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Телефон, email или имя"
+                className="pl-9"
+                value={searchQuery}
+                onChange={(event) => { setSearchQuery(event.target.value); setSelectedGuest(null); }}
+              />
             </div>
-          )}
-
-          {step === 2 && (
-            <div className="space-y-4">
-              <Label>Выберите направления (можно несколько)</Label>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {DIRECTIONS.map(dir => (
-                  <div key={dir} className="flex items-center space-x-2">
-                    <Checkbox 
-                      id={`dir-${dir}`} 
-                      checked={interests.includes(dir)}
-                      onCheckedChange={(checked) => {
-                        if (checked) {
-                          setInterests([...interests, dir]);
-                          if (!primaryInterest) setPrimaryInterest(dir);
-                        } else {
-                          setInterests(interests.filter(i => i !== dir));
-                          if (primaryInterest === dir) setPrimaryInterest(interests.filter(i => i !== dir)[0] || "");
-                        }
-                      }}
-                    />
-                    <label htmlFor={`dir-${dir}`} className="text-sm font-medium leading-none cursor-pointer">
-                      {directionLabels[dir as keyof typeof directionLabels] || dir}
-                    </label>
-                  </div>
+            {searchResults.length > 0 && !selectedGuest && (
+              <div className="rounded-md border bg-card p-2 shadow-sm space-y-1">
+                {searchResults.map((guest) => (
+                  <button
+                    key={guest.id}
+                    type="button"
+                    className="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm hover:bg-secondary text-left"
+                    onClick={() => { setSelectedGuest(guest); setSearchQuery(""); }}
+                  >
+                    <span>{guest.fullName}</span>
+                    <span className="text-xs text-muted-foreground">{guest.phone}</span>
+                  </button>
                 ))}
               </div>
-
-              {interests.length > 1 && (
-                <div className="pt-4 border-t space-y-2">
-                  <Label>Основное направление</Label>
-                  <RadioGroup value={primaryInterest} onValueChange={(value) => setPrimaryInterest(value as InterestDirection)} className="flex flex-wrap gap-4">
-                    {interests.map(dir => (
-                      <div key={`primary-${dir}`} className="flex items-center space-x-2">
-                        <RadioGroupItem value={dir} id={`primary-${dir}`} />
-                        <label htmlFor={`primary-${dir}`} className="text-sm cursor-pointer">
-                          {directionLabels[dir as keyof typeof directionLabels] || dir}
-                        </label>
-                      </div>
-                    ))}
-                  </RadioGroup>
-                </div>
-              )}
-            </div>
-          )}
-
-          {step === 3 && (
-            <div className="space-y-6 max-h-[50vh] overflow-y-auto pr-2">
-              {interests.includes("accommodation") && (
-                <div className="space-y-3 rounded-lg border p-3">
-                  <h4 className="font-medium text-sm">Проживание</h4>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-1">
-                      <Label className="text-xs">Заезд</Label>
-                      <Input type="date" value={detailsForm.checkIn || ""} onChange={e => setDetailsForm({ ...detailsForm, checkIn: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Выезд</Label>
-                      <Input type="date" value={detailsForm.checkOut || ""} onChange={e => setDetailsForm({ ...detailsForm, checkOut: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Категория</Label>
-                      <Input value={detailsForm.roomType || ""} onChange={e => setDetailsForm({ ...detailsForm, roomType: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Количество единиц</Label>
-                      <Input type="number" min={1} value={detailsForm.accommodation_quantity || ""} onChange={e => setDetailsForm({ ...detailsForm, accommodation_quantity: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Взрослые</Label>
-                      <Input type="number" min={1} value={detailsForm.adults || ""} onChange={e => setDetailsForm({ ...detailsForm, adults: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Дети</Label>
-                      <Input type="number" min={0} value={detailsForm.children || ""} onChange={e => setDetailsForm({ ...detailsForm, children: e.target.value })} />
-                    </div>
-                    <div className="space-y-1 sm:col-span-2">
-                      <Label className="text-xs">Сумма, ₸</Label>
-                      <Input type="number" min={0} value={detailsForm.accommodation_amount || ""} onChange={e => setDetailsForm({ ...detailsForm, accommodation_amount: e.target.value })} />
-                    </div>
-                  </div>
-                </div>
-              )}
-              
-              {DIRECTIONS.filter((direction) => direction !== "accommodation").map((dir) => interests.includes(dir) && (
-                <div key={dir} className="space-y-3 rounded-lg border p-3">
-                  <h4 className="font-medium text-sm">{directionLabels[dir]}</h4>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-1">
-                      <Label className="text-xs">Услуга / формат</Label>
-                      <Input value={detailsForm[`${dir}_name`] || ""} onChange={e => setDetailsForm({ ...detailsForm, [`${dir}_name`]: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Дата и время</Label>
-                      <Input type="datetime-local" value={detailsForm[`${dir}_date`] || ""} onChange={e => setDetailsForm({ ...detailsForm, [`${dir}_date`]: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Гостей / участников</Label>
-                      <Input type="number" min={1} value={detailsForm[`${dir}_guests`] || ""} onChange={e => setDetailsForm({ ...detailsForm, [`${dir}_guests`]: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Сумма, ₸</Label>
-                      <Input type="number" min={0} value={detailsForm[`${dir}_amount`] || ""} onChange={e => setDetailsForm({ ...detailsForm, [`${dir}_amount`]: e.target.value })} />
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-              {interests.length === 0 && (
-                <p className="text-sm text-muted-foreground">Направления не выбраны, детали не требуются.</p>
-              )}
-            </div>
-          )}
-
-          {step === 4 && (
-            <div className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label>Начальная стадия</Label>
-                  <Select value={crmForm.stage} onValueChange={(v) => setCrmForm({ ...crmForm, stage: v as LeadStage })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="new">Новый лид</SelectItem>
-                      <SelectItem value="qualified">Квалифицирован</SelectItem>
-                      <SelectItem value="planning">Комплектация</SelectItem>
-                    </SelectContent>
-                  </Select>
+            )}
+            {selectedGuest ? (
+              <div className="flex items-center justify-between rounded-md border border-brand-200 bg-brand-50 p-2 text-sm">
+                <span>
+                  Выбран: <strong>{selectedGuest.fullName}</strong> ({selectedGuest.phone ?? "без телефона"})
+                </span>
+                <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setSelectedGuest(null)}>
+                  Сбросить
+                </Button>
+              </div>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5 sm:col-span-2">
+                  <Label className="text-xs">ФИО нового гостя *</Label>
+                  <Input value={guestForm.fullName} onChange={(event) => setGuestForm({ ...guestForm, fullName: event.target.value })} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Ответственный</Label>
-                  <Select value={crmForm.ownerId} onValueChange={(v) => setCrmForm({ ...crmForm, ownerId: v })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {data.employees.map(e => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                  <Label className="text-xs">Телефон</Label>
+                  <Input value={guestForm.phone} onChange={(event) => setGuestForm({ ...guestForm, phone: event.target.value })} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Email</Label>
+                  <Input type="email" value={guestForm.email} onChange={(event) => setGuestForm({ ...guestForm, email: event.target.value })} />
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <Label>Заметка менеджера</Label>
-                <Textarea 
-                  rows={3} 
-                  placeholder="Дополнительные детали..."
-                  value={crmForm.note}
-                  onChange={(e) => setCrmForm({ ...crmForm, note: e.target.value })}
-                />
-              </div>
+            )}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Объект *</Label>
+              <Select value={propertyId} onValueChange={setPropertyId}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {data.properties.map((property) => (
+                    <SelectItem key={property.id} value={property.id}>{property.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-          )}
+            <div className="space-y-1.5">
+              <Label>Источник *</Label>
+              <Select value={source} onValueChange={(value) => setSource(value as LeadSource)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {SOURCES.map((item) => (
+                    <SelectItem key={item} value={item}>{sourceLabels[item]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Ответственный</Label>
+            <Select value={ownerId} onValueChange={setOwnerId}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {data.employees.map((employee) => (
+                  <SelectItem key={employee.id} value={employee.id}>{employee.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Категории услуг <span className="text-muted-foreground font-normal">(можно уточнить позже)</span></Label>
+            <div className="flex flex-wrap gap-2">
+              {CATEGORY_OPTIONS.map((group) => {
+                const active = categories.includes(group.direction as InterestDirection);
+                return (
+                  <button
+                    key={group.code}
+                    type="button"
+                    onClick={() => toggleCategory(group.direction as InterestDirection)}
+                    className={`rounded-full border px-3 py-1 text-sm transition-colors ${
+                      active
+                        ? "border-brand-500 bg-brand-50 text-brand-700"
+                        : "border-border bg-background text-muted-foreground hover:border-brand-300"
+                    }`}
+                  >
+                    {group.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Запрос гостя</Label>
+            <Textarea
+              rows={3}
+              placeholder="Коротко: что просит клиент, даты, пожелания…"
+              value={requestText}
+              onChange={(event) => setRequestText(event.target.value)}
+            />
+          </div>
+
+          {error && <p className="text-sm text-danger-600">{error}</p>}
         </div>
 
-        <DialogFooter className="flex items-center justify-between sm:justify-between w-full">
-          {step > 1 ? (
-            <Button variant="outline" onClick={handleBack} className="gap-2">
-              <ChevronLeft className="h-4 w-4" /> Назад
-            </Button>
-          ) : (
-            <div /> // Spacer
-          )}
-          
-          {step < 4 ? (
-            <Button onClick={handleNext} disabled={step === 1 && !selectedGuest && !guestForm.fullName.trim()} className="gap-2">
-              Далее <ChevronRight className="h-4 w-4" />
-            </Button>
-          ) : (
-            <Button onClick={handleSubmit} className="gap-2">
-              <Check className="h-4 w-4" /> Создать
-            </Button>
-          )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>Отмена</Button>
+          <Button onClick={handleSubmit} disabled={!canSubmit}>
+            Создать обращение
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

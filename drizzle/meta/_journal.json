@@ -15,6 +15,13 @@
       "when": 1789798879753,
       "tag": "0001_resort_customer_journey",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790000000000,
+      "tag": "0002_folio_service_journey",
+      "breakpoints": true
     }
   ]
 }

@@ -1,33 +1,99 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 import { requireDatabaseMode, type AuthenticatedRequest } from "../auth/middleware.js";
 import { loadCrmDataset } from "../services/crm-bootstrap.js";
+import {
+  ensureFolio, recalcFolio, removeFolioLineForItem, resolveItemPricing,
+  syncFolioLineForItem, createOfferFromFolio,
+  type CatalogRow,
+} from "../services/folio.js";
+import {
+  advanceLead, loadJourneyContext, rollbackLead,
+  syncClassificationDirection, transitionLead,
+} from "../services/lead-journey.js";
+import { serviceGroupByCode, serviceGroupForDirection, serviceGroupForItemType } from "../../shared/service-groups.js";
+import type { JourneyStage } from "../../shared/journey.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const leadPatchSchema = z.object({
   roomType: z.string().nullable().optional(), checkIn: z.string().datetime().nullable().optional(),
   checkOut: z.string().datetime().nullable().optional(), adults: z.number().int().min(0).optional(),
-  children: z.number().int().min(0).optional(), ownerId: z.string().optional(), totalAmount: z.number().int().min(0).optional(),
-  specialRequest: z.string().nullable().optional(),
+  children: z.number().int().min(0).optional(), ownerId: z.string().optional(),
+  specialRequest: z.string().nullable().optional(), deposit: z.number().int().min(0).optional(),
 });
 const taskInputSchema = z.object({
   title: z.string().min(1), type: z.string(), priority: z.string(), dueAt: z.string().datetime(), ownerId: z.string(),
   guestId: z.string().optional(), leadId: z.string().optional(), propertyId: z.string(), description: z.string().optional(),
 });
 const directionSchema = z.enum(["accommodation", "corporate_event", "wedding_or_banquet", "restaurant", "spa", "massage", "bathhouse", "karaoke", "activities", "transfer", "partnership", "vacancy", "supplier", "spam", "wrong_contact", "other"]);
+const itemTypeSchema = z.enum(["accommodation", "restaurant", "spa", "massage", "bathhouse", "karaoke", "horse_riding", "atv", "activity", "transfer", "corporate_event", "wedding_or_banquet", "other"]);
+const interestDetailsSchema = z.object({
+  checkIn: z.string().nullable().optional(), checkOut: z.string().nullable().optional(), date: z.string().nullable().optional(),
+  guests: z.number().int().min(0).nullable().optional(), participants: z.number().int().min(0).nullable().optional(),
+  eventType: z.string().nullable().optional(), note: z.string().nullable().optional(),
+}).partial();
 const leadItemInputSchema = z.object({
-  interestId: z.string().nullable().optional(), type: z.enum(["accommodation", "restaurant", "spa", "massage", "bathhouse", "karaoke", "horse_riding", "atv", "activity", "transfer", "corporate_event", "wedding_or_banquet", "other"]),
-  category: z.string().nullable().optional(), name: z.string().min(1), status: z.enum(["interest", "selected", "quoted", "confirmed", "completed", "cancelled"]).optional(),
-  quantity: z.number().int().positive().optional(), startAt: z.string().datetime().nullable().optional(), endAt: z.string().datetime().nullable().optional(),
+  interestId: z.string().nullable().optional(), catalogItemId: z.string().nullable().optional(),
+  type: itemTypeSchema.optional(),
+  category: z.string().nullable().optional(), name: z.string().min(1).optional(), status: z.enum(["interest", "selected", "quoted", "confirmed", "completed", "cancelled"]).optional(),
+  quantity: z.number().int().positive().optional(), startAt: z.string().nullable().optional(), endAt: z.string().nullable().optional(),
   adults: z.number().int().min(0).nullable().optional(), children: z.number().int().min(0).nullable().optional(), participants: z.number().int().min(0).nullable().optional(),
   roomType: z.string().nullable().optional(), nights: z.number().int().min(0).nullable().optional(), unitAmount: z.number().int().min(0).nullable().optional(),
-  totalAmount: z.number().int().min(0).nullable().optional(), currency: z.string().optional(), externalReference: z.string().nullable().optional(), metadata: z.record(z.unknown()).nullable().optional(),
+  totalAmount: z.number().int().min(0).nullable().optional(), currency: z.string().optional(), externalReference: z.string().nullable().optional(),
+  metadata: z.record(z.unknown()).nullable().optional(),
+  /** Operational details по категории (hours, visits, sessions, eventType, time, venue, catering, comment…). */
+  details: z.record(z.unknown()).nullable().optional(),
+  overrideReason: z.string().nullable().optional(),
 });
+
+/** Собирает значения lead_items с серверно рассчитанной ценой. */
+const buildItemValues = (
+  input: z.infer<typeof leadItemInputSchema>,
+  catalog: CatalogRow | null,
+  leadId: string,
+) => {
+  const type = input.type ?? (catalog?.serviceType as z.infer<typeof itemTypeSchema> | undefined) ?? "other";
+  const metadata = { ...(input.metadata ?? {}), ...(input.details ?? {}) };
+  const pricing = resolveItemPricing({
+    type, quantity: input.quantity, nights: input.nights, participants: input.participants, adults: input.adults,
+    unitAmount: input.unitAmount, totalAmount: input.totalAmount,
+    catalogItemId: catalog?.id ?? input.catalogItemId, metadata,
+  }, catalog);
+  return {
+    pricing,
+    values: {
+      leadId,
+      interestId: input.interestId ?? null,
+      type,
+      category: input.category ?? catalog?.category ?? serviceGroupForItemType(type).code,
+      name: input.name ?? catalog?.name ?? "Услуга",
+      status: input.status ?? "selected",
+      quantity: input.quantity ?? 1,
+      startAt: input.startAt ?? null,
+      endAt: input.endAt ?? null,
+      adults: input.adults ?? null,
+      children: input.children ?? null,
+      participants: input.participants ?? null,
+      roomType: input.roomType ?? (type === "accommodation" ? catalog?.name ?? null : null),
+      nights: input.nights ?? null,
+      unitAmount: pricing.unitPrice,
+      totalAmount: pricing.totalAmount,
+      currency: input.currency ?? "KZT",
+      externalReference: input.externalReference ?? null,
+      catalogItemId: catalog?.id ?? input.catalogItemId ?? null,
+      pricingModeSnapshot: pricing.pricingMode,
+      catalogDefaultPrice: pricing.catalogDefaultPrice,
+      priceOverridden: pricing.priceOverridden,
+      overrideReason: input.overrideReason ?? null,
+      metadata: Object.keys(metadata).length ? metadata : null,
+    },
+  };
+};
 
 export const createCrmRouter = (db: Database) => {
   const router = Router();
@@ -46,30 +112,103 @@ export const createCrmRouter = (db: Database) => {
     }
     const [lead] = await db.update(s.leads).set(values).where(eq(s.leads.id, request.params.id)).returning();
     if (!lead) return response.status(404).json({ error: "Лид не найден" });
+    if (patch.deposit !== undefined) {
+      const folio = await ensureFolio(db, lead);
+      await db.update(s.folios).set({ depositRequired: patch.deposit, updatedAt: now() }).where(eq(s.folios.id, folio.id));
+      await recalcFolio(db, folio.id);
+    }
     await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "note", title: "Лид обновлён", occurredAt: now() });
     response.json(lead);
   });
 
-  router.post("/leads/:id/stage", async (request, response) => {
-    const { stage } = z.object({ stage: z.enum(["new", "qualified", "planning", "offer", "payment_pending", "confirmed", "completed", "lost", "cancelled"]) }).parse(request.body);
-    const [existing] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
-    if (!existing) return response.status(404).json({ error: "Лид не найден" });
-    if (existing.stage === stage) return response.json(existing);
-    const openStages = ["new", "qualified", "planning", "offer", "payment_pending"];
-    if (stage === "lost" && !openStages.includes(existing.stage)) return response.status(409).json({ error: "Проиграть можно только открытую сделку" });
-    if (stage === "cancelled" && existing.stage !== "confirmed") return response.status(409).json({ error: "Отменить можно только подтверждённую сделку" });
-    if (stage === "completed" && existing.stage !== "confirmed") return response.status(409).json({ error: "Завершить можно только подтверждённую сделку" });
-    if (stage === "payment_pending") {
-      const [accepted] = await db.select().from(s.offers).where(and(eq(s.offers.leadId, existing.id), eq(s.offers.status, "accepted"))).limit(1);
-      if (!accepted || existing.deposit <= 0) return response.status(409).json({ error: "Нужно принятое предложение и требование оплаты" });
-    }
-    const probability = stage === "new" ? 15 : stage === "qualified" ? 35 : stage === "planning" ? 45 : stage === "offer" ? 60 : stage === "payment_pending" ? 80 : stage === "confirmed" ? 100 : stage === "completed" ? 100 : 0;
-    const timestamp = now();
-    const [lead] = await db.update(s.leads).set({ stage, probability, lastActivityAt: timestamp, updatedAt: timestamp, paymentStatus: stage === "payment_pending" ? "awaiting" : existing.paymentStatus }).where(eq(s.leads.id, existing.id)).returning();
+  const stageSchema = z.enum(["new", "qualified", "planning", "offer", "payment_pending", "confirmed", "completed", "lost", "cancelled"]);
+
+  /** Серверная оценка готовности к следующему этапу. */
+  router.get("/leads/:id/journey", async (request, response) => {
+    const ctx = await loadJourneyContext(db, request.params.id);
+    if (!ctx) return response.status(404).json({ error: "Лид не найден" });
+    response.json({ journey: ctx.evaluation, folioId: ctx.folio.id });
+  });
+
+  /** «Продолжить» — сервер сам определяет следующий этап и проверяет блокеры. */
+  router.post("/leads/:id/advance", async (request, response) => {
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
-    await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: existing.id, stage, employeeId, changedAt: timestamp });
-    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: existing.id, employeeId, type: "stage_change", title: "Стадия изменена", occurredAt: timestamp });
+    const result = await advanceLead(db, request.params.id, employeeId);
+    if (!result.ok) return response.status(result.status).json({ error: result.error, blockers: result.blockers, journey: result.journey });
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    response.json({ lead, journey: result.journey });
+  });
+
+  /** Явный переход — валидируется против journey (только следующий этап). */
+  router.post("/leads/:id/stage", async (request, response) => {
+    const { stage, lostReason, comment } = z.object({
+      stage: stageSchema, lostReason: z.string().optional(), comment: z.string().optional(),
+    }).parse(request.body);
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    const result = await transitionLead(db, request.params.id, stage as JourneyStage, employeeId, { lostReason, comment });
+    if (!result.ok) return response.status(result.status).json({ error: result.error, blockers: result.blockers, journey: result.journey });
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
     response.json(lead);
+  });
+
+  /** Terminal action — потерять открытую сделку. lostReason обязателен. */
+  router.post("/leads/:id/lose", async (request, response) => {
+    const { lostReason, comment } = z.object({ lostReason: z.string().min(1), comment: z.string().optional() }).parse(request.body);
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    const result = await transitionLead(db, request.params.id, "lost", employeeId, { lostReason, comment });
+    if (!result.ok) return response.status(result.status).json({ error: result.error, blockers: result.blockers, journey: result.journey });
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    response.json(lead);
+  });
+
+  /** Terminal action — отмена подтверждённого заказа. */
+  router.post("/leads/:id/cancel", async (request, response) => {
+    const { reason } = z.object({ reason: z.string().optional() }).parse(request.body);
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    const result = await transitionLead(db, request.params.id, "cancelled", employeeId, { comment: reason });
+    if (!result.ok) return response.status(result.status).json({ error: result.error, blockers: result.blockers, journey: result.journey });
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    response.json(lead);
+  });
+
+  /** Откат на предыдущий этап — отдельное действие с обязательной причиной. */
+  router.post("/leads/:id/rollback", async (request, response) => {
+    const { reason } = z.object({ reason: z.string().min(1) }).parse(request.body);
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    const result = await rollbackLead(db, request.params.id, employeeId, reason);
+    if (!result.ok) return response.status(result.status).json({ error: result.error, journey: result.journey });
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    response.json({ lead, journey: result.journey });
+  });
+
+  /** Фолио сделки. */
+  router.get("/leads/:id/folio", async (request, response) => {
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    if (!lead) return response.status(404).json({ error: "Лид не найден" });
+    const folio = await ensureFolio(db, lead);
+    const lines = await db.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
+    const payments = await db.select().from(s.guestPayments).where(eq(s.guestPayments.folioId, folio.id));
+    response.json({ folio, lines, payments });
+  });
+
+  /** Обновление фолио: требуемая предоплата и скидка. */
+  router.patch("/folios/:id", async (request, response) => {
+    const body = z.object({
+      depositRequired: z.number().int().min(0).optional(),
+      discountAmount: z.number().int().min(0).optional(),
+    }).parse(request.body);
+    const [folio] = await db.select().from(s.folios).where(eq(s.folios.id, request.params.id)).limit(1);
+    if (!folio) return response.status(404).json({ error: "Фолио не найден" });
+    await db.transaction(async (tx) => {
+      await tx.update(s.folios).set({
+        depositRequired: body.depositRequired ?? undefined,
+        discountAmount: body.discountAmount ?? undefined,
+        updatedAt: now(),
+      }).where(eq(s.folios.id, folio.id));
+      await recalcFolio(tx, folio.id);
+    });
+    const [updated] = await db.select().from(s.folios).where(eq(s.folios.id, folio.id)).limit(1);
+    response.json(updated);
   });
 
   router.post("/leads/:id/activities", async (request, response) => {
@@ -109,23 +248,45 @@ export const createCrmRouter = (db: Database) => {
     response.status(201).json(entry);
   });
 
+  /**
+   * Сформировать предложение из фолио (snapshot). Если лид на этапе planning —
+   * проверяются требования и лид переходит в offer. Для более ранних этапов
+   * предложение создать нельзя — нужно пройти journey.
+   */
   router.post("/leads/:id/offers", async (request, response) => {
-    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
-    if (!lead) return response.status(404).json({ error: "Лид не найден" });
-    const services = await db.select().from(s.leadServices).where(eq(s.leadServices.leadId, lead.id));
-    const offerId = id("offer");
-    const timestamp = now();
-    const [offer] = await db.insert(s.offers).values({ id: offerId, code: `КП-${Date.now().toString().slice(-6)}`, leadId: lead.id, guestId: lead.guestId, propertyId: lead.propertyId, roomType: lead.roomType, checkIn: lead.checkIn, checkOut: lead.checkOut, nights: lead.nights, adults: lead.adults, children: lead.children, status: "draft", ownerId: lead.ownerId, expiresAt: new Date(Date.now() + 4 * 86_400_000).toISOString(), total: lead.totalAmount, deposit: lead.deposit, comment: lead.specialRequest }).returning();
-    const items = await db.select().from(s.leadItems).where(eq(s.leadItems.leadId, lead.id));
-    const linesToInsert = [];
-    if (items.length > 0) {
-      items.forEach((item, index) => linesToInsert.push({ id: id("line"), offerId, label: item.name, quantity: item.quantity?.toString(), amount: item.totalAmount ?? 0, position: index, leadItemId: item.id }));
-    } else if (lead.roomType) {
-      linesToInsert.push({ id: id("line"), offerId, label: `Проживание · ${lead.roomType}`, quantity: `${lead.nights} ноч.`, amount: lead.roomAmount, position: 0 });
+    const body = z.object({ deposit: z.number().int().min(0).optional() }).parse(request.body ?? {});
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    const ctx = await loadJourneyContext(db, request.params.id);
+    if (!ctx) return response.status(404).json({ error: "Лид не найден" });
+    const { lead, folio, evaluation } = ctx;
+    const stage = lead.stage as JourneyStage;
+    if (body.deposit !== undefined) {
+      await db.update(s.folios).set({ depositRequired: body.deposit, updatedAt: now() }).where(eq(s.folios.id, folio.id));
+      await recalcFolio(db, folio.id);
     }
-    services.forEach((item, index) => linesToInsert.push({ id: id("line"), offerId, label: item.name, amount: item.amount, position: linesToInsert.length + index }));
-    if (linesToInsert.length > 0) await db.insert(s.offerLines).values(linesToInsert);
-    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "offer_created", title: "Предложение подготовлено", amount: lead.totalAmount, occurredAt: timestamp });
+    let offer;
+    if (stage === "planning") {
+      if (!evaluation.canAdvance) {
+        return response.status(409).json({ error: "stage_requirements_not_met", blockers: evaluation.blockers, journey: evaluation });
+      }
+      offer = await db.transaction(async (tx) => {
+        const fresh = await loadJourneyContext(tx, lead.id);
+        const timestamp = now();
+        const created = await createOfferFromFolio(tx, lead, fresh!.folio, employeeId);
+        await tx.update(s.leads).set({ stage: "offer", probability: 60, lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
+        await tx.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: "offer", employeeId, changedAt: timestamp });
+        await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, employeeId, type: "stage_change", title: "Этап: Предложение", occurredAt: timestamp });
+        await tx.update(s.leadItems).set({ status: "quoted", updatedAt: timestamp })
+          .where(and(eq(s.leadItems.leadId, lead.id), inArray(s.leadItems.status, ["interest", "selected"])));
+        await tx.update(s.folios).set({ status: "quoted", updatedAt: timestamp }).where(eq(s.folios.id, fresh!.folio.id));
+        await recalcFolio(tx, fresh!.folio.id);
+        return created;
+      });
+    } else {
+      // Лид уже на offer+ — допускаем новую версию предложения из фолио.
+      const fresh = await loadJourneyContext(db, lead.id);
+      offer = await createOfferFromFolio(db, lead, fresh!.folio, employeeId);
+    }
     response.status(201).json(offer);
   });
 
@@ -133,6 +294,16 @@ export const createCrmRouter = (db: Database) => {
     const { status } = z.object({ status: z.enum(["draft", "sent", "viewed", "accepted", "expired", "rejected"]) }).parse(request.body);
     const timestamp = now();
     const [offer] = await db.update(s.offers).set({ status, sentAt: status === "sent" ? timestamp : undefined, viewedAt: status === "viewed" ? timestamp : undefined, updatedAt: timestamp }).where(eq(s.offers.id, request.params.id)).returning();
+    if (!offer) return response.status(404).json({ error: "Предложение не найдено" });
+    // Принятое предложение фиксирует требуемую предоплату в фолио.
+    if (status === "accepted" && offer.deposit > 0) {
+      const [folio] = await db.select().from(s.folios).where(eq(s.folios.leadId, offer.leadId)).limit(1);
+      if (folio) {
+        await db.update(s.folios).set({ depositRequired: offer.deposit, updatedAt: timestamp }).where(eq(s.folios.id, folio.id));
+        await recalcFolio(db, folio.id);
+      }
+    }
+    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: offer.leadId, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: status === "accepted" ? "offer_viewed" : "note", title: `Предложение: ${status}`, occurredAt: timestamp });
     response.json(offer);
   });
 
@@ -257,26 +428,27 @@ export const createCrmRouter = (db: Database) => {
     response.json(guest);
   });
 
+  /**
+   * Создание обращения — минимальный intake. Stage всегда "new": произвольный
+   * начальный этап выбрать нельзя (journey проводит лид по этапам).
+   * В одной транзакции создаются гость (при необходимости), лид,
+   * classification, выбранные категории услуг (lead_interests), фолио.
+   */
   router.post("/leads", async (request, response) => {
     const directions = ["accommodation", "corporate_event", "wedding_or_banquet", "restaurant", "spa", "massage", "bathhouse", "karaoke", "activities", "transfer", "partnership", "vacancy", "supplier", "spam", "wrong_contact", "other"] as const;
-    const itemTypes = ["accommodation", "restaurant", "spa", "massage", "bathhouse", "karaoke", "horse_riding", "atv", "activity", "transfer", "corporate_event", "wedding_or_banquet", "other"] as const;
-    const itemSchema = z.object({
-      interestId: z.string().optional(), type: z.enum(itemTypes), category: z.string().optional(), name: z.string().min(1),
-      status: z.enum(["interest", "selected", "quoted", "confirmed", "completed", "cancelled"]).default("selected"),
-      quantity: z.number().int().positive().default(1), startAt: z.string().datetime().optional(), endAt: z.string().datetime().optional(),
-      adults: z.number().int().min(0).optional(), children: z.number().int().min(0).optional(), participants: z.number().int().min(0).optional(),
-      roomType: z.string().optional(), nights: z.number().int().min(0).optional(), unitAmount: z.number().int().min(0).optional(),
-      totalAmount: z.number().int().min(0).optional(), currency: z.string().default("KZT"), externalReference: z.string().optional(), metadata: z.record(z.unknown()).optional(),
-    });
     const body = z.object({
       guestId: z.string().optional(),
       guest: z.object({ fullName: z.string().min(1), firstName: z.string().optional(), lastName: z.string().optional(), phone: z.string().optional(), email: z.string().email().optional().or(z.literal("")), company: z.string().optional(), language: z.string().optional() }).optional(),
       propertyId: z.string().min(1), source: z.enum(["whatsapp", "telegram", "website", "phone", "instagram", "returning", "corporate", "referral", "email", "walk_in"]),
-      stage: z.enum(["new", "qualified", "planning"]).default("new"), intent: z.enum(["hot", "warm", "cold"]).default("warm"), ownerId: z.string().optional(),
-      primaryDirection: z.enum(directions), directions: z.array(z.enum(directions)).optional(),
-      interests: z.array(z.object({ direction: z.enum(directions), isPrimary: z.boolean().optional(), notes: z.string().optional() })).optional(),
-      items: z.array(itemSchema).default([]), roomType: z.string().optional(), checkIn: z.string().datetime().optional(), checkOut: z.string().datetime().optional(),
-      adults: z.number().int().min(0).optional(), children: z.number().int().min(0).optional(), totalAmount: z.number().int().min(0).optional(),
+      intent: z.enum(["hot", "warm", "cold"]).default("warm"), ownerId: z.string().optional(),
+      /** Быстрый выбор категорий услуг (service group codes): accommodation, restaurant, spa, … */
+      serviceCategories: z.array(z.string()).optional(),
+      // Legacy-поля для обратной совместимости (AI-upsert, старые тесты):
+      primaryDirection: z.enum(directions).optional(), directions: z.array(z.enum(directions)).optional(),
+      interests: z.array(z.object({ direction: z.enum(directions), isPrimary: z.boolean().optional(), notes: z.string().optional(), details: interestDetailsSchema.nullable().optional() })).optional(),
+      items: z.array(leadItemInputSchema).default([]),
+      roomType: z.string().optional(), checkIn: z.string().datetime().optional(), checkOut: z.string().datetime().optional(),
+      adults: z.number().int().min(0).optional(), children: z.number().int().min(0).optional(),
       quality: z.enum(["target", "needs_qualification", "non_target"]).default("needs_qualification"), temperature: z.enum(["hot", "warm", "cold"]).default("warm"),
       nextActionLabel: z.string().optional(), nextActionDueAt: z.string().datetime().optional(), note: z.string().optional(),
     }).refine((value) => Boolean(value.guestId) !== Boolean(value.guest), { message: "Provide either guestId or guest" }).parse(request.body);
@@ -294,6 +466,28 @@ export const createCrmRouter = (db: Database) => {
     const [mapping] = body.ownerId ? [] : await db.select().from(s.employeeProperties).where(eq(s.employeeProperties.propertyId, body.propertyId)).limit(1);
     const ownerId = body.ownerId ?? mapping?.employeeId;
     if (!ownerId) return response.status(400).json({ error: "Для объекта не назначен ответственный" });
+
+    const catalogRows = await db.select().from(s.serviceCatalog).where(eq(s.serviceCatalog.propertyId, body.propertyId));
+    const catalogById = new Map(catalogRows.map((row) => [row.id, row]));
+
+    // Категории услуг → directions (primary direction выводится автоматически,
+    // менеджер её не выбирает).
+    const categoryDirections = (body.serviceCategories ?? [])
+      .map((code) => serviceGroupByCode(code)?.direction)
+      .filter((direction): direction is string => Boolean(direction));
+    const requestedDirections = [
+      ...categoryDirections,
+      ...(body.directions ?? []),
+      ...(body.interests ?? []).map((interest) => interest.direction),
+      ...(body.primaryDirection ? [body.primaryDirection] : []),
+      ...body.items.map((item) => {
+        const catalog = item.catalogItemId ? catalogById.get(item.catalogItemId) : null;
+        return serviceGroupForItemType(item.type ?? catalog?.serviceType ?? "other").direction;
+      }),
+    ];
+    const primaryDirection = body.primaryDirection && requestedDirections.includes(body.primaryDirection)
+      ? body.primaryDirection
+      : requestedDirections[0] ?? "other";
 
     const result = await db.transaction(async (tx) => {
       const timestamp = now();
@@ -314,132 +508,257 @@ export const createCrmRouter = (db: Database) => {
       const checkIn = body.checkIn ?? null;
       const checkOut = body.checkOut ?? null;
       const nights = checkIn && checkOut ? Math.max(1, Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000)) : 0;
-      const probability = body.stage === "new" ? 15 : body.stage === "qualified" ? 35 : 45;
-      const totalAmount = body.totalAmount ?? body.items.reduce((sum, item) => sum + (item.totalAmount ?? 0), 0);
       const [lead] = await tx.insert(s.leads).values({
         id: leadId, code: `G-M-${Date.now().toString().slice(-7)}`, guestId, propertyId: body.propertyId, source: body.source,
-        stage: body.stage, intent: body.intent, ownerId, roomType: body.roomType ?? null, checkIn, checkOut, nights,
-        adults: body.adults ?? 0, children: body.children ?? 0, totalAmount, nextActionLabel: body.nextActionLabel ?? null,
-        nextActionDueAt: body.nextActionDueAt ?? null, probability, lastActivityAt: timestamp,
+        stage: "new", intent: body.intent, ownerId, roomType: body.roomType ?? null, checkIn, checkOut, nights,
+        adults: body.adults ?? 0, children: body.children ?? 0, totalAmount: 0, nextActionLabel: body.nextActionLabel ?? null,
+        nextActionDueAt: body.nextActionDueAt ?? null, probability: 15, lastActivityAt: timestamp,
       }).returning();
       await tx.insert(s.leadClassifications).values({
-        leadId, direction: body.primaryDirection, quality: body.quality, temperature: body.temperature, probability,
+        leadId, direction: primaryDirection, quality: body.quality, temperature: body.temperature, probability: 15,
         recommendedAction: body.nextActionLabel ?? "Квалифицировать запрос", reasons: [{ code: "manual_creation", label: "Создан вручную менеджером" }], missingData: [],
       });
 
-      const configuredInterests: Array<{ direction: string; notes?: string }> = body.interests?.length
-        ? body.interests
-        : (body.directions ?? [body.primaryDirection]).map((direction) => ({ direction, notes: undefined }));
-      const uniqueDirections = [...new Set([body.primaryDirection, ...configuredInterests.map((interest) => interest.direction)])];
-      const interests = uniqueDirections.map((direction) => ({
-        id: id("interest"), leadId, direction, isPrimary: direction === body.primaryDirection, status: "active",
-        notes: configuredInterests.find((interest) => interest.direction === direction)?.notes,
+      const interestInputs = new Map<string, { isPrimary: boolean; notes?: string; details?: Record<string, unknown> | null }>();
+      for (const direction of requestedDirections) {
+        if (!interestInputs.has(direction)) interestInputs.set(direction, { isPrimary: false });
+      }
+      for (const interest of body.interests ?? []) {
+        const current = interestInputs.get(interest.direction) ?? { isPrimary: false };
+        interestInputs.set(interest.direction, { ...current, isPrimary: interest.isPrimary ?? current.isPrimary, notes: interest.notes ?? current.notes, details: interest.details ?? current.details });
+      }
+      const interests = [...interestInputs.entries()].map(([direction, meta]) => ({
+        id: id("interest"), leadId, direction, isPrimary: direction === primaryDirection || meta.isPrimary, status: "active",
+        notes: meta.notes ?? null, details: meta.details ?? null,
       }));
-      await tx.insert(s.leadInterests).values(interests);
+      if (interests.length) await tx.insert(s.leadInterests).values(interests);
       const interestIds = new Map(interests.map((interest) => [interest.direction, interest.id]));
-      const items = body.items.map((item) => ({
-        id: id("item"), leadId, interestId: item.interestId ?? interestIds.get(item.type === "horse_riding" || item.type === "atv" || item.type === "activity" ? "activities" : item.type),
-        type: item.type, category: item.category, name: item.name, status: item.status, quantity: item.quantity, startAt: item.startAt,
-        endAt: item.endAt, adults: item.adults, children: item.children, participants: item.participants, roomType: item.roomType,
-        nights: item.nights, unitAmount: item.unitAmount, totalAmount: item.totalAmount, currency: item.currency,
-        externalReference: item.externalReference, metadata: item.metadata,
-      }));
-      if (items.length) await tx.insert(s.leadItems).values(items);
+
+      // Фолио создаётся вместе с лидом в одной транзакции.
+      const folio = await ensureFolio(tx, lead);
+
+      const createdItems = [];
+      for (const item of body.items) {
+        const catalog = item.catalogItemId ? catalogById.get(item.catalogItemId) ?? null : null;
+        const { values } = buildItemValues(item, catalog, leadId);
+        const groupDirection = serviceGroupForItemType(values.type).direction;
+        const itemId = id("item");
+        const [created] = await tx.insert(s.leadItems).values({
+          id: itemId,
+          ...values,
+          interestId: values.interestId ?? interestIds.get(groupDirection) ?? null,
+        }).returning();
+        await syncFolioLineForItem(tx, folio.id, created);
+        createdItems.push(created);
+      }
+      await recalcFolio(tx, folio.id);
+
       const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
-      await tx.insert(s.leadStageHistory).values({ id: id("stage"), leadId, stage: body.stage, employeeId, changedAt: timestamp });
-      await tx.insert(s.leadActivities).values({ id: id("activity"), leadId, employeeId, type: "lead_created", title: "Лид создан вручную", occurredAt: timestamp });
+      await tx.insert(s.leadStageHistory).values({ id: id("stage"), leadId, stage: "new", employeeId, changedAt: timestamp });
+      await tx.insert(s.leadActivities).values({ id: id("activity"), leadId, employeeId, type: "lead_created", title: "Создано обращение", occurredAt: timestamp });
       if (body.note) await tx.insert(s.leadActivities).values({ id: id("activity"), leadId, employeeId, type: "note", title: "Заметка", description: body.note, occurredAt: timestamp });
       if (body.nextActionLabel && body.nextActionDueAt) await tx.insert(s.tasks).values({
         id: id("task"), title: body.nextActionLabel, type: "follow_up", status: "todo", priority: "medium", dueAt: body.nextActionDueAt,
         ownerId, guestId, leadId, propertyId: body.propertyId,
       });
       await tx.insert(s.guestProperties).values({ guestId, propertyId: body.propertyId }).onConflictDoNothing();
-      return { guest, lead, interests, items };
+      // Перечитываем лида — recalcFolio синхронизировал totalAmount/paymentStatus.
+      const [finalLead] = await tx.select().from(s.leads).where(eq(s.leads.id, leadId)).limit(1);
+      const [finalFolio] = await tx.select().from(s.folios).where(eq(s.folios.id, folio.id)).limit(1);
+      return { guest, lead: finalLead ?? lead, interests, items: createdItems, folio: finalFolio ?? folio };
     });
     response.status(201).json(result);
   });
 
   router.post("/leads/:id/interests", async (request, response) => {
-    const body = z.object({ direction: directionSchema, isPrimary: z.boolean().default(false), notes: z.string().optional() }).parse(request.body);
+    const body = z.object({
+      direction: directionSchema.optional(), group: z.string().optional(),
+      isPrimary: z.boolean().default(false), notes: z.string().optional(), details: interestDetailsSchema.nullable().optional(),
+    }).refine((value) => value.direction || value.group, { message: "direction or group is required" }).parse(request.body);
+    const direction = body.direction ?? serviceGroupByCode(body.group!)!.direction;
     const timestamp = now();
     const [existing] = await db.select().from(s.leadInterests).where(eq(s.leadInterests.leadId, request.params.id)).limit(1);
     const isPrimary = body.isPrimary || !existing;
     if (isPrimary) await db.update(s.leadInterests).set({ isPrimary: false, updatedAt: timestamp }).where(and(eq(s.leadInterests.leadId, request.params.id), eq(s.leadInterests.isPrimary, true)));
-    const [interest] = await db.insert(s.leadInterests).values({ id: id("interest"), leadId: request.params.id, ...body, isPrimary, status: "active" }).returning();
-    if (isPrimary) await db.update(s.leadClassifications).set({ direction: body.direction, updatedAt: timestamp }).where(eq(s.leadClassifications.leadId, request.params.id));
-    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "interest_added", title: `Добавлено направление: ${body.direction}`, occurredAt: timestamp });
+    const [interest] = await db.insert(s.leadInterests).values({
+      id: id("interest"), leadId: request.params.id, direction, isPrimary, status: "active",
+      notes: body.notes ?? null, details: body.details ?? null,
+    }).onConflictDoUpdate({
+      target: [s.leadInterests.leadId, s.leadInterests.direction],
+      set: { details: body.details ?? undefined, notes: body.notes ?? undefined, status: "active", updatedAt: timestamp },
+    }).returning();
+    await syncClassificationDirection(db, request.params.id);
+    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "interest_added", title: `Добавлена категория услуг: ${serviceGroupForDirection(direction)?.label ?? direction}`, occurredAt: timestamp });
     response.status(201).json(interest);
   });
-  
+
   router.patch("/leads/:id/interests/:interestId", async (request, response) => {
-    const body = z.object({ direction: directionSchema.optional(), isPrimary: z.boolean().optional(), status: z.string().optional(), notes: z.string().nullable().optional() }).parse(request.body);
+    const body = z.object({ direction: directionSchema.optional(), isPrimary: z.boolean().optional(), status: z.string().optional(), notes: z.string().nullable().optional(), details: interestDetailsSchema.nullable().optional() }).parse(request.body);
     const timestamp = now();
     if (body.isPrimary) await db.update(s.leadInterests).set({ isPrimary: false, updatedAt: timestamp }).where(and(eq(s.leadInterests.leadId, request.params.id), eq(s.leadInterests.isPrimary, true)));
     const [interest] = await db.update(s.leadInterests).set({ ...body, updatedAt: timestamp }).where(and(eq(s.leadInterests.id, request.params.interestId), eq(s.leadInterests.leadId, request.params.id))).returning();
-    if (!interest) return response.status(404).json({ error: "Направление не найдено" });
-    if (interest.isPrimary) await db.update(s.leadClassifications).set({ direction: interest.direction, updatedAt: timestamp }).where(eq(s.leadClassifications.leadId, request.params.id));
-    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "interest_added", title: `Направление обновлено: ${interest.direction}`, occurredAt: timestamp });
+    if (!interest) return response.status(404).json({ error: "Категория услуг не найдена" });
+    await syncClassificationDirection(db, request.params.id);
+    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "interest_added", title: `Категория услуг обновлена: ${serviceGroupForDirection(interest.direction)?.label ?? interest.direction}`, occurredAt: timestamp });
     response.json(interest);
   });
 
   router.delete("/leads/:id/interests/:interestId", async (request, response) => {
     const timestamp = now();
     const [interest] = await db.delete(s.leadInterests).where(and(eq(s.leadInterests.id, request.params.interestId), eq(s.leadInterests.leadId, request.params.id))).returning();
-    if (!interest) return response.status(404).json({ error: "Направление не найдено" });
+    if (!interest) return response.status(404).json({ error: "Категория услуг не найдена" });
     if (interest.isPrimary) {
       const [another] = await db.select().from(s.leadInterests).where(eq(s.leadInterests.leadId, request.params.id)).limit(1);
-      if (another) {
-        await db.update(s.leadInterests).set({ isPrimary: true, updatedAt: timestamp }).where(eq(s.leadInterests.id, another.id));
-        await db.update(s.leadClassifications).set({ direction: another.direction, updatedAt: timestamp }).where(eq(s.leadClassifications.leadId, request.params.id));
-      }
+      if (another) await db.update(s.leadInterests).set({ isPrimary: true, updatedAt: timestamp }).where(eq(s.leadInterests.id, another.id));
     }
-    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "interest_removed", title: `Направление удалено: ${interest.direction}`, occurredAt: timestamp });
+    await syncClassificationDirection(db, request.params.id);
+    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "interest_removed", title: `Категория услуг удалена: ${serviceGroupForDirection(interest.direction)?.label ?? interest.direction}`, occurredAt: timestamp });
     response.json({ success: true });
   });
 
+  /**
+   * Добавить услугу в состав заказа. Цена считается на сервере:
+   * каталожная услуга берёт snapshot цены из каталога, клиентский totalAmount
+   * для неё игнорируется. В той же транзакции создаётся строка фолио.
+   */
   router.post("/leads/:id/items", async (request, response) => {
     const body = leadItemInputSchema.parse(request.body);
     const timestamp = now();
-    const [item] = await db.insert(s.leadItems).values({ id: id("item"), leadId: request.params.id, ...body }).returning();
-    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "item_added", title: `Добавлена позиция: ${item.name}`, occurredAt: timestamp });
-    await db.update(s.leads).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, request.params.id));
-    response.status(201).json(item);
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    const result = await db.transaction(async (tx) => {
+      const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+      if (!lead) return null;
+      const catalog = body.catalogItemId
+        ? (await tx.select().from(s.serviceCatalog).where(eq(s.serviceCatalog.id, body.catalogItemId)).limit(1))[0] ?? null
+        : null;
+      const { values, pricing } = buildItemValues(body, catalog, lead.id);
+      if (!values.interestId) {
+        const groupDirection = serviceGroupForItemType(values.type).direction;
+        const [interest] = await tx.select().from(s.leadInterests)
+          .where(and(eq(s.leadInterests.leadId, lead.id), eq(s.leadInterests.direction, groupDirection))).limit(1);
+        if (interest) values.interestId = interest.id;
+      }
+      const [item] = await tx.insert(s.leadItems).values({ id: id("item"), ...values }).returning();
+      const folio = await ensureFolio(tx, lead);
+      await syncFolioLineForItem(tx, folio.id, item, pricing);
+      await recalcFolio(tx, folio.id);
+      await syncClassificationDirection(tx, lead.id);
+      await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, employeeId, type: "item_added", title: `Добавлена услуга: ${item.name}`, amount: item.totalAmount ?? undefined, occurredAt: timestamp });
+      await tx.update(s.leads).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
+      return item;
+    });
+    if (!result) return response.status(404).json({ error: "Лид не найден" });
+    response.status(201).json(result);
   });
 
+  /** Обновление услуги: сервер пересчитывает сумму и синхронизирует фолио. */
   router.patch("/leads/:id/items/:itemId", async (request, response) => {
     const body = leadItemInputSchema.partial().parse(request.body);
     const timestamp = now();
-    const [item] = await db.update(s.leadItems).set({ ...body, updatedAt: timestamp }).where(and(eq(s.leadItems.id, request.params.itemId), eq(s.leadItems.leadId, request.params.id))).returning();
-    if (!item) return response.status(404).json({ error: "Позиция не найдена" });
-    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "item_updated", title: `Позиция обновлена: ${item.name}`, occurredAt: timestamp });
-    await db.update(s.leads).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, request.params.id));
-    response.json(item);
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    const result = await db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(s.leadItems)
+        .where(and(eq(s.leadItems.id, request.params.itemId), eq(s.leadItems.leadId, request.params.id))).limit(1);
+      if (!existing) return null;
+      const catalogItemId = body.catalogItemId !== undefined ? body.catalogItemId : existing.catalogItemId;
+      const catalog = catalogItemId
+        ? (await tx.select().from(s.serviceCatalog).where(eq(s.serviceCatalog.id, catalogItemId)).limit(1))[0] ?? null
+        : null;
+      const merged = {
+        type: body.type ?? existing.type,
+        quantity: body.quantity ?? existing.quantity,
+        nights: body.nights ?? existing.nights,
+        participants: body.participants ?? existing.participants,
+        adults: body.adults ?? existing.adults,
+        unitAmount: body.unitAmount !== undefined ? body.unitAmount : existing.unitAmount,
+        totalAmount: body.totalAmount !== undefined ? body.totalAmount : existing.totalAmount,
+        catalogItemId,
+        metadata: body.details || body.metadata
+          ? { ...(existing.metadata ?? {}), ...(body.metadata ?? {}), ...(body.details ?? {}) }
+          : existing.metadata,
+      };
+      // Для каталожной услуги пересчёт обязателен; для ручной — тоже прогоняем
+      // через resolveItemPricing, чтобы manual totalAmount остался авторитетным.
+      const pricing = resolveItemPricing(merged, catalog);
+      const [item] = await tx.update(s.leadItems).set({
+        type: merged.type,
+        category: body.category ?? existing.category,
+        name: body.name ?? existing.name,
+        status: body.status ?? existing.status,
+        quantity: merged.quantity ?? 1,
+        startAt: body.startAt !== undefined ? body.startAt : existing.startAt,
+        endAt: body.endAt !== undefined ? body.endAt : existing.endAt,
+        adults: body.adults !== undefined ? body.adults : existing.adults,
+        children: body.children !== undefined ? body.children : existing.children,
+        participants: body.participants !== undefined ? body.participants : existing.participants,
+        roomType: body.roomType !== undefined ? body.roomType : existing.roomType,
+        nights: body.nights !== undefined ? body.nights : existing.nights,
+        unitAmount: pricing.unitPrice,
+        totalAmount: pricing.totalAmount,
+        currency: body.currency ?? existing.currency,
+        externalReference: body.externalReference !== undefined ? body.externalReference : existing.externalReference,
+        interestId: body.interestId !== undefined ? body.interestId : existing.interestId,
+        catalogItemId: pricing.catalogItemId,
+        pricingModeSnapshot: pricing.pricingMode,
+        catalogDefaultPrice: pricing.catalogDefaultPrice,
+        priceOverridden: pricing.priceOverridden,
+        overrideReason: body.overrideReason !== undefined ? body.overrideReason : existing.overrideReason,
+        metadata: merged.metadata,
+        updatedAt: timestamp,
+      }).where(eq(s.leadItems.id, existing.id)).returning();
+      const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, existing.leadId)).limit(1);
+      const folio = await ensureFolio(tx, lead!);
+      await syncFolioLineForItem(tx, folio.id, item, pricing);
+      await recalcFolio(tx, folio.id);
+      await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: existing.leadId, employeeId, type: "item_updated", title: `Услуга обновлена: ${item.name}`, occurredAt: timestamp });
+      await tx.update(s.leads).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, existing.leadId));
+      return item;
+    });
+    if (!result) return response.status(404).json({ error: "Позиция не найдена" });
+    response.json(result);
   });
 
+  /** Удаление услуги: строка фолио удаляется, фолио пересчитывается. */
   router.delete("/leads/:id/items/:itemId", async (request, response) => {
     const timestamp = now();
-    const [item] = await db.delete(s.leadItems).where(and(eq(s.leadItems.id, request.params.itemId), eq(s.leadItems.leadId, request.params.id))).returning();
-    if (!item) return response.status(404).json({ error: "Позиция не найдена" });
-    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "item_removed", title: `Позиция удалена: ${item.name}`, occurredAt: timestamp });
-    await db.update(s.leads).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, request.params.id));
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    const result = await db.transaction(async (tx) => {
+      const [item] = await tx.delete(s.leadItems).where(and(eq(s.leadItems.id, request.params.itemId), eq(s.leadItems.leadId, request.params.id))).returning();
+      if (!item) return null;
+      const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+      if (lead) {
+        const folio = await ensureFolio(tx, lead);
+        await removeFolioLineForItem(tx, item.id);
+        await recalcFolio(tx, folio.id);
+      }
+      await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId, type: "item_removed", title: `Услуга удалена: ${item.name}`, occurredAt: timestamp });
+      await tx.update(s.leads).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, request.params.id));
+      return item;
+    });
+    if (!result) return response.status(404).json({ error: "Позиция не найдена" });
     response.json({ success: true });
   });
 
+  /**
+   * Оплата по фолио: платёж привязывается к фолио, paid/balance
+   * пересчитываются сервером. refund уменьшает paidAmount.
+   */
   router.post("/leads/:id/payments", async (request, response) => {
     const body = z.object({ amount: z.number().int().positive(), method: z.enum(["card", "transfer", "cash"]).default("card"), status: z.enum(["paid", "awaiting", "refunded"]).default("paid"), reference: z.string().optional(), date: z.string().datetime().optional() }).parse(request.body);
     const result = await db.transaction(async (tx) => {
       const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
       if (!lead) return null;
       const timestamp = body.date ?? now();
-      const [payment] = await tx.insert(s.guestPayments).values({ id: id("payment"), leadId: lead.id, guestId: lead.guestId, amount: body.amount, method: body.method, status: body.status, reference: body.reference || `PAY-${Date.now()}`, date: timestamp }).returning();
-      const paidAmount = body.status === "awaiting" ? lead.paidAmount : Math.max(0, lead.paidAmount + (body.status === "refunded" ? -body.amount : body.amount));
-      const paymentStatus = body.status === "refunded" ? "refunded" : body.status === "awaiting" ? "awaiting" : lead.totalAmount > 0 && paidAmount >= lead.totalAmount ? "paid" : paidAmount > 0 ? "partial" : lead.deposit > 0 ? "awaiting" : "not_required";
-      await tx.update(s.leads).set({ paidAmount, paymentStatus, lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
+      const folio = await ensureFolio(tx, lead);
+      const [payment] = await tx.insert(s.guestPayments).values({ id: id("payment"), leadId: lead.id, folioId: folio.id, guestId: lead.guestId, amount: body.amount, method: body.method, status: body.status, reference: body.reference || `PAY-${Date.now()}`, date: timestamp }).returning();
+      const updatedFolio = await recalcFolio(tx, folio.id);
+      await tx.update(s.leads).set({ lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
       await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "payment", title: body.status === "refunded" ? "Оформлен возврат" : "Добавлена оплата", amount: body.status === "refunded" ? -body.amount : body.amount, occurredAt: timestamp });
-      return { payment, paidAmount, paymentStatus };
+      return { payment, paidAmount: updatedFolio.paidAmount, balance: updatedFolio.balance, paymentStatus: undefined };
     });
     if (!result) return response.status(404).json({ error: "Лид не найден" });
-    response.status(201).json(result);
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    response.status(201).json({ ...result, paymentStatus: lead?.paymentStatus });
   });
 
   return router;

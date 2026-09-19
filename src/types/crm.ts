@@ -215,6 +215,8 @@ export interface GuestPayment {
   guestId: string;
   stayId?: string;
   leadId?: string;
+  /** Связанный фолио (оплата уменьшает его баланс). */
+  folioId?: string;
   date: string;
   amount: number;
   method: "card" | "transfer" | "cash";
@@ -315,7 +317,31 @@ export type LeadItemType =
 
 export type LeadItemStatus = "interest" | "selected" | "quoted" | "confirmed" | "completed" | "cancelled";
 
-export type ServicePricingMode = "fixed" | "per_person" | "per_hour" | "quote" | "external";
+export type PricingMode =
+  | "per_night_per_unit"
+  | "per_person"
+  | "per_session"
+  | "per_hour"
+  | "per_unit"
+  | "fixed"
+  | "manual"
+  | "quote"
+  | "external";
+
+export type ServicePricingMode = PricingMode;
+
+export type ServiceEventType = "corporate" | "wedding_banquet" | "other";
+
+/** Базовые параметры запроса по категории услуг, собираемые на квалификации. */
+export interface InterestDetails {
+  checkIn?: string | null;
+  checkOut?: string | null;
+  date?: string | null;
+  guests?: number | null;
+  participants?: number | null;
+  eventType?: string | null;
+  note?: string | null;
+}
 
 export interface LeadInterest {
   id: string;
@@ -325,6 +351,8 @@ export interface LeadInterest {
   status: string;
   ownerId?: string;
   notes?: string;
+  /** Базовые параметры запроса по категории (даты, гости, тип мероприятия). */
+  details?: InterestDetails;
   createdAt: string;
   updatedAt: string;
 }
@@ -349,6 +377,15 @@ export interface LeadItem {
   totalAmount?: number;
   currency: string;
   externalReference?: string;
+  /** Ссылка на запись каталога услуг (price snapshot берётся из неё). */
+  catalogItemId?: string;
+  /** Pricing mode, зафиксированный в момент выбора из каталога. */
+  pricingModeSnapshot?: PricingMode;
+  /** Цена каталога на момент выбора — не переписывается при изменении прайса. */
+  catalogDefaultPrice?: number;
+  /** Менеджер изменил цену относительно каталожной. */
+  priceOverridden?: boolean;
+  overrideReason?: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -358,14 +395,92 @@ export interface ServiceCatalogEntry {
   id: string;
   propertyId: string;
   code: string;
+  /** Категория услуги (= service group code: accommodation, restaurant, spa, ...). */
   category: string;
+  /** LeadItemType позиции, создаваемой из этой записи каталога. */
+  serviceType?: LeadItemType;
   name: string;
   description?: string;
   active: boolean;
   pricingMode: ServicePricingMode;
   defaultPrice?: number;
+  /** Единица тарификации: night, person, session, hour, unit, item. */
+  pricingUnit?: string;
+  /** Длительность по умолчанию (например массаж 60 минут). */
+  defaultDurationMinutes?: number;
+  displayOrder?: number;
   currency: string;
   metadata?: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Folio — счёт заказа (источник истины по коммерческой сумме и оплатам)
+// ---------------------------------------------------------------------------
+
+export type FolioStatus = "open" | "quoted" | "payment_pending" | "settled" | "closed" | "cancelled";
+
+export interface FolioLine {
+  id: string;
+  folioId: string;
+  leadItemId?: string;
+  catalogItemId?: string;
+  category: string;
+  description: string;
+  quantity: number;
+  unit?: string;
+  unitPrice: number;
+  lineTotal: number;
+  status: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Folio {
+  id: string;
+  code: string;
+  leadId: string;
+  guestId: string;
+  propertyId: string;
+  status: FolioStatus;
+  currency: string;
+  subtotal: number;
+  discountAmount: number;
+  totalAmount: number;
+  depositRequired: number;
+  paidAmount: number;
+  balance: number;
+  closedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  lines: FolioLine[];
+}
+
+// ---------------------------------------------------------------------------
+// Journey — результат серверной проверки готовности к следующему этапу
+// ---------------------------------------------------------------------------
+
+export interface JourneyRequirement {
+  code: string;
+  label: string;
+  completed: boolean;
+  blocking: boolean;
+}
+
+export interface LeadJourney {
+  currentStage: LeadStage;
+  currentStageLabel: string;
+  nextStage: LeadStage | null;
+  nextStageLabel: string | null;
+  actionLabel: string | null;
+  stageIndex: number;
+  stageCount: number;
+  canAdvance: boolean;
+  terminal: boolean;
+  requirements: JourneyRequirement[];
+  blockers: JourneyRequirement[];
+  previousStage: LeadStage | null;
+  canRollback: boolean;
 }
 
 export interface Lead {
@@ -397,8 +512,18 @@ export interface Lead {
   /** SLA первого ответа в минутах для данного канала/направления. */
   slaMinutes: number;
   lostReason?: LostReason;
+  /** Комментарий к причине потери (mock mode). */
+  lostComment?: string | null;
+  /** Причина отмены подтверждённого заказа. */
+  cancellationReason?: string | null;
   bookingReference?: string;
   specialRequest?: string;
+  /** Связанный фолио (database mode). */
+  folioId?: string;
+  folioCode?: string;
+  updatedAt?: string;
+  nextActionLabel?: string;
+  nextActionDueAt?: string;
   stageHistory: LeadStageHistory[];
   activity: ActivityEvent[];
   /** Классификация обращения (три измерения + объяснимость). */
@@ -415,6 +540,8 @@ export interface Lead {
   interests: LeadInterest[];
   /** Deal composition items */
   items: LeadItem[];
+  /** Серверная оценка готовности к следующему этапу (database mode). */
+  journey?: LeadJourney;
 }
 
 export interface OfferLine {
@@ -430,6 +557,11 @@ export interface Offer {
   leadId: string;
   guestId: string;
   propertyId: PropertyId;
+  /** Фолио, из которого собрано предложение (snapshot). */
+  folioId?: string;
+  folioCode?: string;
+  folioTotal?: number;
+  folioDepositRequired?: number;
   roomType?: string | null;
   checkIn?: string | null;
   checkOut?: string | null;
@@ -863,4 +995,5 @@ export interface CrmDataset {
   operationalTasks: OperationalTask[];
   pmsSnapshots: PmsDailySnapshot[];
   serviceCatalog: ServiceCatalogEntry[];
+  folios: Folio[];
 }

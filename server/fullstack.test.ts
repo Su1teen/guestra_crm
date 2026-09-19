@@ -41,6 +41,10 @@ beforeAll(async () => {
   }
   const migration1 = await readFile(new URL("../drizzle/0001_resort_customer_journey.sql", import.meta.url), "utf8");
   await client.exec(migration1);
+  const migration2 = await readFile(new URL("../drizzle/0002_folio_service_journey.sql", import.meta.url), "utf8");
+  for (const statement of migration2.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
+    await client.exec(statement);
+  }
   db = drizzle(client, { schema: s }) as unknown as Database;
   await bootstrapDatabase(db, config);
   app = createApp(db, config);
@@ -49,15 +53,22 @@ beforeAll(async () => {
 describe("database migrations", () => {
   it("orders and applies the resort journey migration after the initial schema", async () => {
     const migrations = readMigrationFiles({ migrationsFolder: "drizzle" });
-    expect(migrations).toHaveLength(2);
+    expect(migrations).toHaveLength(3);
     expect(migrations[1].folderMillis).toBeGreaterThan(migrations[0].folderMillis);
+    expect(migrations[2].folderMillis).toBeGreaterThan(migrations[1].folderMillis);
 
     const client = new PGlite();
     const migrationDb = drizzle(client);
     await migratePglite(migrationDb, { migrationsFolder: "drizzle" });
     const columns = await client.query<{ column_name: string }>("select column_name from information_schema.columns where table_name = 'leads'");
     expect(columns.rows.map((column) => column.column_name)).toContain("paid_amount");
+    const offerColumns = await client.query<{ column_name: string }>("select column_name from information_schema.columns where table_name = 'offers'");
+    expect(offerColumns.rows.map((column) => column.column_name)).toContain("folio_id");
+    const folioTables = await client.query<{ table_name: string }>("select table_name from information_schema.tables where table_name in ('folios', 'folio_lines')");
+    expect(folioTables.rows.map((row) => row.table_name).sort()).toEqual(["folio_lines", "folios"]);
     await bootstrapDatabase(migrationDb as unknown as Database, config);
+    const folios = await client.query<{ id: string }>("select id from folios");
+    expect(folios.rows.length).toBeGreaterThan(0);
     const seededLeads = await client.query<{ id: string }>("select id from leads where id = 'lead_live_3'");
     expect(seededLeads.rows).toHaveLength(1);
     await client.close();
@@ -121,7 +132,7 @@ describe("manual resort leads", () => {
       ],
       nextActionLabel: "Подтвердить время", nextActionDueAt: "2026-10-20T10:00:00.000Z", note: "Создано тестом",
     }).expect(201);
-    expect(created.body.lead).toMatchObject({ stage: "planning", totalAmount: 72000 });
+    expect(created.body.lead).toMatchObject({ stage: "new", totalAmount: 72000 });
     expect(created.body.interests).toHaveLength(2);
     expect(created.body.items.map((item: { type: string }) => item.type)).toEqual(["restaurant", "spa"]);
     const leadId = created.body.lead.id;
@@ -221,7 +232,8 @@ describe("AI integration", () => {
     expect(retry.body.duplicate).toBe(true);
     expect(await db.select().from(s.leadActivities).where(and(eq(s.leadActivities.leadId, leadBefore.id), eq(s.leadActivities.type, "booking")))).toHaveLength(activitiesAfterFirst.length);
     const [confirmed] = await db.select().from(s.leads).where(eq(s.leads.id, leadBefore.id));
-    expect(confirmed).toMatchObject({ stage: "confirmed", bookingReference: "HAIP-TEST-42", probability: 100, paymentStatus: "not_required" });
+    // deposit 90000 из оффера требует оплаты → статус awaiting
+    expect(confirmed).toMatchObject({ stage: "confirmed", bookingReference: "HAIP-TEST-42", probability: 100, paymentStatus: "awaiting" });
     expect(await db.select().from(s.messages)).toHaveLength(0);
   });
 });

@@ -1729,14 +1729,22 @@ for (let dayOffset = 30; dayOffset >= 0; dayOffset -= 1) {
 }
 
 const mockServiceCatalog: ServiceCatalogEntry[] = [
-  { id: "svc_restaurant_sova", propertyId: "les_borovoe", code: "restaurant_sova", category: "restaurant", name: "Ресторан SOVA", pricingMode: "quote", currency: "KZT", active: true },
-  { id: "svc_spa_visit", propertyId: "les_borovoe", code: "spa_visit", category: "spa", name: "SPA визит", pricingMode: "per_person", defaultPrice: 12000, currency: "KZT", active: true },
-  { id: "svc_massage", propertyId: "les_borovoe", code: "massage", category: "massage", name: "Массаж", pricingMode: "per_person", defaultPrice: 15000, currency: "KZT", active: true },
-  { id: "svc_bathhouse", propertyId: "les_borovoe", code: "bathhouse", category: "bathhouse", name: "Баня", pricingMode: "per_hour", defaultPrice: 25000, currency: "KZT", active: true },
-  { id: "svc_karaoke", propertyId: "les_borovoe", code: "karaoke", category: "karaoke", name: "Караоке", pricingMode: "per_hour", defaultPrice: 15000, currency: "KZT", active: true },
-  { id: "svc_horse_riding", propertyId: "les_borovoe", code: "horse_riding", category: "activities", name: "Конная прогулка", pricingMode: "per_person", defaultPrice: 10000, currency: "KZT", active: true },
-  { id: "svc_atv", propertyId: "les_borovoe", code: "atv", category: "activities", name: "Квадроциклы", pricingMode: "per_person", defaultPrice: 15000, currency: "KZT", active: true },
-  { id: "svc_transfer", propertyId: "les_borovoe", code: "transfer", category: "transfer", name: "Трансфер", pricingMode: "fixed", defaultPrice: 35000, currency: "KZT", active: true },
+  { id: "svc_acc_sky_house", propertyId: "les_borovoe", code: "acc_sky_house", category: "accommodation", serviceType: "accommodation", name: "Sky House", description: "Панорамный домик у озера", pricingMode: "per_night_per_unit", defaultPrice: 85000, pricingUnit: "night", displayOrder: 10, currency: "KZT", active: true },
+  { id: "svc_acc_a_frame", propertyId: "les_borovoe", code: "acc_a_frame", category: "accommodation", serviceType: "accommodation", name: "A-Frame", description: "Треугольный домик в лесу", pricingMode: "per_night_per_unit", defaultPrice: 130000, pricingUnit: "night", displayOrder: 11, currency: "KZT", active: true },
+  { id: "svc_acc_forest_house", propertyId: "les_borovoe", code: "acc_forest_house", category: "accommodation", serviceType: "accommodation", name: "Forest House", description: "Большой дом для семьи", pricingMode: "per_night_per_unit", defaultPrice: 195000, pricingUnit: "night", displayOrder: 12, currency: "KZT", active: true },
+  { id: "svc_restaurant_sova", propertyId: "les_borovoe", code: "restaurant_sova", category: "restaurant", serviceType: "restaurant", name: "Ресторан SOVA", description: "Средний чек на гостя", pricingMode: "per_person", defaultPrice: 15000, pricingUnit: "person", displayOrder: 20, currency: "KZT", active: true },
+  { id: "svc_spa_visit", propertyId: "les_borovoe", code: "spa_visit", category: "spa", serviceType: "spa", name: "SPA визит", pricingMode: "per_person", defaultPrice: 12000, pricingUnit: "person", displayOrder: 30, currency: "KZT", active: true },
+  { id: "svc_spa_pool", propertyId: "les_borovoe", code: "spa_pool", category: "spa", serviceType: "spa", name: "Бассейн", pricingMode: "per_person", defaultPrice: 8000, pricingUnit: "person", displayOrder: 31, currency: "KZT", active: true },
+  { id: "svc_massage", propertyId: "les_borovoe", code: "massage_60", category: "spa", serviceType: "massage", name: "Массаж 60 минут", pricingMode: "per_session", defaultPrice: 15000, pricingUnit: "session", defaultDurationMinutes: 60, displayOrder: 32, currency: "KZT", active: true },
+  { id: "svc_bathhouse", propertyId: "les_borovoe", code: "bathhouse", category: "bathhouse", serviceType: "bathhouse", name: "Баня и чан", pricingMode: "per_hour", defaultPrice: 25000, pricingUnit: "hour", displayOrder: 40, currency: "KZT", active: true },
+  { id: "svc_karaoke", propertyId: "les_borovoe", code: "karaoke", category: "karaoke", serviceType: "karaoke", name: "Караоке", pricingMode: "per_hour", defaultPrice: 15000, pricingUnit: "hour", displayOrder: 50, currency: "KZT", active: true },
+  { id: "svc_horse_riding", propertyId: "les_borovoe", code: "act_horse", category: "activities", serviceType: "horse_riding", name: "Конная прогулка", pricingMode: "per_person", defaultPrice: 10000, pricingUnit: "person", displayOrder: 60, currency: "KZT", active: true },
+  { id: "svc_atv", propertyId: "les_borovoe", code: "act_atv", category: "activities", serviceType: "atv", name: "Квадроциклы", pricingMode: "per_unit", defaultPrice: 15000, pricingUnit: "unit", displayOrder: 61, currency: "KZT", active: true },
+  { id: "svc_event_corporate", propertyId: "les_borovoe", code: "event_corporate", category: "events", serviceType: "corporate_event", name: "Корпоративное мероприятие", pricingMode: "per_person", defaultPrice: 20000, pricingUnit: "person", displayOrder: 70, currency: "KZT", active: true },
+  { id: "svc_event_wedding", propertyId: "les_borovoe", code: "event_wedding", category: "events", serviceType: "wedding_or_banquet", name: "Свадьба / банкет", pricingMode: "per_person", defaultPrice: 25000, pricingUnit: "person", displayOrder: 71, currency: "KZT", active: true },
+  { id: "svc_other_custom", propertyId: "les_borovoe", code: "other_custom", category: "other", serviceType: "other", name: "Другое / custom", pricingMode: "manual", pricingUnit: "item", displayOrder: 90, currency: "KZT", active: true },
+  // transfer остаётся в каталоге как историческая позиция, но не активен для выбора
+  { id: "svc_transfer", propertyId: "les_borovoe", code: "transfer", category: "transfer", name: "Трансфер", pricingMode: "fixed", defaultPrice: 35000, pricingUnit: "unit", currency: "KZT", active: false },
 ];
 
 export const crmDataset: CrmDataset = {
@@ -1763,6 +1771,8 @@ export const crmDataset: CrmDataset = {
   operationalTasks,
   pmsSnapshots,
   serviceCatalog: mockServiceCatalog,
+  // Mock-режим синтезирует folio из lead.items/payments на лету (src/lib/journey.ts)
+  folios: [],
 };
 
 export const findGuest = guestById;

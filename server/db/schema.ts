@@ -147,6 +147,7 @@ export const guestPayments = pgTable("guest_payments", {
   guestId: text("guest_id").notNull().references(() => guests.id, { onDelete: "cascade" }),
   stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
   leadId: text("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  folioId: text("folio_id").references(() => folios.id, { onDelete: "set null" }),
   date: timestamp("date", { withTimezone: true, mode: "string" }).notNull(),
   amount: integer("amount").notNull().default(0),
   method: text("method").notNull(),
@@ -297,6 +298,7 @@ export const offers = pgTable("offers", {
   children: integer("children").notNull().default(0),
   status: text("status").notNull(),
   ownerId: text("owner_id").notNull().references(() => employees.id),
+  folioId: text("folio_id").references(() => folios.id, { onDelete: "set null" }),
   expiresAt: timestamp("expires_at", { withTimezone: true, mode: "string" }).notNull(),
   sentAt: timestamp("sent_at", { withTimezone: true, mode: "string" }),
   viewedAt: timestamp("viewed_at", { withTimezone: true, mode: "string" }),
@@ -580,6 +582,8 @@ export const leadInterests = pgTable("lead_interests", {
   status: text("status").notNull().default("active"),
   ownerId: text("owner_id").references(() => employees.id, { onDelete: "set null" }),
   notes: text("notes"),
+  /** Базовые параметры запроса по категории (даты, гости, тип мероприятия). */
+  details: jsonb("details").$type<Record<string, unknown>>(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, (table) => [
@@ -607,6 +611,11 @@ export const leadItems = pgTable("lead_items", {
   totalAmount: integer("total_amount"),
   currency: text("currency").notNull().default("KZT"),
   externalReference: text("external_reference"),
+  catalogItemId: text("catalog_item_id").references(() => serviceCatalog.id, { onDelete: "set null" }),
+  pricingModeSnapshot: text("pricing_mode_snapshot"),
+  catalogDefaultPrice: integer("catalog_default_price"),
+  priceOverridden: boolean("price_overridden").notNull().default(false),
+  overrideReason: text("override_reason"),
   metadata: jsonb("metadata").$type<Record<string, unknown>>(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -619,15 +628,71 @@ export const serviceCatalog = pgTable("service_catalog", {
   propertyId: text("property_id").notNull().references(() => properties.id, { onDelete: "cascade" }),
   code: text("code").notNull(),
   category: text("category").notNull(),
+  /** LeadItemType позиции, создаваемой из этой записи каталога. */
+  serviceType: text("service_type"),
   name: text("name").notNull(),
   description: text("description"),
   active: boolean("active").notNull().default(true),
   pricingMode: text("pricing_mode").notNull().default("quote"),
   defaultPrice: integer("default_price"),
+  /** Единица тарификации: night / person / session / hour / unit / item. */
+  pricingUnit: text("pricing_unit"),
+  defaultDurationMinutes: integer("default_duration_minutes"),
+  displayOrder: integer("display_order").notNull().default(0),
   currency: text("currency").notNull().default("KZT"),
   metadata: jsonb("metadata").$type<Record<string, unknown>>(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, (table) => [
   uniqueIndex("service_catalog_property_code_uidx").on(table.propertyId, table.code),
+]);
+
+// ---------------------------------------------------------------------------
+// Folio — счёт заказа. Создаётся вместе с lead в одной транзакции и является
+// источником истины по коммерческой сумме (lead.total_amount дублируется для
+// backward compatibility).
+// ---------------------------------------------------------------------------
+
+export const folios = pgTable("folios", {
+  id: text("id").primaryKey(),
+  code: text("code").notNull(),
+  leadId: text("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  guestId: text("guest_id").notNull().references(() => guests.id, { onDelete: "cascade" }),
+  propertyId: text("property_id").notNull().references(() => properties.id),
+  status: text("status").notNull().default("open"),
+  currency: text("currency").notNull().default("KZT"),
+  subtotal: integer("subtotal").notNull().default(0),
+  discountAmount: integer("discount_amount").notNull().default(0),
+  totalAmount: integer("total_amount").notNull().default(0),
+  depositRequired: integer("deposit_required").notNull().default(0),
+  paidAmount: integer("paid_amount").notNull().default(0),
+  balance: integer("balance").notNull().default(0),
+  closedAt: timestamp("closed_at", { withTimezone: true, mode: "string" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [
+  uniqueIndex("folios_lead_uidx").on(table.leadId),
+  uniqueIndex("folios_code_uidx").on(table.code),
+  index("folios_guest_idx").on(table.guestId),
+  index("folios_property_idx").on(table.propertyId),
+]);
+
+export const folioLines = pgTable("folio_lines", {
+  id: text("id").primaryKey(),
+  folioId: text("folio_id").notNull().references(() => folios.id, { onDelete: "cascade" }),
+  leadItemId: text("lead_item_id").references(() => leadItems.id, { onDelete: "set null" }),
+  catalogItemId: text("catalog_item_id").references(() => serviceCatalog.id, { onDelete: "set null" }),
+  category: text("category").notNull(),
+  description: text("description").notNull(),
+  quantity: integer("quantity").notNull().default(1),
+  unit: text("unit"),
+  unitPrice: integer("unit_price").notNull().default(0),
+  lineTotal: integer("line_total").notNull().default(0),
+  status: text("status").notNull().default("active"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [
+  index("folio_lines_folio_idx").on(table.folioId),
+  index("folio_lines_item_idx").on(table.leadItemId),
 ]);

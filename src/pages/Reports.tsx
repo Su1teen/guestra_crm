@@ -16,6 +16,8 @@ import {
   breakdownByDirection,
   breakdownByQuality,
   breakdownByCategory,
+  revenueByServiceGroup,
+  collectedRevenue,
   revenueByEmployee,
   missedRevenue,
   avgCheck,
@@ -64,6 +66,8 @@ const Reports = () => {
   const directions = breakdownByDirection(scoped.leads);
   const qualities = breakdownByQuality(scoped.leads);
   const categories = breakdownByCategory(scoped.leads);
+  const serviceMix = revenueByServiceGroup(scoped.leads);
+  const collected = collectedRevenue(scoped.payments);
   const employeeRevenue = revenueByEmployee(data.employees, scoped.leads);
   const missed = missedRevenue(scoped.leads);
   const check = avgCheck(scoped.leads);
@@ -252,12 +256,12 @@ const Reports = () => {
     },
     {
       id: "directions",
-      name: "Направления услуг",
-      description: "Обращения по направлениям интереса (проживание, SPA, ресторан и т.д.)",
+      name: "Категории услуг",
+      description: "Обращения по категориям интереса (проживание, SPA, ресторан и т.д.)",
       build: async () => {
         await downloadReportWorkbook({
           ...commonParams,
-          title: "Направления услуг",
+          title: "Категории услуг",
           reportType: "directions",
           kpis: directions.map((item) => ({
             label: directionLabels[item.direction],
@@ -265,9 +269,9 @@ const Reports = () => {
             format: "number" as const,
           })),
           columns: [
-            { key: "direction", header: "Направление" },
+            { key: "direction", header: "Категория" },
             { key: "count", header: "Обращений", format: "number" },
-            { key: "confirmed", header: "Брони", format: "number" },
+            { key: "confirmed", header: "Подтверждено", format: "number" },
             { key: "revenue", header: "Выручка", format: "currency" },
             { key: "conversion", header: "Конверсия", format: "percent" },
           ],
@@ -278,7 +282,42 @@ const Reports = () => {
             revenue: item.revenue,
             conversion: item.conversion ?? 0,
           })),
-          methodology: [{ metric: "Конверсия по направлению", formula: "confirmed / (confirmed + lost)" }],
+          methodology: [{ metric: "Конверсия по категории", formula: "confirmed / (confirmed + lost)" }],
+        });
+      },
+    },
+    {
+      id: "service-mix",
+      name: "Микс услуг",
+      description: "Выручка и воронка по категориям услуг из состава заказов",
+      build: async () => {
+        await downloadReportWorkbook({
+          ...commonParams,
+          title: "Микс услуг",
+          reportType: "service-mix",
+          kpis: [
+            { label: "Подтверждённая выручка", value: sales.confirmedRevenue, format: "currency" },
+            { label: "Собрано платежей", value: collected, format: "currency" },
+            { label: "В предложениях", value: serviceMix.reduce((total, item) => total + item.quotedValue, 0), format: "currency" },
+          ],
+          columns: [
+            { key: "group", header: "Категория" },
+            { key: "lines", header: "Позиций", format: "number" },
+            { key: "confirmedRevenue", header: "Подтверждено", format: "currency" },
+            { key: "quotedValue", header: "В предложениях", format: "currency" },
+            { key: "pipelineValue", header: "В воронке", format: "currency" },
+          ],
+          rows: serviceMix.map((item) => ({
+            group: item.label,
+            lines: item.lines,
+            confirmedRevenue: item.confirmedRevenue,
+            quotedValue: item.quotedValue,
+            pipelineValue: item.pipelineValue,
+          })),
+          methodology: [
+            { metric: "Микс услуг", formula: "Σ totalAmount позиций заказа по категориям (lead.items ↔ folio lines)" },
+            { metric: "Собрано платежей", formula: "Σ amount платежей со статусом paid" },
+          ],
         });
       },
     },

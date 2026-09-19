@@ -15,6 +15,7 @@ import type {
 } from "@/types/crm";
 import { PIPELINE_STAGES } from "@/lib/labels";
 import { daysBetween, startOfDay } from "@/lib/format";
+import { serviceGroupForItemType, serviceGroupLabel } from "@shared/service-groups";
 
 export const OPEN_STAGES: LeadStage[] = ["new", "qualified", "offer", "payment_pending"];
 
@@ -429,6 +430,64 @@ export const revenueByEmployee = (
       };
     })
     .sort((a, b) => b.revenue - a.revenue);
+
+// ---------------------------------------------------------------------------
+// Микс услуг — выручка и воронка по категориям услуг (из состава заказов)
+// ---------------------------------------------------------------------------
+
+export interface ServiceGroupBreakdown {
+  group: string;
+  label: string;
+  lines: number;
+  /** Выручка по подтверждённым/завершённым заказам. */
+  confirmedRevenue: number;
+  /** Сумма по заказам на этапе предложения/оплаты (quoted). */
+  quotedValue: number;
+  /** Сумма по открытым ранним этапам (new/qualified/planning). */
+  pipelineValue: number;
+}
+
+/**
+ * Разрез выручки по категориям услуг. Считается по позициям заказа
+ * (lead.items ↔ folio lines синхронизированы на сервере), поэтому
+ * не дублирует totalAmount лида и не зависит от заполненности folio.
+ */
+export const revenueByServiceGroup = (leads: Lead[]): ServiceGroupBreakdown[] => {
+  const map = new Map<string, ServiceGroupBreakdown>();
+  const ensure = (code: string) => {
+    const existing = map.get(code);
+    if (existing) return existing;
+    const created: ServiceGroupBreakdown = {
+      group: code,
+      label: serviceGroupLabel(code),
+      lines: 0,
+      confirmedRevenue: 0,
+      quotedValue: 0,
+      pipelineValue: 0,
+    };
+    map.set(code, created);
+    return created;
+  };
+  for (const lead of leads) {
+    if (lead.stage === "lost" || lead.stage === "cancelled") continue;
+    for (const item of lead.items ?? []) {
+      if (item.status === "cancelled") continue;
+      const entry = ensure(item.category ?? serviceGroupForItemType(item.type).code);
+      entry.lines += 1;
+      const amount = item.totalAmount ?? 0;
+      if (lead.stage === "confirmed" || lead.stage === "completed") entry.confirmedRevenue += amount;
+      else if (lead.stage === "offer" || lead.stage === "payment_pending") entry.quotedValue += amount;
+      else entry.pipelineValue += amount;
+    }
+  }
+  return [...map.values()].sort(
+    (a, b) => b.confirmedRevenue + b.quotedValue - (a.confirmedRevenue + a.quotedValue),
+  );
+};
+
+/** Наличные поступления: сумма реально оплаченных платежей (cash-in). */
+export const collectedRevenue = (payments: { amount: number; status: string }[]): number =>
+  sum(payments.filter((payment) => payment.status === "paid").map((payment) => payment.amount));
 
 // ---------------------------------------------------------------------------
 // Упущенная выручка

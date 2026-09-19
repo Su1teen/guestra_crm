@@ -30,7 +30,7 @@ import { directionLabels, intentLabels, intentTone, sourceLabels, stageLabels, s
 import { formatTengeCompact } from "@/lib/format";
 
 const Leads = () => {
-  const { status, reload, guestById, employeeById, propertyById, dataMode } = useCrm();
+  const { status, reload, guestById, employeeById, propertyById } = useCrm();
   const ownerOptions = useOwnerOptions();
   const scoped = useScopedData();
   const navigate = useNavigate();
@@ -106,7 +106,7 @@ const Leads = () => {
     },
     {
       key: "stage",
-      header: "Стадия",
+      header: "Этап",
       render: (lead) => (
         <StatusPill tone={stageTone[lead.stage]} withDot>
           {stageLabels[lead.stage]}
@@ -143,17 +143,17 @@ const Leads = () => {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Лиды"
+        title="Обращения"
         description="Все обращения гостей по проживанию, ресторану, SPA и активностям"
         meta={
           <>
-            <StatusPill tone="brand">{filtered.length} лидов</StatusPill>
+            <StatusPill tone="brand">{filtered.length} обращений</StatusPill>
             <StatusPill tone="neutral">
               {formatTengeCompact(filtered.reduce((sum, lead) => sum + lead.totalAmount, 0))} потенциал
             </StatusPill>
           </>
         }
-        actions={dataMode === "database" ? <CreateLeadDialog /> : undefined}
+        actions={<CreateLeadDialog />}
       />
 
       <FilterBar>
@@ -184,7 +184,7 @@ const Leads = () => {
         initialSort={{ key: "activity", direction: "desc" }}
         emptyState={
           <EmptyState
-            title="Лиды не найдены"
+            title="Обращения не найдены"
             description="Попробуйте изменить фильтры или поисковый запрос."
             icon={Target}
             action={{ label: "Сбросить фильтры", onClick: reset }}

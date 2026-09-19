@@ -41,7 +41,7 @@ export const stageLabels: Record<LeadStage, string> = {
   payment_pending: "Ожидает оплаты",
   confirmed: "Подтверждён",
   completed: "Завершён",
-  lost: "Проигран",
+  lost: "Потерян",
   cancelled: "Отменён",
 };
 
@@ -591,10 +591,24 @@ export const itemTypeLabels: Record<string, string> = {
 };
 
 export const itemStatusLabels: Record<string, string> = {
-  interest: "Интерес",
+  interest: "Запрошено",
   selected: "Выбрано",
   quoted: "Рассчитано",
   confirmed: "Подтверждено",
   completed: "Завершено",
   cancelled: "Отменено",
 };
+
+export const folioStatusLabels: Record<string, string> = {
+  open: "Открыт",
+  quoted: "Предложение сформировано",
+  payment_pending: "Ожидает оплаты",
+  settled: "Оплачен",
+  closed: "Закрыт",
+  cancelled: "Отменён",
+};
+
+/** Категории услуг, которые можно выбирать в sales UX (без transfer). */
+export const selectableDirectionLabels = Object.fromEntries(
+  Object.entries(directionLabels).filter(([key]) => !["transfer"].includes(key)),
+) as Record<string, string>;

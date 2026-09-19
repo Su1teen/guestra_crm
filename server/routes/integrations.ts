@@ -4,10 +4,19 @@ import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
+import { ensureFolio, recalcFolio, resolveItemPricing, syncFolioLineForItem, setFolioStatus } from "../services/folio.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const terminalStages = ["confirmed", "completed", "lost", "cancelled"];
+/**
+ * AI lead sync может создавать/обновлять только ранние этапы. confirmed и
+ * дальше ставит только booking confirmation, offer — только offer upsert.
+ */
+const integrationStages = ["new", "qualified", "planning"] as const;
+type IntegrationStage = (typeof integrationStages)[number];
+const clampIntegrationStage = (stage: string): IntegrationStage =>
+  (integrationStages as readonly string[]).includes(stage) ? (stage as IntegrationStage) : "new";
 const sha256 = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const safeEqual = (left: string | undefined, right: string) => {
   if (!left) return false;
@@ -120,12 +129,15 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
     let lead = await activeLead(db, guestId, input.propertyId);
     const timestamp = now();
     const changedFacts: string[] = [];
+    const requestedStage = clampIntegrationStage(input.stage);
+    if (requestedStage !== input.stage) changedFacts.push(`AI: этап «${input.stage}» проигнорирован (доступны new/qualified/planning)`);
     if (!lead) {
       const ownerId = await ownerForProperty(db, input.propertyId);
       const leadId = id("lead");
-      [lead] = await db.insert(s.leads).values({ id: leadId, code: `G-AI-${Date.now().toString().slice(-7)}`, guestId, propertyId: input.propertyId, source: "telegram", stage: input.stage, intent: input.temperature, roomType: input.roomType ?? null, checkIn: input.checkIn ? new Date(input.checkIn).toISOString() : null, checkOut: input.checkOut ? new Date(input.checkOut).toISOString() : null, nights: input.checkIn && input.checkOut ? Math.max(1, Math.round((new Date(input.checkOut).getTime() - new Date(input.checkIn).getTime()) / 86_400_000)) : 0, adults: input.adults ?? 0, children: input.children ?? 0, totalAmount: input.totalAmount ?? 0, ownerId, lastActivityAt: timestamp, nextActionLabel: input.nextActionLabel ?? null, nextActionDueAt: input.nextActionDueAt ?? null, probability: input.probability, slaMinutes: input.direction === "accommodation" ? 15 : 30 }).returning();
-      await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: input.stage, employeeId: null, changedAt: timestamp });
+      [lead] = await db.insert(s.leads).values({ id: leadId, code: `G-AI-${Date.now().toString().slice(-7)}`, guestId, propertyId: input.propertyId, source: "telegram", stage: requestedStage, intent: input.temperature, roomType: input.roomType ?? null, checkIn: input.checkIn ? new Date(input.checkIn).toISOString() : null, checkOut: input.checkOut ? new Date(input.checkOut).toISOString() : null, nights: input.checkIn && input.checkOut ? Math.max(1, Math.round((new Date(input.checkOut).getTime() - new Date(input.checkIn).getTime()) / 86_400_000)) : 0, adults: input.adults ?? 0, children: input.children ?? 0, totalAmount: input.totalAmount ?? 0, ownerId, lastActivityAt: timestamp, nextActionLabel: input.nextActionLabel ?? null, nextActionDueAt: input.nextActionDueAt ?? null, probability: input.probability, slaMinutes: input.direction === "accommodation" ? 15 : 30 }).returning();
+      await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: requestedStage, employeeId: null, changedAt: timestamp });
       await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "lead_created", title: "AI: лид создан из Telegram", occurredAt: timestamp });
+      await ensureFolio(db, lead);
     } else {
       const patch: Record<string, unknown> = { lastActivityAt: timestamp, updatedAt: timestamp, intent: input.temperature, probability: input.probability };
       const fields: Array<[string, unknown, string]> = [
@@ -135,9 +147,9 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
         ["nextActionLabel", input.nextActionLabel, "AI: обновлено следующее действие"], ["nextActionDueAt", input.nextActionDueAt, "AI: обновлено следующее действие"],
       ];
       for (const [field, value, fact] of fields) if (value !== undefined && value !== null && value !== "" && (lead as Record<string, unknown>)[field] !== value) { patch[field] = value; changedFacts.push(fact); }
-      if (input.stage !== lead.stage) {
-        patch.stage = input.stage;
-        await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: input.stage, employeeId: null, changedAt: timestamp });
+      if (requestedStage !== lead.stage && ["new", "qualified", "planning"].includes(lead.stage)) {
+        patch.stage = requestedStage;
+        await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: requestedStage, employeeId: null, changedAt: timestamp });
       }
       if ((patch.checkIn ?? lead.checkIn) && (patch.checkOut ?? lead.checkOut)) patch.nights = Math.max(1, Math.round((new Date(String(patch.checkOut ?? lead.checkOut)).getTime() - new Date(String(patch.checkIn ?? lead.checkIn)).getTime()) / 86_400_000));
       [lead] = await db.update(s.leads).set(patch).where(eq(s.leads.id, lead.id)).returning();
@@ -159,9 +171,20 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
     const incomingItems = input.items ?? (input.roomType ? [{
       type: "accommodation", name: input.roomType, quantity: 1, startAt: input.checkIn ?? undefined, endAt: input.checkOut ?? undefined,
       adults: input.adults ?? undefined, children: input.children ?? undefined, roomType: input.roomType,
+      totalAmount: input.totalAmount ?? undefined,
     }] : []);
     if (incomingItems.length > 0 && existingItems.length === 0) {
-      await db.insert(s.leadItems).values(incomingItems.map((item) => ({ id: id("item"), leadId: lead.id, status: "interest", ...item })));
+      const folio = await ensureFolio(db, lead);
+      for (const item of incomingItems) {
+        const pricing = resolveItemPricing({ ...item, adults: item.adults }, null);
+        const [created] = await db.insert(s.leadItems).values({
+          id: id("item"), leadId: lead.id, status: "interest", ...item,
+          unitAmount: pricing.unitPrice, totalAmount: pricing.totalAmount,
+          pricingModeSnapshot: pricing.pricingMode,
+        }).returning();
+        await syncFolioLineForItem(db, folio.id, created, pricing);
+      }
+      await recalcFolio(db, folio.id);
     }
     if (input.primaryDirection) {
       await db.update(s.leadClassifications).set({ direction: input.primaryDirection, updatedAt: timestamp }).where(eq(s.leadClassifications.leadId, lead.id));
@@ -187,16 +210,22 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
     const checkIn = input.checkIn ? new Date(input.checkIn).toISOString() : null;
     const checkOut = input.checkOut ? new Date(input.checkOut).toISOString() : null;
     const nights = checkIn && checkOut ? Math.max(1, Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000)) : 0;
+    const folio = await ensureFolio(db, lead);
     let offer;
     if (existing) {
       [offer] = await db.update(s.offers).set({ roomType: input.roomType ?? null, checkIn, checkOut, nights, adults: input.adults, children: input.children, total: input.total, deposit: input.deposit, terms: input.terms ?? null, expiresAt: input.expiresAt ?? existing.expiresAt, updatedAt: timestamp }).where(eq(s.offers.id, existing.id)).returning();
       await db.delete(s.offerLines).where(eq(s.offerLines.offerId, existing.id));
     } else {
-      [offer] = await db.insert(s.offers).values({ id: id("offer"), code: `КП-AI-${Date.now().toString().slice(-6)}`, leadId: lead.id, guestId: lead.guestId, propertyId: lead.propertyId, externalQuoteId, roomType: input.roomType ?? null, checkIn, checkOut, nights, adults: input.adults, children: input.children, status: "draft", ownerId: lead.ownerId, expiresAt: input.expiresAt ?? new Date(Date.now() + 4 * 86_400_000).toISOString(), total: input.total, deposit: input.deposit, currency: input.currency, terms: input.terms ?? null }).returning();
+      [offer] = await db.insert(s.offers).values({ id: id("offer"), code: `КП-AI-${Date.now().toString().slice(-6)}`, leadId: lead.id, guestId: lead.guestId, propertyId: lead.propertyId, folioId: folio.id, externalQuoteId, roomType: input.roomType ?? null, checkIn, checkOut, nights, adults: input.adults, children: input.children, status: "draft", ownerId: lead.ownerId, expiresAt: input.expiresAt ?? new Date(Date.now() + 4 * 86_400_000).toISOString(), total: input.total, deposit: input.deposit, currency: input.currency, terms: input.terms ?? null }).returning();
       await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "offer_created", title: "Предложение подготовлено", amount: input.total, occurredAt: timestamp });
-      if (["new", "qualified"].includes(lead.stage)) {
+      if (["new", "qualified", "planning"].includes(lead.stage)) {
         await db.update(s.leads).set({ stage: "offer", lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
         await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: "offer", employeeId: null, changedAt: timestamp });
+        await setFolioStatus(db, folio.id, "quoted");
+      }
+      if (input.deposit > 0) {
+        await db.update(s.folios).set({ depositRequired: input.deposit, updatedAt: timestamp }).where(eq(s.folios.id, folio.id));
+        await recalcFolio(db, folio.id);
       }
     }
     await db.insert(s.offerLines).values(input.lines.map((line, position) => ({ id: id("line"), offerId: offer.id, ...line, position })));
@@ -214,8 +243,23 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
     const timestamp = now();
     const checkIn = new Date(input.checkIn).toISOString();
     const checkOut = new Date(input.checkOut).toISOString();
-    const [updated] = await db.update(s.leads).set({ stage: "confirmed", probability: 100, bookingReference: input.confirmationNumber, reservationId: input.reservationId, roomType: input.roomType, checkIn, checkOut, nights: Math.max(1, Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000)), adults: input.adults, children: input.children, totalAmount: input.grandTotal, lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id)).returning();
+    const folio = await ensureFolio(db, lead);
+    const [updated] = await db.update(s.leads).set({ stage: "confirmed", probability: 100, bookingReference: input.confirmationNumber, reservationId: input.reservationId, roomType: input.roomType, checkIn, checkOut, nights: Math.max(1, Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000)), adults: input.adults, children: input.children, lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id)).returning();
     if (lead.stage !== "confirmed") await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: "confirmed", employeeId: null, changedAt: timestamp });
+    // Внешняя сумма бронирования сверяется с фолио: при расхождении добавляется
+    // корректировочная строка, чтобы фолио оставалось источником истины.
+    if (input.grandTotal > 0 && folio.totalAmount !== input.grandTotal) {
+      await db.insert(s.folioLines).values({
+        id: id("fline"), folioId: folio.id, category: "other",
+        description: `Корректировка по бронированию ${input.confirmationNumber}`,
+        quantity: 1, unit: "item", unitPrice: input.grandTotal - folio.totalAmount,
+        lineTotal: input.grandTotal - folio.totalAmount, status: "active",
+        metadata: { bookingReference: input.confirmationNumber },
+      });
+    }
+    await recalcFolio(db, folio.id);
+    await db.update(s.leadItems).set({ status: "confirmed", updatedAt: timestamp })
+      .where(and(eq(s.leadItems.leadId, lead.id), inArray(s.leadItems.status, ["interest", "selected", "quoted"])));
     await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "booking", title: "Бронирование подтверждено", description: input.confirmationNumber, amount: input.grandTotal, occurredAt: timestamp });
     await db.update(s.followUps).set({ status: "done", queue: "done", completedAt: timestamp, updatedAt: timestamp }).where(and(eq(s.followUps.leadId, lead.id), eq(s.followUps.status, "open")));
     response.json({ guestId: identity.guestId, leadId: updated.id, leadCode: updated.code, confirmationNumber: input.confirmationNumber, stage: updated.stage, bookingReference: updated.bookingReference });

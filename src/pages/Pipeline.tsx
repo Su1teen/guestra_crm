@@ -30,8 +30,11 @@ import {
   useLeadFilters,
   valueOptions,
 } from "@/hooks/use-lead-filters";
-import { PIPELINE_STAGES, TERMINAL_STAGES, stageLabels, stageTone } from "@/lib/labels";
-import type { Lead, LeadStage } from "@/types/crm";
+import { PIPELINE_STAGES, TERMINAL_STAGES, lostReasonLabels, stageLabels, stageTone } from "@/lib/labels";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { Lead, LeadStage, LostReason } from "@/types/crm";
 import { formatTengeCompact } from "@/lib/format";
 import { StatusPill } from "@/components/common/StatusPill";
 import { toneDotClass } from "@/components/common/StatusPill";
@@ -41,7 +44,7 @@ import { useToast } from "@/hooks/use-toast";
 const allStages: LeadStage[] = [...PIPELINE_STAGES, ...TERMINAL_STAGES];
 
 const Pipeline = () => {
-  const { status, reload, moveLeadStage, guestById } = useCrm();
+  const { status, reload, advanceLead, loseLead, cancelLead, journeyFor, guestById } = useCrm();
   const ownerOptions = useOwnerOptions();
   const scoped = useScopedData();
   const navigate = useNavigate();
@@ -50,6 +53,8 @@ const Pipeline = () => {
   const [showTerminal, setShowTerminal] = useState(false);
   const [dragOver, setDragOver] = useState<LeadStage | null>(null);
   const [pendingMove, setPendingMove] = useState<{ lead: Lead; stage: LeadStage } | null>(null);
+  const [pendingReason, setPendingReason] = useState("");
+  const [pendingLostReason, setPendingLostReason] = useState<LostReason>("other");
 
   const columns = useMemo(() => {
     const stages = showTerminal ? allStages : PIPELINE_STAGES;
@@ -65,10 +70,24 @@ const Pipeline = () => {
     });
   }, [filtered, showTerminal]);
 
-  const applyMove = (lead: Lead, stage: LeadStage) => {
-    moveLeadStage(lead.id, stage);
+  const applyMove = async (lead: Lead, stage: LeadStage, reason?: string, lostReason?: LostReason) => {
+    const journey = journeyFor(lead.id);
+    let result: { ok: boolean; error?: string };
+    if (stage === "lost") {
+      result = await loseLead(lead.id, lostReason ?? "other", reason || undefined);
+    } else if (stage === "cancelled") {
+      result = await cancelLead(lead.id, reason || "Отменено");
+    } else if (journey?.nextStage === stage) {
+      result = await advanceLead(lead.id);
+    } else {
+      result = { ok: false, error: `Из «${stageLabels[lead.stage]}» нельзя перейти в «${stageLabels[stage]}» — доступен только следующий этап` };
+    }
+    if (!result.ok) {
+      toast({ title: "Переход недоступен", description: result.error, variant: "destructive" });
+      return;
+    }
     toast({
-      title: "Стадия обновлена",
+      title: "Этап обновлён",
       description: `${guestById(lead.guestId)?.fullName ?? lead.code} → ${stageLabels[stage]}`,
     });
   };
@@ -77,13 +96,24 @@ const Pipeline = () => {
     setDragOver(null);
     const lead = filtered.find((item) => item.id === leadId);
     if (!lead || lead.stage === stage) return;
-    const critical =
-      stage === "confirmed" || stage === "lost" || stage === "cancelled" || stage === "payment_pending";
-    if (critical) {
-      setPendingMove({ lead, stage });
+    const journey = journeyFor(lead.id);
+    if (journey?.terminal) {
+      toast({ title: "Обращение закрыто", description: "Терминальный этап — перенос недоступен", variant: "destructive" });
       return;
     }
-    applyMove(lead, stage);
+    // Перетаскивать можно только на следующий этап или в терминальные.
+    const allowed = stage === journey?.nextStage || stage === "lost" || stage === "cancelled";
+    if (!allowed) {
+      toast({
+        title: "Этап заблокирован",
+        description: `Сначала завершите «${journey?.nextStageLabel ?? "текущий этап"}» — промежуточные этапы пропускать нельзя.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    setPendingReason("");
+    setPendingLostReason("other");
+    setPendingMove({ lead, stage });
   };
 
   if (status === "error") return <ErrorState onRetry={reload} />;
@@ -93,7 +123,7 @@ const Pipeline = () => {
     <div className="space-y-5">
       <PageHeader
         title="Воронка продаж"
-        description="Перетащите карточку, чтобы изменить стадию сделки"
+        description="Перетаскивание переводит обращение только на следующий этап — будущие этапы заблокированы"
         meta={
           <>
             <StatusPill tone="brand">{filtered.length} сделок в выборке</StatusPill>
@@ -195,25 +225,50 @@ const Pipeline = () => {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Перевести сделку в стадию «{pendingMove ? stageLabels[pendingMove.stage] : ""}»?
+              Перевести обращение в этап «{pendingMove ? stageLabels[pendingMove.stage] : ""}»?
             </AlertDialogTitle>
             <AlertDialogDescription>
               {pendingMove?.stage === "confirmed"
-                ? "Подтверждение фиксирует бронь и услуги сделки. Убедитесь, что условия согласованы и необходимая предоплата внесена."
+                ? "Подтверждение фиксирует бронь и услуги заказа."
                 : pendingMove?.stage === "completed"
-                  ? "Услуги оказаны в полном объёме. Сделка будет отмечена как успешно завершённая."
+                  ? "Услуги оказаны в полном объёме. Обращение будет завершено."
                   : pendingMove?.stage === "payment_pending"
-                    ? "Гость получит счет/ссылку на оплату, сделка перейдёт в ожидание оплаты."
-                    : pendingMove?.stage === "planning"
-                      ? "Сделка переходит на этап комплектации услуг, номеров и согласования сметы."
-                      : "Сделка будет закрыта и исключена из активной воронки."}
+                    ? "Гость получит счёт на оплату, обращение перейдёт в ожидание оплаты."
+                    : pendingMove?.stage === "lost" || pendingMove?.stage === "cancelled"
+                      ? "Обращение будет закрыто и исключено из активной воронки."
+                      : `Следующий этап — «${pendingMove ? stageLabels[pendingMove.stage] : ""}».`}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {pendingMove?.stage === "lost" && (
+            <div className="space-y-3 px-1">
+              <div className="space-y-1.5">
+                <Label>Причина потери *</Label>
+                <Select value={pendingLostReason} onValueChange={(value) => setPendingLostReason(value as LostReason)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(lostReasonLabels).map(([value, label]) => (
+                      <SelectItem key={value} value={value}>{label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Комментарий</Label>
+                <Textarea rows={2} value={pendingReason} onChange={(event) => setPendingReason(event.target.value)} />
+              </div>
+            </div>
+          )}
+          {pendingMove?.stage === "cancelled" && (
+            <div className="space-y-1.5 px-1">
+              <Label>Причина отмены</Label>
+              <Textarea rows={2} value={pendingReason} onChange={(event) => setPendingReason(event.target.value)} />
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel>Отмена</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (pendingMove) applyMove(pendingMove.lead, pendingMove.stage);
+                if (pendingMove) void applyMove(pendingMove.lead, pendingMove.stage, pendingReason, pendingLostReason);
                 setPendingMove(null);
               }}
             >

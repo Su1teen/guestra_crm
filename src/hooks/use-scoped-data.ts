@@ -5,6 +5,7 @@ import type {
   Conversation,
   FollowUp,
   Guest,
+  GuestPayment,
   GuestStay,
   HousekeepingTask,
   Lead,
@@ -24,6 +25,7 @@ export interface ScopedData {
   conversations: Conversation[];
   guests: Guest[];
   stays: GuestStay[];
+  payments: GuestPayment[];
   campaigns: Campaign[];
   metrics: SalesMetricPoint[];
   followUps: FollowUp[];
@@ -46,6 +48,7 @@ export const useScopedData = (): ScopedData => {
         conversations: data.conversations,
         guests: data.guests,
         stays: data.stays,
+        payments: data.payments,
         campaigns: data.campaigns,
         metrics: data.metrics,
         followUps: data.followUps,
@@ -57,13 +60,16 @@ export const useScopedData = (): ScopedData => {
       };
     }
 
+    const leads = data.leads.filter((lead) => lead.propertyId === property);
+    const leadIds = new Set(leads.map((lead) => lead.id));
     return {
-      leads: data.leads.filter((lead) => lead.propertyId === property),
+      leads,
       offers: data.offers.filter((offer) => offer.propertyId === property),
       tasks: data.tasks.filter((task) => task.propertyId === property),
       conversations: data.conversations.filter((conversation) => conversation.propertyId === property),
       guests: data.guests.filter((guest) => guest.propertyIds.includes(property)),
       stays: data.stays.filter((stay) => stay.propertyId === property),
+      payments: data.payments.filter((payment) => payment.leadId != null && leadIds.has(payment.leadId)),
       campaigns: data.campaigns.filter((campaign) => campaign.propertyId === property || campaign.propertyId === "all"),
       metrics: data.metrics.filter((point) => point.propertyId === property),
       followUps: data.followUps.filter((item) => item.propertyId === property),

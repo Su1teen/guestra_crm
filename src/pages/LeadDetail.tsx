@@ -3,17 +3,13 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   CheckSquare,
-  CreditCard,
   FileText,
   MessageSquare,
-  PackageCheck,
   Pencil,
   Plus,
   StickyNote,
   Phone,
   Mail,
-  ChevronRight,
-  Sparkles,
   Tag,
   Trash2,
 } from "lucide-react";
@@ -24,6 +20,9 @@ import { EmptyState, ErrorState, LoadingScreen } from "@/components/common/State
 import { Field, InitialsAvatar } from "@/components/common/Identity";
 import { Timeline } from "@/components/common/Timeline";
 import { CreateTaskDialog } from "@/components/crm/CreateTaskDialog";
+import { JourneyCard } from "@/components/crm/JourneyCard";
+import { FolioCard } from "@/components/crm/FolioCard";
+import { ServicePicker } from "@/components/crm/ServicePicker";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -36,18 +35,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCrm } from "@/store/crm-store";
+import type { LeadItemInput, LeadItemPatch } from "@/store/crm-store";
 import {
   formatDateLong,
   formatDateTime,
@@ -59,10 +49,7 @@ import {
   occupancyLabel,
 } from "@/lib/format";
 import {
-  PIPELINE_STAGES,
-  TERMINAL_STAGES,
   directionLabels,
-  directionTone,
   intentLabels,
   intentTone,
   itemStatusLabels,
@@ -80,11 +67,21 @@ import {
   taskStatusTone,
   taskTypeLabels,
 } from "@/lib/labels";
-import type { InterestDirection, LeadItemType, LeadStage } from "@/types/crm";
+import {
+  SERVICE_GROUPS,
+  eventTypeLabels,
+  isCommercialDirection,
+  qualificationFieldsForDirection,
+  serviceGroupForDirection,
+  type ServiceEventType,
+} from "@shared/service-groups";
+import type { InterestDetails, InterestDirection, LeadItem, LostReason } from "@/types/crm";
 import { useToast } from "@/hooks/use-toast";
-import { cn } from "@/lib/utils";
 
 const toLocalDate = (iso: string | null | undefined) => iso?.slice(0, 10) ?? "";
+
+/** Категории, которые можно добавить к обращению (коммерческие, без transfer). */
+const ADDABLE_DIRECTIONS = SERVICE_GROUPS.map((group) => group.direction as InterestDirection);
 
 const LeadDetail = () => {
   const { leadId = "" } = useParams();
@@ -98,22 +95,29 @@ const LeadDetail = () => {
     guestById,
     employeeById,
     propertyById,
-    moveLeadStage,
+    journeyFor,
+    folioByLeadId,
+    advanceLead,
+    loseLead,
+    cancelLead,
+    rollbackLead,
+    updateFolio,
     addLeadActivity,
     updateLead,
     createOfferFromLead,
     recordPayment,
     addLeadInterest,
+    updateLeadInterest,
     removeLeadInterest,
     addLeadItem,
+    updateLeadItem,
     removeLeadItem,
   } = useCrm();
 
   const [note, setNote] = useState("");
   const [editOpen, setEditOpen] = useState(false);
-  const [pendingStage, setPendingStage] = useState<LeadStage | null>(null);
+  const [advancing, setAdvancing] = useState(false);
 
-  // Payment dialog state
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentForm, setPaymentForm] = useState({
     amount: 0,
@@ -122,20 +126,21 @@ const LeadDetail = () => {
     notes: "",
   });
 
-  // Add Interest dialog state
   const [interestOpen, setInterestOpen] = useState(false);
-  const [selectedDirection, setSelectedDirection] = useState<InterestDirection>("spa");
+  const [selectedDirection, setSelectedDirection] = useState<InterestDirection>("accommodation");
 
-  // Add Item dialog state
   const [itemOpen, setItemOpen] = useState(false);
-  const [itemForm, setItemForm] = useState({
-    type: "spa" as LeadItemType,
-    name: "",
-    quantity: 1,
-    unitAmount: 0,
-    totalAmount: 0,
-    startAt: "",
-  });
+  const [editingItem, setEditingItem] = useState<LeadItem | null>(null);
+
+  const [loseOpen, setLoseOpen] = useState(false);
+  const [loseReason, setLoseReason] = useState<LostReason>("other");
+  const [loseComment, setLoseComment] = useState("");
+
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+
+  const [rollbackOpen, setRollbackOpen] = useState(false);
+  const [rollbackReason, setRollbackReason] = useState("");
 
   const lead = leadById(leadId);
   const guest = lead ? guestById(lead.guestId) : undefined;
@@ -147,9 +152,11 @@ const LeadDetail = () => {
     adults: lead?.adults ?? 2,
     children: lead?.children ?? 0,
     ownerId: lead?.ownerId ?? "",
-    totalAmount: lead?.totalAmount ?? 0,
     specialRequest: lead?.specialRequest ?? "",
   }));
+
+  // Локальные черновики параметров категорий (квалификация)
+  const [interestDrafts, setInterestDrafts] = useState<Record<string, InterestDetails>>({});
 
   if (status === "error") return <ErrorState onRetry={reload} />;
   if (status === "loading") return <LoadingScreen />;
@@ -157,9 +164,9 @@ const LeadDetail = () => {
   if (!lead || !guest) {
     return (
       <EmptyState
-        title="Лид не найден"
-        description="Возможно, сделка была удалена или ссылка устарела."
-        action={{ label: "К списку лидов", onClick: () => navigate("/leads") }}
+        title="Обращение не найдено"
+        description="Возможно, обращение было удалено или ссылка устарела."
+        action={{ label: "К списку обращений", onClick: () => navigate("/leads") }}
       />
     );
   }
@@ -169,17 +176,18 @@ const LeadDetail = () => {
   const offers = data.offers.filter((offer) => offer.leadId === lead.id);
   const tasks = data.tasks.filter((task) => task.leadId === lead.id);
   const conversation = data.conversations.find((item) => item.leadId === lead.id);
-  const currentIndex = PIPELINE_STAGES.indexOf(lead.stage);
+  const journey = journeyFor(lead.id);
+  const folio = folioByLeadId(lead.id);
+  const terminal = lead.stage === "completed" || lead.stage === "lost" || lead.stage === "cancelled";
 
   const openEdit = () => {
     setForm({
-      roomType: lead.roomType,
+      roomType: lead.roomType ?? "",
       checkIn: toLocalDate(lead.checkIn),
       checkOut: toLocalDate(lead.checkOut),
       adults: lead.adults,
       children: lead.children,
       ownerId: lead.ownerId,
-      totalAmount: lead.totalAmount,
       specialRequest: lead.specialRequest ?? "",
     });
     setEditOpen(true);
@@ -188,28 +196,57 @@ const LeadDetail = () => {
   const submitEdit = () => {
     updateLead(lead.id, {
       roomType: form.roomType,
-      checkIn: new Date(`${form.checkIn}T15:00:00`).toISOString(),
-      checkOut: new Date(`${form.checkOut}T12:00:00`).toISOString(),
+      checkIn: form.checkIn ? new Date(`${form.checkIn}T15:00:00`).toISOString() : undefined,
+      checkOut: form.checkOut ? new Date(`${form.checkOut}T12:00:00`).toISOString() : undefined,
       adults: Number(form.adults),
       children: Number(form.children),
       ownerId: form.ownerId,
-      totalAmount: Number(form.totalAmount),
       specialRequest: form.specialRequest || undefined,
     });
     setEditOpen(false);
-    toast({ title: "Лид обновлён" });
+    toast({ title: "Обращение обновлено" });
   };
 
-  const requestStage = (stage: LeadStage) => {
-    if (stage === lead.stage) return;
-    setPendingStage(stage);
+  const handleAdvance = async () => {
+    setAdvancing(true);
+    const result = await advanceLead(lead.id);
+    setAdvancing(false);
+    if (!result.ok) {
+      toast({ title: "Переход недоступен", description: result.error, variant: "destructive" });
+      return;
+    }
+    toast({ title: `Этап: ${result.nextStage ? stageLabels[result.nextStage] : "обновлён"}` });
   };
 
-  const applyStage = () => {
-    if (!pendingStage) return;
-    moveLeadStage(lead.id, pendingStage);
-    toast({ title: "Стадия обновлена", description: stageLabels[pendingStage] });
-    setPendingStage(null);
+  const submitLose = async () => {
+    const result = await loseLead(lead.id, loseReason, loseComment || undefined);
+    if (!result.ok) {
+      toast({ title: "Не удалось закрыть обращение", description: result.error, variant: "destructive" });
+      return;
+    }
+    setLoseOpen(false);
+    toast({ title: "Обращение закрыто как потерянное" });
+  };
+
+  const submitCancel = async () => {
+    const result = await cancelLead(lead.id, cancelReason || "Отменено менеджером");
+    if (!result.ok) {
+      toast({ title: "Не удалось отменить заказ", description: result.error, variant: "destructive" });
+      return;
+    }
+    setCancelOpen(false);
+    toast({ title: "Заказ отменён" });
+  };
+
+  const submitRollback = async () => {
+    const result = await rollbackLead(lead.id, rollbackReason || "Возврат для уточнения");
+    if (!result.ok) {
+      toast({ title: "Возврат недоступен", description: result.error, variant: "destructive" });
+      return;
+    }
+    setRollbackOpen(false);
+    setRollbackReason("");
+    toast({ title: `Возврат на этап «${result.nextStage ? stageLabels[result.nextStage] : ""}»` });
   };
 
   const submitNote = () => {
@@ -220,7 +257,7 @@ const LeadDetail = () => {
   };
 
   const submitPayment = async () => {
-    if (!lead || paymentForm.amount <= 0) return;
+    if (paymentForm.amount <= 0) return;
     await recordPayment(lead.id, paymentForm);
     setPaymentOpen(false);
     setPaymentForm({ amount: 0, method: "card", reference: "", notes: "" });
@@ -231,31 +268,33 @@ const LeadDetail = () => {
   };
 
   const submitInterest = async () => {
-    if (!lead || !selectedDirection) return;
     await addLeadInterest(lead.id, { direction: selectedDirection });
     setInterestOpen(false);
-    toast({ title: "Интерес добавлен" });
+    toast({ title: "Категория услуг добавлена" });
   };
 
-  const submitItem = async () => {
-    if (!lead || !itemForm.name) return;
-    const qty = Number(itemForm.quantity) || 1;
-    const unitAmt = Number(itemForm.unitAmount) || 0;
-    const totalAmt = Number(itemForm.totalAmount) || qty * unitAmt;
-    await addLeadItem(lead.id, {
-      type: itemForm.type,
-      name: itemForm.name,
-      quantity: qty,
-      unitAmount: unitAmt,
-      totalAmount: totalAmt,
-      startAt: itemForm.startAt ? new Date(`${itemForm.startAt}T12:00:00`).toISOString() : undefined,
+  const submitItem = async (input: LeadItemInput | LeadItemPatch, itemId?: string) => {
+    if (itemId) {
+      await updateLeadItem(lead.id, itemId, input as LeadItemPatch);
+      toast({ title: "Услуга обновлена" });
+    } else {
+      await addLeadItem(lead.id, input as LeadItemInput);
+      toast({ title: "Услуга добавлена в заказ" });
+    }
+    setEditingItem(null);
+  };
+
+  const saveInterestDetails = async (interestId: string) => {
+    const details = interestDrafts[interestId];
+    if (!details) return;
+    await updateLeadInterest(lead.id, interestId, { details });
+    setInterestDrafts((prev) => {
+      const next = { ...prev };
+      delete next[interestId];
+      return next;
     });
-    setItemOpen(false);
-    setItemForm({ type: "spa", name: "", quantity: 1, unitAmount: 0, totalAmount: 0, startAt: "" });
-    toast({ title: "Позиция добавлена в сделку" });
+    toast({ title: "Параметры запроса сохранены" });
   };
-
-  const servicesAmount = lead.services.reduce((sum, line) => sum + line.amount, 0);
 
   return (
     <div className="space-y-5">
@@ -266,7 +305,7 @@ const LeadDetail = () => {
 
       <PageHeader
         title={`${guest.fullName} · ${lead.code}`}
-        description={`${property.name} · ${lead.checkIn ? `${formatStayRange(lead.checkIn, lead.checkOut)} · ` : ""}${lead.roomType || (lead.items?.[0]?.name ?? "Сделка")}`}
+        description={`${property.name} · ${lead.checkIn ? `${formatStayRange(lead.checkIn, lead.checkOut)} · ` : ""}${lead.roomType || (lead.items?.[0]?.name ?? "Обращение")}`}
         meta={
           <>
             <StatusPill tone={stageTone[lead.stage]} withDot size="md">
@@ -280,22 +319,6 @@ const LeadDetail = () => {
         }
         actions={
           <>
-            <Button
-              variant="outline"
-              className="gap-2"
-              onClick={() => {
-                setPaymentForm({
-                  amount: Math.max(0, lead.totalAmount - (lead.paidAmount ?? 0)),
-                  method: "card",
-                  reference: "",
-                  notes: "",
-                });
-                setPaymentOpen(true);
-              }}
-            >
-              <CreditCard className="h-4 w-4" />
-              Оплата
-            </Button>
             <Button variant="outline" className="gap-2" onClick={openEdit}>
               <Pencil className="h-4 w-4" />
               Изменить
@@ -312,20 +335,6 @@ const LeadDetail = () => {
                 </Button>
               }
             />
-            <Button
-              variant="outline"
-              className="gap-2"
-              onClick={async () => {
-                const offerId = await createOfferFromLead(lead.id);
-                if (offerId) {
-                  toast({ title: "Черновик предложения создан" });
-                  navigate(`/offers/${offerId}`);
-                }
-              }}
-            >
-              <FileText className="h-4 w-4" />
-              Предложение
-            </Button>
             {conversation && (
               <Button className="gap-2" onClick={() => navigate(`/inbox?conversation=${conversation.id}`)}>
                 <MessageSquare className="h-4 w-4" />
@@ -336,117 +345,167 @@ const LeadDetail = () => {
         }
       />
 
-      <SectionCard title="Прогресс сделки" description="Нажмите на стадию, чтобы перевести сделку">
-        <div className="flex flex-wrap items-center gap-2">
-          {PIPELINE_STAGES.map((stage, index) => (
-            <button
-              key={stage}
-              type="button"
-              onClick={() => requestStage(stage)}
-              className={cn(
-                "flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors",
-                index <= currentIndex && currentIndex >= 0
-                  ? "border-brand-200 bg-brand-50 text-brand-700"
-                  : "border-border bg-card text-muted-foreground hover:border-brand-200 hover:text-foreground",
-              )}
-            >
-              <span className="text-xs tabular-nums">{index + 1}</span>
-              {stageLabels[stage]}
-              {index < PIPELINE_STAGES.length - 1 && <ChevronRight className="h-3.5 w-3.5 opacity-50" />}
-            </button>
-          ))}
-          <span className="mx-1 h-6 w-px bg-border" />
-          {TERMINAL_STAGES.map((stage) => (
-            <button
-              key={stage}
-              type="button"
-              onClick={() => requestStage(stage)}
-              className={cn(
-                "rounded-xl border px-3 py-2 text-sm font-medium transition-colors",
-                lead.stage === stage
-                  ? "border-rose-200 bg-rose-50 text-rose-700"
-                  : "border-border bg-card text-muted-foreground hover:border-rose-200 hover:text-rose-600",
-              )}
-            >
-              {stageLabels[stage]}
-            </button>
-          ))}
-        </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-4">
-          <Field label="Вероятность">{formatPercent(lead.probability, 0)}</Field>
-          <Field label="Создан">{formatDateLong(lead.createdAt)}</Field>
-          <Field label="Последняя активность">{formatRelative(lead.lastActivityAt)}</Field>
-          <Field label="Следующее действие">
-            {lead.nextAction ? `${lead.nextAction.label} · ${formatDueDate(lead.nextAction.dueAt)}` : "—"}
-          </Field>
-        </div>
-        {lead.lostReason && (
-          <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
-            Причина проигрыша: {lostReasonLabels[lead.lostReason]}
-          </p>
-        )}
-      </SectionCard>
+      {journey && (
+        <JourneyCard
+          lead={lead}
+          journey={journey}
+          advancing={advancing}
+          onAdvance={handleAdvance}
+          onLose={() => setLoseOpen(true)}
+          onCancel={() => setCancelOpen(true)}
+          onRollback={() => setRollbackOpen(true)}
+        />
+      )}
+
+      <div className="mt-1 grid gap-3 sm:grid-cols-4">
+        <Field label="Вероятность">{formatPercent(lead.probability, 0)}</Field>
+        <Field label="Создан">{formatDateLong(lead.createdAt)}</Field>
+        <Field label="Последняя активность">{formatRelative(lead.lastActivityAt)}</Field>
+        <Field label="Следующее действие">
+          {lead.nextAction ? `${lead.nextAction.label} · ${formatDueDate(lead.nextAction.dueAt)}` : "—"}
+        </Field>
+      </div>
+      {lead.lostReason && (
+        <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+          Причина потери: {lostReasonLabels[lead.lostReason]}
+          {lead.lostComment ? ` — ${lead.lostComment}` : ""}
+        </p>
+      )}
+      {lead.cancellationReason && (
+        <p className="rounded-xl bg-secondary/70 px-3 py-2 text-sm text-muted-foreground">
+          Причина отмены: {lead.cancellationReason}
+        </p>
+      )}
 
       <div className="grid gap-5 xl:grid-cols-3">
         <div className="space-y-5 xl:col-span-2">
           <SectionCard
-            title="Интересы и направления"
-            description="Категории услуг в рамках данного обращения"
+            title="Категории услуг"
+            description="Что интересует гостя — параметры запроса собираются на квалификации"
             actions={
-              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setInterestOpen(true)}>
-                <Plus className="h-3.5 w-3.5" />
-                Добавить интерес
-              </Button>
+              !terminal ? (
+                <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setInterestOpen(true)}>
+                  <Plus className="h-3.5 w-3.5" />
+                  Добавить категорию
+                </Button>
+              ) : undefined
             }
           >
-            <div className="flex flex-wrap gap-2">
-              {lead.interests && lead.interests.length > 0 ? (
-                lead.interests.map((interest) => (
-                  <div
-                    key={interest.id}
-                    className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-1.5 text-sm"
-                  >
-                    <Tag className="h-3.5 w-3.5 text-brand-600" />
-                    <span className="font-medium text-foreground">{directionLabels[interest.direction]}</span>
-                    {interest.isPrimary && (
-                      <span className="rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">
-                        Основной
-                      </span>
-                    )}
-                    {lead.interests.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => removeLeadInterest(lead.id, interest.id)}
-                        className="text-muted-foreground hover:text-rose-600"
-                        title="Удалить интерес"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                ))
-              ) : (
-                <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-1.5 text-sm">
-                  <Tag className="h-3.5 w-3.5 text-brand-600" />
-                  <span className="font-medium text-foreground">
-                    {lead.classification?.direction ? directionLabels[lead.classification.direction] : "Проживание"}
-                  </span>
-                  <span className="rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">
-                    Основной
-                  </span>
-                </div>
-              )}
-            </div>
+            {lead.interests && lead.interests.length > 0 ? (
+              <div className="space-y-3">
+                {lead.interests.map((interest) => {
+                  const draft = interestDrafts[interest.id] ?? interest.details ?? {};
+                  const fields = qualificationFieldsForDirection(interest.direction);
+                  const dirty = Boolean(interestDrafts[interest.id]);
+                  const setDraft = (patch: Partial<InterestDetails>) =>
+                    setInterestDrafts((prev) => ({ ...prev, [interest.id]: { ...draft, ...patch } }));
+                  return (
+                    <div key={interest.id} className="rounded-xl border border-border bg-card p-3">
+                      <div className="flex items-center gap-2">
+                        <Tag className="h-3.5 w-3.5 text-brand-600" />
+                        <span className="font-medium text-foreground">
+                          {serviceGroupForDirection(interest.direction)?.label ?? directionLabels[interest.direction]}
+                        </span>
+                        {interest.isPrimary && (
+                          <span className="rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">
+                            Основная
+                          </span>
+                        )}
+                        <span className="text-[11px] text-muted-foreground">{interest.status}</span>
+                        {!terminal && (
+                          <button
+                            type="button"
+                            onClick={() => removeLeadInterest(lead.id, interest.id)}
+                            className="ml-auto text-muted-foreground hover:text-rose-600"
+                            title="Удалить категорию"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      {isCommercialDirection(interest.direction) && fields.length > 0 && (
+                        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                          {fields.map((field) => (
+                            <div key={field.key} className="space-y-1">
+                              <Label className="text-xs">
+                                {field.label}
+                                {field.required ? " *" : ""}
+                              </Label>
+                              {field.kind === "date" && (
+                                <Input
+                                  type="date"
+                                  value={(draft[field.key] as string) ?? ""}
+                                  onChange={(event) => setDraft({ [field.key]: event.target.value || null })}
+                                />
+                              )}
+                              {field.kind === "number" && (
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  value={(draft[field.key] as number) ?? ""}
+                                  onChange={(event) =>
+                                    setDraft({ [field.key]: event.target.value ? Number(event.target.value) : null })
+                                  }
+                                />
+                              )}
+                              {field.kind === "eventType" && (
+                                <Select
+                                  value={(draft.eventType as string) ?? ""}
+                                  onValueChange={(value) => setDraft({ eventType: value })}
+                                >
+                                  <SelectTrigger><SelectValue placeholder="Выберите…" /></SelectTrigger>
+                                  <SelectContent>
+                                    {Object.entries(eventTypeLabels).map(([value, label]) => (
+                                      <SelectItem key={value} value={value}>
+                                        {label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              )}
+                              {field.kind === "text" && (
+                                <Input
+                                  value={(draft[field.key] as string) ?? ""}
+                                  onChange={(event) => setDraft({ [field.key]: event.target.value || null })}
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {dirty && (
+                        <div className="mt-3 flex justify-end">
+                          <Button size="sm" onClick={() => saveInterestDetails(interest.id)}>
+                            Сохранить параметры
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                Категории услуг не выбраны. Добавьте хотя бы одну, чтобы квалифицировать обращение.
+              </div>
+            )}
           </SectionCard>
 
           <SectionCard
-            title="Состав сделки"
-            description="Выбранные услуги, проживание и позиции сметы"
+            title="Состав заказа"
+            description="Выбранные услуги — цены фиксируются из прайс-карты"
             actions={
-              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setItemOpen(true)}>
-                <Plus className="h-3.5 w-3.5" />
-                Добавить услугу
-              </Button>
+              !terminal ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={() => { setEditingItem(null); setItemOpen(true); }}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Добавить услугу
+                </Button>
+              ) : undefined
             }
           >
             {lead.items && lead.items.length > 0 ? (
@@ -459,7 +518,10 @@ const LeadDetail = () => {
                         <span className="rounded-md bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground">
                           {itemTypeLabels[item.type] || item.type}
                         </span>
-                        <StatusPill tone={item.status === "confirmed" ? "success" : item.status === "quoted" ? "brand" : "neutral"} size="sm">
+                        <StatusPill
+                          tone={item.status === "confirmed" ? "success" : item.status === "quoted" ? "brand" : item.status === "cancelled" ? "danger" : "neutral"}
+                          size="sm"
+                        >
                           {itemStatusLabels[item.status] || item.status}
                         </StatusPill>
                       </div>
@@ -468,30 +530,61 @@ const LeadDetail = () => {
                         {item.startAt ? ` · Дата: ${formatDateLong(item.startAt)}` : ""}
                         {item.participants ? ` · Участников: ${item.participants}` : ""}
                         {item.nights ? ` · Ночей: ${item.nights}` : ""}
+                        {item.priceOverridden ? " · цена изменена менеджером" : ""}
                       </p>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
                       <span className="font-semibold tabular-nums text-foreground">
                         {item.totalAmount !== undefined ? formatTenge(item.totalAmount) : "По запросу"}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => removeLeadItem(lead.id, item.id)}
-                        className="text-muted-foreground hover:text-rose-600"
-                        title="Удалить позицию"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      {!terminal && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => { setEditingItem(item); setItemOpen(true); }}
+                            className="text-muted-foreground hover:text-foreground"
+                            title="Изменить позицию"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeLeadItem(lead.id, item.id)}
+                            className="text-muted-foreground hover:text-rose-600"
+                            title="Удалить позицию"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
             ) : (
               <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-                Позиции пока не добавлены в сделку. Нажмите «Добавить услугу», чтобы наполнить заказ.
+                Услуги пока не добавлены. На этапе комплектации выберите позиции из прайс-карты.
               </div>
             )}
           </SectionCard>
+
+          {folio && (
+            <FolioCard
+              lead={lead}
+              folio={folio}
+              editable={!terminal}
+              onAddPayment={() => {
+                setPaymentForm({
+                  amount: Math.max(0, folio.depositRequired > folio.paidAmount ? folio.depositRequired - folio.paidAmount : folio.balance),
+                  method: "card",
+                  reference: "",
+                  notes: "",
+                });
+                setPaymentOpen(true);
+              }}
+              onUpdateFolio={(patch) => updateFolio(folio.id, patch)}
+            />
+          )}
 
           {(lead.roomType || lead.checkIn) && (
             <SectionCard title="Параметры проживания">
@@ -514,63 +607,7 @@ const LeadDetail = () => {
             </SectionCard>
           )}
 
-          <SectionCard
-            title="Финансы и оплата"
-            actions={
-              <Button
-                size="sm"
-                className="gap-1.5"
-                onClick={() => {
-                  setPaymentForm({
-                    amount: Math.max(0, lead.totalAmount - (lead.paidAmount ?? 0)),
-                    method: "card",
-                    reference: "",
-                    notes: "",
-                  });
-                  setPaymentOpen(true);
-                }}
-              >
-                <CreditCard className="h-3.5 w-3.5" />
-                Внести оплату
-              </Button>
-            }
-          >
-            <div className="space-y-2 text-sm">
-              <div className="flex items-center justify-between text-base">
-                <span className="font-semibold">Сумма сделки</span>
-                <span className="font-semibold tabular-nums">{formatTenge(lead.totalAmount)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Оплачено</span>
-                <span className="font-semibold tabular-nums text-emerald-600">{formatTenge(lead.paidAmount ?? 0)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Остаток к оплате</span>
-                <span className="font-semibold tabular-nums text-foreground">
-                  {formatTenge(Math.max(0, lead.totalAmount - (lead.paidAmount ?? 0)))}
-                </span>
-              </div>
-              <div className="flex items-center justify-between border-t border-border pt-2">
-                <span className="text-muted-foreground">Статус оплаты</span>
-                <StatusPill tone={paymentStatusTone[lead.paymentStatus]}>
-                  {paymentStatusLabels[lead.paymentStatus]}
-                </StatusPill>
-              </div>
-              {lead.paymentDueAt && (
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-foreground">Срок оплаты</span>
-                  <span className="font-medium">{formatDateLong(lead.paymentDueAt)}</span>
-                </div>
-              )}
-              {lead.paymentTerms && (
-                <p className="mt-2 rounded-lg bg-secondary/60 p-2.5 text-xs text-muted-foreground">
-                  {lead.paymentTerms}
-                </p>
-              )}
-            </div>
-          </SectionCard>
-
-          <SectionCard title="История активности" description="Все события по сделке">
+          <SectionCard title="История активности" description="Все события по обращению">
             <Timeline events={[...lead.activity].reverse()} />
             <div className="mt-5 space-y-2 border-t border-border pt-4">
               <Label htmlFor="lead-note">Добавить заметку</Label>
@@ -625,7 +662,30 @@ const LeadDetail = () => {
             </div>
           </SectionCard>
 
-          <SectionCard title="Предложения" bodyClassName="p-0" padded={false}>
+          <SectionCard
+            title="Предложения"
+            bodyClassName="p-0"
+            padded={false}
+            actions={
+              !terminal && (lead.stage === "planning" || lead.stage === "offer") ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={async () => {
+                    const offerId = await createOfferFromLead(lead.id);
+                    if (offerId) {
+                      toast({ title: "Предложение сформировано из счёта" });
+                      navigate(`/offers/${offerId}`);
+                    }
+                  }}
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  Сформировать
+                </Button>
+              ) : undefined
+            }
+          >
             <div className="divide-y divide-border">
               {offers.map((offer) => (
                 <Link
@@ -641,7 +701,9 @@ const LeadDetail = () => {
                 </Link>
               ))}
               {offers.length === 0 && (
-                <p className="px-5 py-6 text-center text-sm text-muted-foreground">Предложений пока нет</p>
+                <p className="px-5 py-6 text-center text-sm text-muted-foreground">
+                  Предложений пока нет — оно сформируется автоматически на этапе «Предложение»
+                </p>
               )}
             </div>
           </SectionCard>
@@ -663,7 +725,7 @@ const LeadDetail = () => {
             </div>
           </SectionCard>
 
-          <SectionCard title="История стадий">
+          <SectionCard title="История этапов">
             <ol className="space-y-2 text-sm">
               {lead.stageHistory.map((entry) => (
                 <li key={`${entry.stage}-${entry.at}`} className="flex items-center justify-between gap-3">
@@ -676,11 +738,12 @@ const LeadDetail = () => {
         </div>
       </div>
 
+      {/* Edit lead */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Изменить лид</DialogTitle>
-            <DialogDescription>Обновите параметры запроса гостя.</DialogDescription>
+            <DialogTitle>Изменить обращение</DialogTitle>
+            <DialogDescription>Обновите базовые параметры запроса гостя.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5 sm:col-span-2">
@@ -737,16 +800,6 @@ const LeadDetail = () => {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="lead-amount">Сумма сделки, ₸</Label>
-              <Input
-                id="lead-amount"
-                type="number"
-                step={1000}
-                value={form.totalAmount}
-                onChange={(event) => setForm({ ...form, totalAmount: Number(event.target.value) })}
-              />
-            </div>
-            <div className="space-y-1.5">
               <Label>Ответственный</Label>
               <Select value={form.ownerId} onValueChange={(value) => setForm({ ...form, ownerId: value })}>
                 <SelectTrigger>
@@ -780,36 +833,13 @@ const LeadDetail = () => {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={!!pendingStage} onOpenChange={(open) => !open && setPendingStage(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Перевести в «{pendingStage ? stageLabels[pendingStage] : ""}»?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingStage === "confirmed"
-                ? "Сделка и услуги будут зафиксированы. Убедитесь, что условия согласованы и необходимая оплата внесена."
-                : pendingStage === "completed"
-                  ? "Услуги оказаны в полном объёме. Сделка успешно завершена."
-                  : pendingStage === "payment_pending"
-                    ? "Сделка перейдёт в ожидание оплаты счета."
-                    : pendingStage === "planning"
-                      ? "Комплектация: подбор услуг, расчет сметы и согласование."
-                      : "Стадия сделки будет изменена, событие попадёт в историю активности."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Отмена</AlertDialogCancel>
-            <AlertDialogAction onClick={applyStage}>Подтвердить</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Payment Dialog */}
+      {/* Payment */}
       <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Внести оплату по сделке</DialogTitle>
+            <DialogTitle>Внести оплату по счёту</DialogTitle>
             <DialogDescription>
-              Зафиксируйте получение оплаты от гостя. Сделка не будет автоматически переведена в стадию «Подтверждено».
+              Платёж уменьшит баланс фолио. Подтверждение заказа выполняется действием «Подтвердить заказ».
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -819,7 +849,7 @@ const LeadDetail = () => {
                 type="number"
                 step={1000}
                 value={paymentForm.amount}
-                onChange={(e) => setPaymentForm({ ...paymentForm, amount: Number(e.target.value) })}
+                onChange={(event) => setPaymentForm({ ...paymentForm, amount: Number(event.target.value) })}
               />
             </div>
             <div className="space-y-1.5">
@@ -843,7 +873,7 @@ const LeadDetail = () => {
               <Input
                 placeholder="INV-..."
                 value={paymentForm.reference}
-                onChange={(e) => setPaymentForm({ ...paymentForm, reference: e.target.value })}
+                onChange={(event) => setPaymentForm({ ...paymentForm, reference: event.target.value })}
               />
             </div>
             <div className="space-y-1.5">
@@ -851,7 +881,7 @@ const LeadDetail = () => {
               <Input
                 placeholder="Предоплата, аванс за банный чан и т.д."
                 value={paymentForm.notes}
-                onChange={(e) => setPaymentForm({ ...paymentForm, notes: e.target.value })}
+                onChange={(event) => setPaymentForm({ ...paymentForm, notes: event.target.value })}
               />
             </div>
           </div>
@@ -866,28 +896,23 @@ const LeadDetail = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Interest Dialog */}
+      {/* Add category */}
       <Dialog open={interestOpen} onOpenChange={setInterestOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Добавить направление интереса</DialogTitle>
-            <DialogDescription>
-              Выберите услугу или интерес гостя для добавления в сделку.
-            </DialogDescription>
+            <DialogTitle>Добавить категорию услуг</DialogTitle>
+            <DialogDescription>Выберите, что ещё интересует гостя в этом обращении.</DialogDescription>
           </DialogHeader>
           <div className="py-2">
-            <Label className="mb-2 block">Направление</Label>
-            <Select
-              value={selectedDirection}
-              onValueChange={(val) => setSelectedDirection(val as InterestDirection)}
-            >
+            <Label className="mb-2 block">Категория</Label>
+            <Select value={selectedDirection} onValueChange={(val) => setSelectedDirection(val as InterestDirection)}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {Object.entries(directionLabels).map(([dir, label]) => (
+                {ADDABLE_DIRECTIONS.filter((dir) => !lead.interests.some((i) => i.direction === dir)).map((dir) => (
                   <SelectItem key={dir} value={dir}>
-                    {label}
+                    {directionLabels[dir]}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -897,144 +922,87 @@ const LeadDetail = () => {
             <Button variant="outline" onClick={() => setInterestOpen(false)}>
               Отмена
             </Button>
-            <Button onClick={submitInterest}>
-              Добавить
-            </Button>
+            <Button onClick={submitInterest}>Добавить</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Item Dialog */}
-      <Dialog open={itemOpen} onOpenChange={setItemOpen}>
-        <DialogContent className="sm:max-w-lg">
+      {/* Lose */}
+      <Dialog open={loseOpen} onOpenChange={setLoseOpen}>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Добавить услугу / позицию в сделку</DialogTitle>
-            <DialogDescription>
-              Укажите параметры услуги или выберите из каталога.
-            </DialogDescription>
+            <DialogTitle>Закрыть как потерянное</DialogTitle>
+            <DialogDescription>Обращение будет завершено. Причина обязательна для отчётности.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            {data.serviceCatalog && data.serviceCatalog.length > 0 && (
-              <div className="space-y-1.5">
-                <Label>Быстрый выбор из каталога услуг</Label>
-                <Select
-                  onValueChange={(val) => {
-                    const catalogItem = data.serviceCatalog.find((c) => c.id === val);
-                    if (catalogItem) {
-                      setItemForm({
-                        type: (catalogItem.category as LeadItemType) || "activity",
-                        name: catalogItem.name,
-                        quantity: 1,
-                        unitAmount: catalogItem.defaultPrice || 0,
-                        totalAmount: catalogItem.defaultPrice || 0,
-                        startAt: itemForm.startAt,
-                      });
-                    }
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Выберите услугу..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {data.serviceCatalog.map((cat) => (
-                      <SelectItem key={cat.id} value={cat.id}>
-                        {cat.name} ({formatTenge(cat.defaultPrice || 0)})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label>Тип позиции</Label>
-                <Select
-                  value={itemForm.type}
-                  onValueChange={(val) => setItemForm({ ...itemForm, type: val as LeadItemType })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Object.entries(itemTypeLabels).map(([type, label]) => (
-                      <SelectItem key={type} value={type}>
-                        {label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label>Название услуги</Label>
-                <Input
-                  placeholder="Например: SPA визит, SOVA ужин"
-                  value={itemForm.name}
-                  onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })}
-                />
-              </div>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="space-y-1.5">
-                <Label>Количество</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  value={itemForm.quantity}
-                  onChange={(e) => {
-                    const q = Number(e.target.value);
-                    setItemForm({
-                      ...itemForm,
-                      quantity: q,
-                      totalAmount: q * (itemForm.unitAmount || 0),
-                    });
-                  }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Цена за единицу, ₸</Label>
-                <Input
-                  type="number"
-                  step={500}
-                  value={itemForm.unitAmount}
-                  onChange={(e) => {
-                    const u = Number(e.target.value);
-                    setItemForm({
-                      ...itemForm,
-                      unitAmount: u,
-                      totalAmount: (itemForm.quantity || 1) * u,
-                    });
-                  }}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Итого, ₸</Label>
-                <Input
-                  type="number"
-                  step={500}
-                  value={itemForm.totalAmount}
-                  onChange={(e) => setItemForm({ ...itemForm, totalAmount: Number(e.target.value) })}
-                />
-              </div>
+            <div className="space-y-1.5">
+              <Label>Причина потери *</Label>
+              <Select value={loseReason} onValueChange={(val) => setLoseReason(val as LostReason)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {Object.entries(lostReasonLabels).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>{label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>Дата оказания услуги</Label>
-              <Input
-                type="date"
-                value={itemForm.startAt}
-                onChange={(e) => setItemForm({ ...itemForm, startAt: e.target.value })}
-              />
+              <Label>Комментарий</Label>
+              <Textarea rows={2} value={loseComment} onChange={(event) => setLoseComment(event.target.value)} />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setItemOpen(false)}>
-              Отмена
-            </Button>
-            <Button onClick={submitItem} disabled={!itemForm.name.trim()}>
-              Добавить позицию
-            </Button>
+            <Button variant="outline" onClick={() => setLoseOpen(false)}>Отмена</Button>
+            <Button variant="destructive" onClick={submitLose}>Потерять обращение</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Cancel booking */}
+      <Dialog open={cancelOpen} onOpenChange={setCancelOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Отменить подтверждённый заказ</DialogTitle>
+            <DialogDescription>Позиции заказа будут отменены, фолио закрыт.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5 py-2">
+            <Label>Причина отмены</Label>
+            <Textarea rows={2} value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCancelOpen(false)}>Отмена</Button>
+            <Button variant="destructive" onClick={submitCancel}>Отменить заказ</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rollback */}
+      <Dialog open={rollbackOpen} onOpenChange={setRollbackOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Вернуть на предыдущий этап</DialogTitle>
+            <DialogDescription>Укажите причину возврата — она попадёт в историю.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5 py-2">
+            <Label>Причина *</Label>
+            <Textarea rows={2} value={rollbackReason} onChange={(event) => setRollbackReason(event.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRollbackOpen(false)}>Отмена</Button>
+            <Button onClick={submitRollback} disabled={!rollbackReason.trim()}>Вернуть</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Service picker */}
+      <ServicePicker
+        open={itemOpen}
+        onOpenChange={(open) => { setItemOpen(open); if (!open) setEditingItem(null); }}
+        catalog={data.serviceCatalog}
+        propertyId={lead.propertyId}
+        editing={editingItem}
+        onSubmit={submitItem}
+      />
     </div>
   );
 };

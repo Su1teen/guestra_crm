@@ -1,5 +1,5 @@
-import { hash } from "bcryptjs";
-import { sql } from "drizzle-orm";
+import { compare, hash } from "bcryptjs";
+import { and, eq, isNull } from "drizzle-orm";
 import { pathToFileURL } from "node:url";
 import type { Database } from "./client.js";
 import { createDatabase } from "./client.js";
@@ -8,7 +8,152 @@ import * as s from "./schema.js";
 
 const date = (value: string) => new Date(value).toISOString();
 
-export const bootstrapDatabase = async (db: Database, config: Pick<AppConfig,
+/**
+ * Canonical demo credentials. Эти два аккаунта — демо-вход в CRM, поэтому
+ * пароли зафиксированы и НЕ зависят от переменных окружения: иначе
+ * SALES_BOOTSTRAP_PASSWORD на Railway мог молча перезаписать хэш и сломать
+ * привычный логин sales@guestra.com / admin@guestra.com.
+ */
+export const DEMO_CREDENTIALS = {
+  sales: { id: "user_sales", email: "sales@guestra.com", password: "sales123" },
+  admin: { id: "user_admin", email: "admin@guestra.com", password: "admin_123" },
+} as const;
+
+/**
+ * Idempotent user bootstrap:
+ * - пользователя нет → создать с каноническим паролем;
+ * - пользователь есть и пароль совпадает → только обновить профиль, хэш не
+ *   трогаем (стабильный хэш между bootstrap-ами);
+ * - пароль не совпадает (хэш повреждён/устарел) → восстановить канонический.
+ */
+const ensureBootstrapUser = async (
+  db: Database,
+  user: { id: string; email: string; password: string; role: string; dataMode: string; employeeId: string | null; name: string },
+) => {
+  const [existing] = await db.select().from(s.appUsers).where(eq(s.appUsers.id, user.id)).limit(1);
+  if (!existing) {
+    await db.insert(s.appUsers).values({
+      id: user.id,
+      email: user.email,
+      passwordHash: await hash(user.password, 12),
+      role: user.role,
+      dataMode: user.dataMode,
+      employeeId: user.employeeId,
+      name: user.name,
+    });
+    return;
+  }
+  const passwordMatches = await compare(user.password, existing.passwordHash);
+  await db.update(s.appUsers).set({
+    email: user.email,
+    role: user.role,
+    dataMode: user.dataMode,
+    employeeId: user.employeeId,
+    name: user.name,
+    ...(passwordMatches ? {} : { passwordHash: await hash(user.password, 12) }),
+    updatedAt: new Date().toISOString(),
+  }).where(eq(s.appUsers.id, user.id));
+};
+
+interface SeedCatalogEntry {
+  id: string;
+  code: string;
+  category: string;
+  serviceType: string;
+  name: string;
+  description?: string;
+  pricingMode: string;
+  defaultPrice?: number;
+  pricingUnit?: string;
+  defaultDurationMinutes?: number;
+  displayOrder: number;
+}
+
+/** Демонстрационный прайс-лист (rate card) — Les Borovoe. */
+const borovoeCatalog: SeedCatalogEntry[] = [
+  { id: "svc_acc_sky_house", code: "acc_sky_house", category: "accommodation", serviceType: "accommodation", name: "Sky House", description: "Панорамный домик у озера", pricingMode: "per_night_per_unit", defaultPrice: 85000, pricingUnit: "night", displayOrder: 10 },
+  { id: "svc_acc_a_frame", code: "acc_a_frame", category: "accommodation", serviceType: "accommodation", name: "A-Frame", description: "Треугольный домик в лесу", pricingMode: "per_night_per_unit", defaultPrice: 130000, pricingUnit: "night", displayOrder: 11 },
+  { id: "svc_acc_forest_house", code: "acc_forest_house", category: "accommodation", serviceType: "accommodation", name: "Forest House", description: "Большой дом для семьи", pricingMode: "per_night_per_unit", defaultPrice: 195000, pricingUnit: "night", displayOrder: 12 },
+  { id: "svc_restaurant_sova", code: "restaurant_sova", category: "restaurant", serviceType: "restaurant", name: "Ресторан SOVA", description: "Средний чек на гостя", pricingMode: "per_person", defaultPrice: 15000, pricingUnit: "person", displayOrder: 20 },
+  { id: "svc_spa_visit", code: "spa_visit", category: "spa", serviceType: "spa", name: "SPA визит", pricingMode: "per_person", defaultPrice: 12000, pricingUnit: "person", displayOrder: 30 },
+  { id: "svc_spa_pool", code: "spa_pool", category: "spa", serviceType: "spa", name: "Бассейн", pricingMode: "per_person", defaultPrice: 8000, pricingUnit: "person", displayOrder: 31 },
+  { id: "svc_massage", code: "massage_60", category: "spa", serviceType: "massage", name: "Массаж 60 минут", pricingMode: "per_session", defaultPrice: 15000, pricingUnit: "session", defaultDurationMinutes: 60, displayOrder: 32 },
+  { id: "svc_bathhouse", code: "bathhouse", category: "bathhouse", serviceType: "bathhouse", name: "Баня и чан", pricingMode: "per_hour", defaultPrice: 25000, pricingUnit: "hour", displayOrder: 40 },
+  { id: "svc_karaoke", code: "karaoke", category: "karaoke", serviceType: "karaoke", name: "Караоке", pricingMode: "per_hour", defaultPrice: 15000, pricingUnit: "hour", displayOrder: 50 },
+  { id: "svc_horse_riding", code: "act_horse", category: "activities", serviceType: "horse_riding", name: "Конная прогулка", pricingMode: "per_person", defaultPrice: 10000, pricingUnit: "person", displayOrder: 60 },
+  { id: "svc_atv", code: "act_atv", category: "activities", serviceType: "atv", name: "Квадроциклы", pricingMode: "per_unit", defaultPrice: 15000, pricingUnit: "unit", displayOrder: 61 },
+  { id: "svc_event_corporate", code: "event_corporate", category: "events", serviceType: "corporate_event", name: "Корпоративное мероприятие", pricingMode: "per_person", defaultPrice: 20000, pricingUnit: "person", displayOrder: 70 },
+  { id: "svc_event_wedding", code: "event_wedding", category: "events", serviceType: "wedding_or_banquet", name: "Свадьба / банкет", pricingMode: "per_person", defaultPrice: 25000, pricingUnit: "person", displayOrder: 71 },
+  { id: "svc_event_other", code: "event_other", category: "events", serviceType: "other", name: "Другое мероприятие", pricingMode: "manual", pricingUnit: "item", displayOrder: 72 },
+  { id: "svc_other_custom", code: "other_custom", category: "other", serviceType: "other", name: "Другое / custom", pricingMode: "manual", pricingUnit: "item", displayOrder: 90 },
+];
+
+const astanaCatalog: SeedCatalogEntry[] = [
+  { id: "svca_acc_deluxe", code: "acc_deluxe", category: "accommodation", serviceType: "accommodation", name: "Делюкс-номер", pricingMode: "per_night_per_unit", defaultPrice: 90000, pricingUnit: "night", displayOrder: 10 },
+  { id: "svca_acc_lux", code: "acc_lux", category: "accommodation", serviceType: "accommodation", name: "Люкс", pricingMode: "per_night_per_unit", defaultPrice: 165000, pricingUnit: "night", displayOrder: 11 },
+  { id: "svca_restaurant_sova", code: "restaurant_sova", category: "restaurant", serviceType: "restaurant", name: "Ресторан SOVA", pricingMode: "per_person", defaultPrice: 15000, pricingUnit: "person", displayOrder: 20 },
+  { id: "svca_spa_visit", code: "spa_visit", category: "spa", serviceType: "spa", name: "SPA визит", pricingMode: "per_person", defaultPrice: 12000, pricingUnit: "person", displayOrder: 30 },
+  { id: "svca_massage", code: "massage_60", category: "spa", serviceType: "massage", name: "Массаж 60 минут", pricingMode: "per_session", defaultPrice: 15000, pricingUnit: "session", defaultDurationMinutes: 60, displayOrder: 32 },
+  { id: "svca_bathhouse", code: "bathhouse", category: "bathhouse", serviceType: "bathhouse", name: "Баня и чан", pricingMode: "per_hour", defaultPrice: 25000, pricingUnit: "hour", displayOrder: 40 },
+  { id: "svca_karaoke", code: "karaoke", category: "karaoke", serviceType: "karaoke", name: "Караоке", pricingMode: "per_hour", defaultPrice: 15000, pricingUnit: "hour", displayOrder: 50 },
+  { id: "svca_horse_riding", code: "act_horse", category: "activities", serviceType: "horse_riding", name: "Конная прогулка", pricingMode: "per_person", defaultPrice: 10000, pricingUnit: "person", displayOrder: 60 },
+  { id: "svca_atv", code: "act_atv", category: "activities", serviceType: "atv", name: "Квадроциклы", pricingMode: "per_unit", defaultPrice: 15000, pricingUnit: "unit", displayOrder: 61 },
+  { id: "svca_event_corporate", code: "event_corporate", category: "events", serviceType: "corporate_event", name: "Корпоративное мероприятие", pricingMode: "per_person", defaultPrice: 20000, pricingUnit: "person", displayOrder: 70 },
+  { id: "svca_event_wedding", code: "event_wedding", category: "events", serviceType: "wedding_or_banquet", name: "Свадьба / банкет", pricingMode: "per_person", defaultPrice: 25000, pricingUnit: "person", displayOrder: 71 },
+  { id: "svca_other_custom", code: "other_custom", category: "other", serviceType: "other", name: "Другое / custom", pricingMode: "manual", pricingUnit: "item", displayOrder: 90 },
+];
+
+const seedServiceCatalog = async (db: Database) => {
+  const rows = [
+    ...borovoeCatalog.map((entry) => ({ ...entry, propertyId: "les_borovoe" })),
+    ...astanaCatalog.map((entry) => ({ ...entry, propertyId: "les_astana" })),
+  ];
+  await db.insert(s.serviceCatalog).values(
+    rows.map((entry) => ({
+      id: entry.id,
+      propertyId: entry.propertyId,
+      code: entry.code,
+      category: entry.category,
+      serviceType: entry.serviceType,
+      name: entry.name,
+      description: entry.description ?? null,
+      active: true,
+      pricingMode: entry.pricingMode,
+      defaultPrice: entry.defaultPrice ?? null,
+      pricingUnit: entry.pricingUnit ?? null,
+      defaultDurationMinutes: entry.defaultDurationMinutes ?? null,
+      displayOrder: entry.displayOrder,
+      currency: "KZT",
+      metadata: { seedManaged: true, demoRate: true },
+    })),
+  ).onConflictDoNothing();
+
+  // Структурная синхронизация seed-строк (category/service_type/pricing_unit/
+  // display_order). default_price обновляем только если он ещё не задан —
+  // не перезаписываем цену, которую менеджер мог поправить вручную.
+  for (const entry of rows) {
+    await db.update(s.serviceCatalog).set({
+      category: entry.category,
+      serviceType: entry.serviceType,
+      name: entry.name,
+      description: entry.description ?? null,
+      pricingMode: entry.pricingMode,
+      pricingUnit: entry.pricingUnit ?? null,
+      defaultDurationMinutes: entry.defaultDurationMinutes ?? null,
+      displayOrder: entry.displayOrder,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(s.serviceCatalog.id, entry.id));
+    if (entry.defaultPrice !== undefined) {
+      await db.update(s.serviceCatalog)
+        .set({ defaultPrice: entry.defaultPrice })
+        .where(and(eq(s.serviceCatalog.id, entry.id), isNull(s.serviceCatalog.defaultPrice)));
+    }
+  }
+  // Трансфер убран из продаж — исторические позиции не трогаем.
+  await db.update(s.serviceCatalog).set({ active: false }).where(eq(s.serviceCatalog.code, "transfer"));
+};
+
+export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   "SALES_BOOTSTRAP_EMAIL" | "SALES_BOOTSTRAP_PASSWORD" | "ADMIN_BOOTSTRAP_EMAIL" | "ADMIN_BOOTSTRAP_PASSWORD"
 >) => {
   await db.insert(s.organizations).values({
@@ -30,12 +175,10 @@ export const bootstrapDatabase = async (db: Database, config: Pick<AppConfig,
     { employeeId: "emp_live_aigerim", propertyId: "les_borovoe" }, { employeeId: "emp_live_timur", propertyId: "les_astana" },
   ]).onConflictDoNothing();
 
-  const salesHash = await hash(config.SALES_BOOTSTRAP_PASSWORD, 12);
-  const adminHash = await hash(config.ADMIN_BOOTSTRAP_PASSWORD, 12);
-  await db.insert(s.appUsers).values([
-    { id: "user_sales", email: config.SALES_BOOTSTRAP_EMAIL.toLowerCase(), passwordHash: salesHash, role: "sales", dataMode: "mock", employeeId: null, name: "Султан Аманжолов" },
-    { id: "user_admin", email: config.ADMIN_BOOTSTRAP_EMAIL.toLowerCase(), passwordHash: adminHash, role: "admin", dataMode: "database", employeeId: "emp_admin", name: "Администратор Guestra" },
-  ]).onConflictDoUpdate({ target: s.appUsers.id, set: { email: sql`excluded.email`, passwordHash: sql`excluded.password_hash` } });
+  // Канонические демо-аккаунты: пароли фиксированы (см. DEMO_CREDENTIALS),
+  // хэш не перезаписывается, если уже совпадает.
+  await ensureBootstrapUser(db, { ...DEMO_CREDENTIALS.sales, role: "sales", dataMode: "mock", employeeId: null, name: "Султан Аманжолов" });
+  await ensureBootstrapUser(db, { ...DEMO_CREDENTIALS.admin, role: "admin", dataMode: "database", employeeId: "emp_admin", name: "Администратор Guestra" });
 
   await db.insert(s.guests).values([
     { id: "guest_live_1", organizationId: "org_les_live", firstName: "Аружан", lastName: "Серикова", fullName: "Аружан Серикова", phone: "+7 701 555 10 10", email: "aruzhan@example.com", language: "Русский", preferredPropertyId: "les_borovoe", lifetimeValue: 420000, lastStayDate: date("2026-08-18T12:00:00Z"), preferences: { language: "Русский", roomPreference: "Тихий домик", bedPreference: "King size", foodPreference: "Без свинины", specialRequests: ["Детская кроватка"] }, identityMetadata: { primaryPhone: "+7 701 555 10 10", emails: ["aruzhan@example.com"], citizenship: "Казахстан" } },
@@ -47,7 +190,7 @@ export const bootstrapDatabase = async (db: Database, config: Pick<AppConfig,
   await db.insert(s.guestContactIdentities).values({ id: "identity_live_telegram_1", guestId: "guest_live_2", channel: "telegram", externalUserId: "seed-telegram-user", externalChatId: "seed-telegram-chat", username: "marat_seed" }).onConflictDoNothing();
 
   await db.insert(s.leads).values([
-    { id: "lead_live_1", code: "G-LIVE-001", guestId: "guest_live_1", propertyId: "les_borovoe", source: "returning", stage: "offer", intent: "hot", roomType: "Sky House", checkIn: date("2026-10-10T12:00:00Z"), checkOut: date("2026-10-12T12:00:00Z"), nights: 2, adults: 2, children: 1, roomAmount: 340000, totalAmount: 370000, deposit: 185000, paymentStatus: "not_required", ownerId: "emp_live_aigerim", lastActivityAt: date("2026-09-18T10:30:00Z"), nextActionLabel: "Связаться после просмотра предложения", nextActionDueAt: date("2026-09-20T10:00:00Z"), probability: 70, firstResponseMinutes: 4, slaMinutes: 15 },
+    { id: "lead_live_1", code: "G-LIVE-001", guestId: "guest_live_1", propertyId: "les_borovoe", source: "returning", stage: "offer", intent: "hot", roomType: "Sky House", checkIn: date("2026-10-10T12:00:00Z"), checkOut: date("2026-10-12T12:00:00Z"), nights: 2, adults: 2, children: 1, roomAmount: 340000, totalAmount: 388000, deposit: 194000, paymentStatus: "not_required", ownerId: "emp_live_aigerim", lastActivityAt: date("2026-09-18T10:30:00Z"), nextActionLabel: "Связаться после просмотра предложения", nextActionDueAt: date("2026-09-20T10:00:00Z"), probability: 70, firstResponseMinutes: 4, slaMinutes: 15 },
     { id: "lead_live_2", code: "G-LIVE-002", guestId: "guest_live_2", propertyId: "les_astana", source: "telegram", stage: "qualified", intent: "warm", roomType: "Люкс", checkIn: date("2026-11-05T12:00:00Z"), checkOut: date("2026-11-06T12:00:00Z"), nights: 1, adults: 1, children: 0, roomAmount: 165000, totalAmount: 165000, deposit: 0, paymentStatus: "not_required", ownerId: "emp_live_timur", lastActivityAt: date("2026-09-18T12:00:00Z"), nextActionLabel: "Подготовить корпоративный расчёт", nextActionDueAt: date("2026-09-20T12:00:00Z"), probability: 40, firstResponseMinutes: 8, slaMinutes: 30 },
   ]).onConflictDoNothing();
   await db.insert(s.leadClassifications).values([
@@ -64,13 +207,18 @@ export const bootstrapDatabase = async (db: Database, config: Pick<AppConfig,
     { id: "la_live_1", leadId: "lead_live_1", employeeId: "emp_live_aigerim", type: "offer_created", title: "Предложение подготовлено", occurredAt: date("2026-09-18T10:30:00Z"), amount: 370000 },
     { id: "la_live_2", leadId: "lead_live_2", employeeId: "emp_live_timur", type: "lead_created", title: "Лид квалифицирован", occurredAt: date("2026-09-18T12:00:00Z") },
   ]).onConflictDoNothing();
-  await db.insert(s.leadServices).values({ id: "lead_service_live_1", leadId: "lead_live_1", name: "Завтраки", amount: 30000 }).onConflictDoNothing();
   await db.insert(s.leadSpecialRequests).values({ id: "lead_request_live_1", leadId: "lead_live_1", type: "baby_cot", label: "Детская кроватка", route: "housekeeping", fulfilled: false }).onConflictDoNothing();
 
-  await db.insert(s.offers).values({ id: "offer_live_1", code: "КП-LIVE-001", leadId: "lead_live_1", guestId: "guest_live_1", propertyId: "les_borovoe", externalQuoteId: "seed-quote-1", roomType: "Sky House", checkIn: date("2026-10-10T12:00:00Z"), checkOut: date("2026-10-12T12:00:00Z"), nights: 2, adults: 2, children: 1, status: "viewed", ownerId: "emp_live_aigerim", expiresAt: date("2026-09-25T23:59:00Z"), viewedAt: date("2026-09-18T11:00:00Z"), total: 370000, deposit: 185000 }).onConflictDoNothing();
+  // Фолио для ранних сидовых лидов — должны существовать до offers (FK).
+  await db.insert(s.folios).values([
+    { id: "folio_lead_live_1", code: "F-G-LIVE-001", leadId: "lead_live_1", guestId: "guest_live_1", propertyId: "les_borovoe", status: "quoted", subtotal: 388000, totalAmount: 388000, depositRequired: 194000, paidAmount: 0, balance: 388000 },
+    { id: "folio_lead_live_2", code: "F-G-LIVE-002", leadId: "lead_live_2", guestId: "guest_live_2", propertyId: "les_astana", status: "open", subtotal: 165000, totalAmount: 165000, depositRequired: 0, paidAmount: 0, balance: 165000 },
+  ]).onConflictDoNothing();
+
+  await db.insert(s.offers).values({ id: "offer_live_1", code: "КП-LIVE-001", leadId: "lead_live_1", guestId: "guest_live_1", propertyId: "les_borovoe", externalQuoteId: "seed-quote-1", folioId: "folio_lead_live_1", roomType: "Sky House", checkIn: date("2026-10-10T12:00:00Z"), checkOut: date("2026-10-12T12:00:00Z"), nights: 2, adults: 2, children: 1, status: "viewed", ownerId: "emp_live_aigerim", expiresAt: date("2026-09-25T23:59:00Z"), viewedAt: date("2026-09-18T11:00:00Z"), total: 388000, deposit: 194000 }).onConflictDoNothing();
   await db.insert(s.offerLines).values([
-    { id: "offer_line_live_1", offerId: "offer_live_1", label: "Sky House · 2 ночи", quantity: "2", amount: 340000, position: 0 },
-    { id: "offer_line_live_2", offerId: "offer_live_1", label: "Завтраки", quantity: "3", amount: 30000, position: 1 },
+    { id: "offer_line_live_1", offerId: "offer_live_1", label: "Sky House · 2 ночи · 2 ед.", quantity: "2 × 2", amount: 340000, position: 0, leadItemId: "item_live_1_sky" },
+    { id: "offer_line_live_2", offerId: "offer_live_1", label: "SPA визит", quantity: "4", amount: 48000, position: 1, leadItemId: "item_live_1_spa" },
   ]).onConflictDoNothing();
 
   await db.insert(s.tasks).values([
@@ -103,16 +251,7 @@ export const bootstrapDatabase = async (db: Database, config: Pick<AppConfig,
   await db.insert(s.operationalTasks).values({ id: "opt_live_1", leadId: "lead_live_1", guestId: "guest_live_1", propertyId: "les_borovoe", route: "housekeeping", title: "Подготовить детскую кроватку", status: "open", priority: "medium", dueAt: date("2026-10-09T14:00:00Z"), assigneeId: "emp_live_aigerim", source: "lead" }).onConflictDoNothing();
 
   
-  await db.insert(s.serviceCatalog).values([
-    { id: "svc_restaurant_sova", propertyId: "les_borovoe", code: "restaurant_sova", category: "restaurant", name: "Ресторан SOVA", pricingMode: "quote", currency: "KZT" },
-    { id: "svc_spa_visit", propertyId: "les_borovoe", code: "spa_visit", category: "spa", name: "SPA визит", pricingMode: "per_person", defaultPrice: 12000, currency: "KZT" },
-    { id: "svc_massage", propertyId: "les_borovoe", code: "massage", category: "massage", name: "Массаж", pricingMode: "per_person", defaultPrice: 15000, currency: "KZT" },
-    { id: "svc_bathhouse", propertyId: "les_borovoe", code: "bathhouse", category: "bathhouse", name: "Баня", pricingMode: "per_hour", defaultPrice: 25000, currency: "KZT" },
-    { id: "svc_karaoke", propertyId: "les_borovoe", code: "karaoke", category: "karaoke", name: "Караоке", pricingMode: "per_hour", defaultPrice: 15000, currency: "KZT" },
-    { id: "svc_horse_riding", propertyId: "les_borovoe", code: "horse_riding", category: "activities", name: "Конная прогулка", pricingMode: "per_person", defaultPrice: 10000, currency: "KZT" },
-    { id: "svc_atv", propertyId: "les_borovoe", code: "atv", category: "activities", name: "Квадроциклы", pricingMode: "per_person", defaultPrice: 15000, currency: "KZT" },
-    { id: "svc_transfer", propertyId: "les_borovoe", code: "transfer", category: "transfer", name: "Трансфер", pricingMode: "fixed", defaultPrice: 35000, currency: "KZT" }
-  ]).onConflictDoNothing();
+  await seedServiceCatalog(db);
 
   await db.insert(s.leadInterests).values([
     { id: "interest_live_1_acc", leadId: "lead_live_1", direction: "accommodation", isPrimary: true, status: "active" },
@@ -121,9 +260,9 @@ export const bootstrapDatabase = async (db: Database, config: Pick<AppConfig,
   ]).onConflictDoNothing();
 
   await db.insert(s.leadItems).values([
-    { id: "item_live_1_sky", leadId: "lead_live_1", type: "accommodation", name: "Sky House", status: "quoted", quantity: 2, startAt: date("2026-10-10T12:00:00Z"), endAt: date("2026-10-12T12:00:00Z"), adults: 4, children: 0, roomType: "Sky House", nights: 2, totalAmount: 340000 },
-    { id: "item_live_1_spa", leadId: "lead_live_1", interestId: "interest_live_1_spa", type: "spa", name: "SPA визит", status: "quoted", quantity: 4, participants: 4, totalAmount: 48000 },
-    { id: "item_live_1_rest", leadId: "lead_live_1", interestId: "interest_live_1_rest", type: "restaurant", name: "SOVA", status: "interest", quantity: 1, participants: 4 }
+    { id: "item_live_1_sky", leadId: "lead_live_1", type: "accommodation", name: "Sky House", status: "quoted", quantity: 2, startAt: date("2026-10-10T12:00:00Z"), endAt: date("2026-10-12T12:00:00Z"), adults: 4, children: 0, roomType: "Sky House", nights: 2, unitAmount: 85000, totalAmount: 340000, catalogItemId: "svc_acc_sky_house", pricingModeSnapshot: "per_night_per_unit", catalogDefaultPrice: 85000 },
+    { id: "item_live_1_spa", leadId: "lead_live_1", interestId: "interest_live_1_spa", type: "spa", name: "SPA визит", status: "quoted", quantity: 4, participants: 4, unitAmount: 12000, totalAmount: 48000, catalogItemId: "svc_spa_visit", pricingModeSnapshot: "per_person", catalogDefaultPrice: 12000 },
+    { id: "item_live_1_rest", leadId: "lead_live_1", interestId: "interest_live_1_rest", type: "restaurant", name: "SOVA", status: "interest", quantity: 1, participants: 4, catalogItemId: "svc_restaurant_sova", pricingModeSnapshot: "per_person", catalogDefaultPrice: 15000 }
   ]).onConflictDoNothing();
 
   await db.insert(s.guests).values({
@@ -145,12 +284,34 @@ export const bootstrapDatabase = async (db: Database, config: Pick<AppConfig,
   }).onConflictDoNothing();
 
   await db.insert(s.leadItems).values([
-    { id: "item_live_3_horse", leadId: "lead_live_3", interestId: "interest_live_3_act", type: "horse_riding", name: "Конная прогулка", status: "selected", quantity: 4, participants: 4 },
-    { id: "item_live_3_atv", leadId: "lead_live_3", interestId: "interest_live_3_act", type: "atv", name: "Квадроциклы", status: "selected", quantity: 2, participants: 4 }
+    { id: "item_live_3_horse", leadId: "lead_live_3", interestId: "interest_live_3_act", type: "horse_riding", name: "Конная прогулка", status: "selected", quantity: 4, participants: 4, unitAmount: 10000, totalAmount: 40000, catalogItemId: "svc_horse_riding", pricingModeSnapshot: "per_person", catalogDefaultPrice: 10000 },
+    { id: "item_live_3_atv", leadId: "lead_live_3", interestId: "interest_live_3_act", type: "atv", name: "Квадроциклы", status: "selected", quantity: 2, participants: 4, unitAmount: 15000, totalAmount: 30000, catalogItemId: "svc_atv", pricingModeSnapshot: "per_unit", catalogDefaultPrice: 15000 }
   ]).onConflictDoNothing();
 
   await db.insert(s.leadStageHistory).values({ id: "lsh_live_3_planning", leadId: "lead_live_3", stage: "planning", employeeId: "emp_live_aigerim", changedAt: date("2026-09-18T10:00:00Z") }).onConflictDoNothing();
   await db.insert(s.leadActivities).values({ id: "la_live_3", leadId: "lead_live_3", employeeId: "emp_live_aigerim", type: "lead_created", title: "Лид создан", occurredAt: date("2026-09-18T10:00:00Z") }).onConflictDoNothing();
+
+  await db.insert(s.leadInterests).values({
+    id: "interest_live_2_event", leadId: "lead_live_2", direction: "corporate_event", isPrimary: true, status: "active",
+    details: { eventType: "corporate", date: "2026-11-05", guests: 1 },
+  }).onConflictDoNothing();
+  await db.insert(s.leadItems).values({
+    id: "item_live_2_lux", leadId: "lead_live_2", interestId: "interest_live_2_event", type: "accommodation", name: "Люкс", status: "selected", quantity: 1, startAt: date("2026-11-05T12:00:00Z"), endAt: date("2026-11-06T12:00:00Z"), adults: 1, roomType: "Люкс", nights: 1, unitAmount: 165000, totalAmount: 165000, catalogItemId: "svca_acc_lux", pricingModeSnapshot: "per_night_per_unit", catalogDefaultPrice: 165000,
+  }).onConflictDoNothing();
+
+  // Folio-сущности для сидовых лидов (idempotente — миграция 0002 уже делает
+  // backfill для существующих баз).
+  await db.insert(s.folios).values([
+    { id: "folio_lead_live_3", code: "F-G-LIVE-003", leadId: "lead_live_3", guestId: "guest_live_3", propertyId: "les_borovoe", status: "open", subtotal: 70000, totalAmount: 70000, depositRequired: 0, paidAmount: 0, balance: 70000 },
+  ]).onConflictDoNothing();
+  await db.insert(s.folioLines).values([
+    { id: "fline_item_live_1_sky", folioId: "folio_lead_live_1", leadItemId: "item_live_1_sky", catalogItemId: "svc_acc_sky_house", category: "accommodation", description: "Sky House · 2 ночи × 2 ед.", quantity: 4, unit: "night", unitPrice: 85000, lineTotal: 340000, metadata: { units: 2, nights: 2 } },
+    { id: "fline_item_live_1_spa", folioId: "folio_lead_live_1", leadItemId: "item_live_1_spa", catalogItemId: "svc_spa_visit", category: "spa", description: "SPA визит", quantity: 4, unit: "person", unitPrice: 12000, lineTotal: 48000, metadata: { participants: 4 } },
+    { id: "fline_item_live_1_rest", folioId: "folio_lead_live_1", leadItemId: "item_live_1_rest", catalogItemId: "svc_restaurant_sova", category: "restaurant", description: "Ресторан SOVA", quantity: 4, unit: "person", unitPrice: 0, lineTotal: 0, metadata: { participants: 4 } },
+    { id: "fline_item_live_2_lux", folioId: "folio_lead_live_2", leadItemId: "item_live_2_lux", catalogItemId: "svca_acc_lux", category: "accommodation", description: "Люкс · 1 ночь", quantity: 1, unit: "night", unitPrice: 165000, lineTotal: 165000, metadata: { units: 1, nights: 1 } },
+    { id: "fline_item_live_3_horse", folioId: "folio_lead_live_3", leadItemId: "item_live_3_horse", catalogItemId: "svc_horse_riding", category: "activities", description: "Конная прогулка", quantity: 4, unit: "person", unitPrice: 10000, lineTotal: 40000, metadata: { participants: 4 } },
+    { id: "fline_item_live_3_atv", folioId: "folio_lead_live_3", leadItemId: "item_live_3_atv", catalogItemId: "svc_atv", category: "activities", description: "Квадроциклы", quantity: 2, unit: "unit", unitPrice: 15000, lineTotal: 30000, metadata: { units: 2 } },
+  ]).onConflictDoNothing();
 
   await db.insert(s.salesMetricSnapshots).values([
     { id: "metric_live_b_1", date: date("2026-09-18T00:00:00Z"), propertyId: "les_borovoe", leads: 1, qualified: 1, offers: 1, confirmed: 0, revenue: 0, lost: 0 },
