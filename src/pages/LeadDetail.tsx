@@ -182,6 +182,17 @@ const LeadDetail = () => {
   const journey = journeyFor(lead.id);
   const folio = folioByLeadId(lead.id);
   const terminal = lead.stage === "completed" || lead.stage === "lost" || lead.stage === "cancelled";
+  const accommodationInterest = lead.interests.find((interest) => interest.direction === "accommodation");
+  const accommodationItem = lead.items.find((item) => item.type === "accommodation");
+  const accommodationOptions = data.serviceCatalog
+    .filter((item) => item.active && item.propertyId === lead.propertyId && item.serviceType === "accommodation")
+    .sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0));
+  const accommodationDetails = accommodationInterest?.details;
+  const accommodationStart = accommodationDetails?.checkIn ?? toLocalDate(lead.checkIn);
+  const accommodationEnd = accommodationDetails?.checkOut ?? toLocalDate(lead.checkOut);
+  const accommodationNights = accommodationStart && accommodationEnd
+    ? Math.max(1, Math.round((new Date(accommodationEnd).getTime() - new Date(accommodationStart).getTime()) / 86_400_000))
+    : 0;
 
   const openEdit = () => {
     setForm({
@@ -272,28 +283,39 @@ const LeadDetail = () => {
 
   const submitInterest = async () => {
     await addLeadInterest(lead.id, { direction: selectedDirection });
-    if (selectedDirection === "accommodation" && !lead.items.some((item) => item.type === "accommodation")) {
-      const room = data.serviceCatalog.find((item) =>
-        item.active && item.propertyId === lead.propertyId && item.serviceType === "accommodation",
-      );
-      if (room) {
-        await addLeadItem(lead.id, {
-          catalogItemId: room.id,
-          type: "accommodation",
-          name: room.name,
-          status: "selected",
-          quantity: 1,
-          startAt: lead.checkIn ?? undefined,
-          endAt: lead.checkOut ?? undefined,
-          adults: lead.adults,
-          children: lead.children,
-          nights: lead.nights || undefined,
-          roomType: room.name,
-        });
-      }
-    }
     setInterestOpen(false);
-    toast({ title: selectedDirection === "accommodation" ? "Проживание и домик добавлены в заказ" : "Категория услуг добавлена" });
+    toast({
+      title: selectedDirection === "accommodation" ? "Выберите домик для проживания" : "Категория услуг добавлена",
+      description: selectedDirection === "accommodation" ? "Варианты и расчёт появятся в составе заказа." : undefined,
+    });
+  };
+
+  const selectAccommodation = async (catalogItemId: string) => {
+    const room = accommodationOptions.find((item) => item.id === catalogItemId);
+    if (!room || !accommodationInterest) return;
+    if (!accommodationStart || !accommodationEnd || accommodationNights <= 0) {
+      toast({
+        title: "Укажите даты проживания",
+        description: "Сначала заполните заезд и выезд в категории «Проживание», затем сохраните параметры.",
+        variant: "destructive",
+      });
+      return;
+    }
+    await addLeadItem(lead.id, {
+      interestId: accommodationInterest.id,
+      catalogItemId: room.id,
+      type: "accommodation",
+      name: room.name,
+      status: "selected",
+      quantity: 1,
+      startAt: new Date(`${accommodationStart}T15:00:00`).toISOString(),
+      endAt: new Date(`${accommodationEnd}T12:00:00`).toISOString(),
+      adults: accommodationDetails?.guests ?? lead.adults,
+      children: lead.children,
+      nights: accommodationNights,
+      roomType: room.name,
+    });
+    toast({ title: "Домик добавлен в заказ", description: `${room.name} · ${formatTenge((room.defaultPrice ?? 0) * accommodationNights)}` });
   };
 
   const submitItem = async (input: LeadItemInput | LeadItemPatch, itemId?: string) => {
@@ -540,7 +562,7 @@ const LeadDetail = () => {
 
           <SectionCard
             title="Состав заказа"
-            description="Выбранные услуги — цены фиксируются из прайс-карты"
+            description="Выбранные услуги и проживание — цена фиксируется из прайс-карты"
             actions={
               !terminal ? (
                 <Button
@@ -555,7 +577,40 @@ const LeadDetail = () => {
               ) : undefined
             }
           >
-            {lead.items && lead.items.length > 0 ? (
+            <div className="space-y-3">
+              {accommodationInterest && !accommodationItem && (
+                <div className="rounded-xl border border-brand-200 bg-brand-50/40 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="font-semibold text-foreground">Подберите домик</p>
+                      <p className="mt-0.5 text-sm text-muted-foreground">
+                        {accommodationNights > 0
+                          ? `${formatDateLong(accommodationStart)} — ${formatDateLong(accommodationEnd)} · ${accommodationNights} ${accommodationNights === 1 ? "ночь" : accommodationNights < 5 ? "ночи" : "ночей"}`
+                          : "Укажите даты проживания выше — покажем итоговую стоимость."}
+                      </p>
+                    </div>
+                    <span className="rounded-md bg-white px-2 py-1 text-xs font-medium text-brand-700">Проживание</span>
+                  </div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-3">
+                    {accommodationOptions.map((room) => {
+                      const rate = room.defaultPrice ?? 0;
+                      const total = accommodationNights > 0 ? rate * accommodationNights : null;
+                      return (
+                        <div key={room.id} className="rounded-xl border border-border bg-card p-3 shadow-sm">
+                          <p className="font-semibold text-foreground">{room.name}</p>
+                          <p className="mt-1 min-h-10 text-xs text-muted-foreground">{room.description ?? "Домик для проживания"}</p>
+                          <p className="mt-3 text-sm font-medium text-foreground">{formatTenge(rate)} <span className="font-normal text-muted-foreground">/ ночь</span></p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {total !== null ? `${formatTenge(total)} за ${accommodationNights} ${accommodationNights === 1 ? "ночь" : accommodationNights < 5 ? "ночи" : "ночей"}` : "Итог появится после выбора дат"}
+                          </p>
+                          {!terminal && <Button size="sm" className="mt-3 w-full" onClick={() => selectAccommodation(room.id)}>Выбрать домик</Button>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {lead.items && lead.items.length > 0 ? (
               <div className="divide-y divide-border rounded-xl border border-border">
                 {lead.items.map((item) => (
                   <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 p-3 text-sm">
@@ -574,9 +629,11 @@ const LeadDetail = () => {
                       </div>
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         Кол-во: {item.quantity}
-                        {item.startAt ? ` · Дата: ${formatDateLong(item.startAt)}` : ""}
+                        {item.type === "accommodation" && item.roomType ? ` · Домик: ${item.roomType}` : ""}
+                        {item.startAt ? ` · Заезд: ${formatDateLong(item.startAt)}` : ""}
                         {item.participants ? ` · Участников: ${item.participants}` : ""}
                         {item.nights ? ` · Ночей: ${item.nights}` : ""}
+                        {item.type === "accommodation" && item.unitAmount != null ? ` · ${formatTenge(item.unitAmount)} / ночь` : ""}
                         {item.priceOverridden ? " · цена изменена менеджером" : ""}
                       </p>
                     </div>
@@ -610,9 +667,12 @@ const LeadDetail = () => {
               </div>
             ) : (
               <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-                Услуги пока не добавлены. На этапе комплектации выберите позиции из прайс-карты.
+                {accommodationInterest
+                  ? "Сначала выберите домик из вариантов выше — стоимость появится в счёте автоматически."
+                  : "Услуги пока не добавлены. На этапе комплектации выберите позиции из прайс-карты."}
               </div>
             )}
+            </div>
           </SectionCard>
 
           {folio && (

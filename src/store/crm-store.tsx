@@ -1736,15 +1736,21 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           const items: LeadItem[] = l.items.map((it) => {
             if (it.id !== itemId) return it;
             const next = { ...it, ...patch, updatedAt: timestamp };
+            const catalogEntry = next.catalogItemId ? data.serviceCatalog.find((entry) => entry.id === next.catalogItemId) : undefined;
             const nights = next.nights ?? (next.startAt && next.endAt
               ? Math.max(1, Math.round((new Date(next.endAt).getTime() - new Date(next.startAt).getTime()) / 86_400_000))
               : undefined);
             next.nights = nights;
-            if (it.unitAmount != null) {
+            if (catalogEntry?.defaultPrice != null) {
+              next.unitAmount = catalogEntry.defaultPrice;
+              next.catalogDefaultPrice = catalogEntry.defaultPrice;
+              next.pricingModeSnapshot = catalogEntry.pricingMode;
+            }
+            if (next.unitAmount != null) {
               const quantity = next.type === "accommodation" && nights
                 ? nights * next.quantity
                 : next.participants ?? next.quantity;
-              next.totalAmount = it.unitAmount * quantity;
+              next.totalAmount = next.unitAmount * quantity;
             }
             return next;
           });

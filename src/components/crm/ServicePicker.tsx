@@ -131,6 +131,7 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
       if (editing) {
         const patch: LeadItemPatch = {
           catalogItemId: form.catalogItemId || undefined,
+          name: serviceType === "accommodation" ? entry?.name : undefined,
           quantity: form.quantity,
           participants: form.participants || undefined,
           adults: needsDateRange ? form.adults : undefined,
@@ -138,6 +139,7 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
           startAt: toIso(form.startAt, form.startTime),
           endAt: needsDateRange ? toIso(form.endAt) : undefined,
           nights: needsDateRange ? form.nights : undefined,
+          roomType: serviceType === "accommodation" ? entry?.name : undefined,
           details,
         };
         await onSubmit(patch, editing.id);
