@@ -133,8 +133,9 @@ export const createCrmRouter = (db: Database) => {
   /** «Продолжить» — сервер сам определяет следующий этап и проверяет блокеры. */
   router.post(["/leads/:id/advance", "/leads/:id/journey/advance"], async (request, response) => {
     const leadId = request.params.id as string;
+    const { force } = z.object({ force: z.boolean().optional() }).parse(request.body);
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
-    const result = await advanceLead(db, leadId, employeeId);
+    const result = await advanceLead(db, leadId, employeeId, { force });
     if (!result.ok) return response.status(result.status).json({ error: result.error, blockers: result.blockers, journey: result.journey });
     const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, leadId)).limit(1);
     response.json({ lead, journey: result.journey });

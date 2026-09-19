@@ -1,4 +1,5 @@
 import { Check, ChevronRight, Circle, Lock, Undo2, X } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/common/SectionCard";
 import { StatusPill } from "@/components/common/StatusPill";
@@ -11,7 +12,7 @@ interface JourneyCardProps {
   lead: Lead;
   journey: LeadJourney;
   advancing?: boolean;
-  onAdvance: () => void;
+  onAdvance: (force: boolean) => void;
   onLose: () => void;
   onCancel: () => void;
   onRollback: () => void;
@@ -21,8 +22,19 @@ interface JourneyCardProps {
  * Серверно-авторитетный journey-контрол: будущие этапы заблокированы,
  * доступно только «следующее действие» и терминальные операции.
  */
+const stageExpectations: Partial<Record<Lead["stage"], string>> = {
+  new: "Зафиксируйте, кто обратился, какой объект и какая услуга ему нужна.",
+  qualified: "Соберите даты и состав гостей, чтобы перейти к подбору и расчёту.",
+  planning: "Подберите позиции заказа и проверьте, что их параметры и цены готовы.",
+  offer: "Отправьте предложение и отметьте решение клиента.",
+  payment_pending: "Дождитесь предоплаты, если она требуется по счёту.",
+  confirmed: "После оказания услуг завершите заказ.",
+};
+
 export const JourneyCard = ({ lead, journey, advancing, onAdvance, onLose, onCancel, onRollback }: JourneyCardProps) => {
   const currentIndex = journey.stageIndex;
+  const [forceAdvance, setForceAdvance] = useState(false);
+  const canProceed = journey.canAdvance || forceAdvance;
 
   return (
     <SectionCard
@@ -40,8 +52,8 @@ export const JourneyCard = ({ lead, journey, advancing, onAdvance, onLose, onCan
             <Button
               size="sm"
               className="gap-1.5"
-              disabled={!journey.canAdvance || advancing}
-              onClick={onAdvance}
+              disabled={!canProceed || advancing}
+              onClick={() => onAdvance(forceAdvance)}
             >
               {advancing ? "Переход…" : journey.actionLabel ?? `→ ${journey.nextStageLabel ?? ""}`}
             </Button>
@@ -90,6 +102,9 @@ export const JourneyCard = ({ lead, journey, advancing, onAdvance, onLose, onCan
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Чек-лист этапа
             </p>
+            <p className="mb-3 text-sm text-muted-foreground">
+              {stageExpectations[lead.stage] ?? "Проверьте данные обращения перед следующим действием."}
+            </p>
             <ul className="space-y-1.5 text-sm">
               {journey.requirements.length === 0 && (
                 <li className="flex items-center gap-2 text-muted-foreground">
@@ -118,8 +133,8 @@ export const JourneyCard = ({ lead, journey, advancing, onAdvance, onLose, onCan
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
-                disabled={!journey.canAdvance || advancing}
-                onClick={onAdvance}
+                disabled={!canProceed || advancing}
+                onClick={() => onAdvance(forceAdvance)}
               >
                 {journey.actionLabel ?? `→ ${journey.nextStageLabel ?? "Далее"}`}
               </Button>
@@ -133,9 +148,15 @@ export const JourneyCard = ({ lead, journey, advancing, onAdvance, onLose, onCan
               )}
             </div>
             {journey.blockers.length > 0 && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Сначала выполните пункты чек-листа — этап заблокирован сервером.
-              </p>
+              <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 rounded border-border accent-brand-600"
+                  checked={forceAdvance}
+                  onChange={(event) => setForceAdvance(event.target.checked)}
+                />
+                <span>Продолжить без ответа по незаполненным пунктам. Это будет отмечено в истории обращения.</span>
+              </label>
             )}
           </div>
         </div>

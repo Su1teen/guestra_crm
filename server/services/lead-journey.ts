@@ -188,19 +188,28 @@ export interface AdvanceResult {
 }
 
 /** «Продолжить» — сервер сам определяет следующий этап и проверяет готовность. */
-export const advanceLead = async (db: Database, leadId: string, employeeId: string | null | undefined): Promise<AdvanceResult & { status: number }> => {
+export const advanceLead = async (
+  db: Database,
+  leadId: string,
+  employeeId: string | null | undefined,
+  options: { force?: boolean } = {},
+): Promise<AdvanceResult & { status: number }> => {
   const ctx = await loadJourneyContext(db, leadId);
   if (!ctx) return { ok: false, status: 404, error: "Лид не найден", journey: evaluateJourney({ stage: "new", hasGuest: false, interests: [], items: [], offers: [], folio: null }) };
   const evaluation = ctx.evaluation;
   if (evaluation.terminal || !evaluation.nextStage) {
     return { ok: false, status: 409, error: `Этап «${evaluation.currentStageLabel}» является завершающим`, journey: evaluation };
   }
-  if (!evaluation.canAdvance) {
+  if (!evaluation.canAdvance && !options.force) {
     return { ok: false, status: 409, error: "stage_requirements_not_met", journey: evaluation, blockers: evaluation.blockers };
   }
   const target = evaluation.nextStage;
+  const skippedChecklist = !evaluation.canAdvance;
   await db.transaction(async (tx) => {
-    await applyStageTransition(tx, ctx, target, employeeId);
+    await applyStageTransition(tx, ctx, target, employeeId, skippedChecklist
+      ? { comment: `Переход выполнен без заполнения чек-листа: ${evaluation.blockers.map((blocker) => blocker.label).join(", ")}` }
+      : {},
+    );
     if (target === "offer" || target === "confirmed" || target === "payment_pending") {
       await recalcFolio(tx, ctx.folio.id);
     }

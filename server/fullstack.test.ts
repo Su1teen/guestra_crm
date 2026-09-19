@@ -150,6 +150,22 @@ describe("manual resort leads", () => {
     expect(await db.select().from(s.tasks).where(eq(s.tasks.leadId, leadId))).toHaveLength(1);
   });
 
+  it("allows a manager to advance with an explicit checklist override and records it", async () => {
+    const agent = await admin();
+    const created = await agent.post("/api/crm/leads").send({
+      guest: { fullName: "Переход без ответа", email: "override@example.com" }, propertyId: "les_borovoe", source: "phone",
+      ownerId: "emp_admin", primaryDirection: "restaurant",
+    }).expect(201);
+    const leadId = created.body.lead.id;
+    await agent.post(`/api/crm/leads/${leadId}/advance`).send({}).expect(200);
+    await agent.post(`/api/crm/leads/${leadId}/advance`).send({}).expect(409);
+    await agent.post(`/api/crm/leads/${leadId}/advance`).send({ force: true }).expect(200);
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, leadId));
+    expect(lead.stage).toBe("planning");
+    const activities = await db.select().from(s.leadActivities).where(eq(s.leadActivities.leadId, leadId));
+    expect(activities.at(-1)?.description).toContain("без заполнения чек-листа");
+  });
+
   it("creates for an existing guest, reports exact duplicate contact, and rolls back failed creation", async () => {
     const agent = await admin();
     const existing = await agent.post("/api/crm/leads").send({

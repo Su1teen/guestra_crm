@@ -3,6 +3,8 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   CheckSquare,
+  ChevronDown,
+  ChevronUp,
   FileText,
   MessageSquare,
   Pencil,
@@ -117,6 +119,7 @@ const LeadDetail = () => {
   const [note, setNote] = useState("");
   const [editOpen, setEditOpen] = useState(false);
   const [advancing, setAdvancing] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
 
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentForm, setPaymentForm] = useState({
@@ -207,9 +210,9 @@ const LeadDetail = () => {
     toast({ title: "Обращение обновлено" });
   };
 
-  const handleAdvance = async () => {
+  const handleAdvance = async (force = false) => {
     setAdvancing(true);
-    const result = await advanceLead(lead.id);
+    const result = await advanceLead(lead.id, force);
     setAdvancing(false);
     if (!result.ok) {
       toast({ title: "Переход недоступен", description: result.error, variant: "destructive" });
@@ -269,8 +272,28 @@ const LeadDetail = () => {
 
   const submitInterest = async () => {
     await addLeadInterest(lead.id, { direction: selectedDirection });
+    if (selectedDirection === "accommodation" && !lead.items.some((item) => item.type === "accommodation")) {
+      const room = data.serviceCatalog.find((item) =>
+        item.active && item.propertyId === lead.propertyId && item.serviceType === "accommodation",
+      );
+      if (room) {
+        await addLeadItem(lead.id, {
+          catalogItemId: room.id,
+          type: "accommodation",
+          name: room.name,
+          status: "selected",
+          quantity: 1,
+          startAt: lead.checkIn ?? undefined,
+          endAt: lead.checkOut ?? undefined,
+          adults: lead.adults,
+          children: lead.children,
+          nights: lead.nights || undefined,
+          roomType: room.name,
+        });
+      }
+    }
     setInterestOpen(false);
-    toast({ title: "Категория услуг добавлена" });
+    toast({ title: selectedDirection === "accommodation" ? "Проживание и домик добавлены в заказ" : "Категория услуг добавлена" });
   };
 
   const submitItem = async (input: LeadItemInput | LeadItemPatch, itemId?: string) => {
@@ -288,6 +311,30 @@ const LeadDetail = () => {
     const details = interestDrafts[interestId];
     if (!details) return;
     await updateLeadInterest(lead.id, interestId, { details });
+    const interest = lead.interests.find((item) => item.id === interestId);
+    if (interest?.direction === "accommodation") {
+      const accommodation = lead.items.find((item) => item.type === "accommodation");
+      const checkIn = details.checkIn ? new Date(`${details.checkIn}T15:00:00`).toISOString() : undefined;
+      const checkOut = details.checkOut ? new Date(`${details.checkOut}T12:00:00`).toISOString() : undefined;
+      const nights = checkIn && checkOut
+        ? Math.max(1, Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000))
+        : undefined;
+      if (accommodation) {
+        await updateLeadItem(lead.id, accommodation.id, {
+          startAt: checkIn,
+          endAt: checkOut,
+          adults: details.guests ?? undefined,
+          participants: details.guests ?? undefined,
+          nights,
+        });
+      }
+      updateLead(lead.id, {
+        roomType: accommodation?.roomType ?? accommodation?.name,
+        checkIn,
+        checkOut,
+        adults: details.guests ?? undefined,
+      });
+    }
     setInterestDrafts((prev) => {
       const next = { ...prev };
       delete next[interestId];
@@ -607,22 +654,33 @@ const LeadDetail = () => {
             </SectionCard>
           )}
 
-          <SectionCard title="История активности" description="Все события по обращению">
-            <Timeline events={[...lead.activity].reverse()} />
-            <div className="mt-5 space-y-2 border-t border-border pt-4">
-              <Label htmlFor="lead-note">Добавить заметку</Label>
-              <Textarea
-                id="lead-note"
-                value={note}
-                onChange={(event) => setNote(event.target.value)}
-                rows={3}
-                placeholder="Например: гость просит уточнить наличие бани на вечер заезда"
-              />
-              <Button size="sm" className="gap-2" onClick={submitNote} disabled={!note.trim()}>
-                <StickyNote className="h-4 w-4" />
-                Сохранить заметку
+          <SectionCard
+            title="История активности"
+            description={activityOpen ? "Все события по обращению" : `${lead.activity.length} событий скрыто`}
+            actions={
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setActivityOpen((open) => !open)}>
+                {activityOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                {activityOpen ? "Свернуть" : "Показать историю"}
               </Button>
-            </div>
+            }
+          >
+            {activityOpen && <>
+              <Timeline events={[...lead.activity].reverse()} />
+              <div className="mt-5 space-y-2 border-t border-border pt-4">
+                <Label htmlFor="lead-note">Добавить заметку</Label>
+                <Textarea
+                  id="lead-note"
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                  rows={3}
+                  placeholder="Например: гость просит уточнить наличие бани на вечер заезда"
+                />
+                <Button size="sm" className="gap-2" onClick={submitNote} disabled={!note.trim()}>
+                  <StickyNote className="h-4 w-4" />
+                  Сохранить заметку
+                </Button>
+              </div>
+            </>}
           </SectionCard>
         </div>
 
@@ -1001,6 +1059,8 @@ const LeadDetail = () => {
         catalog={data.serviceCatalog}
         propertyId={lead.propertyId}
         editing={editingItem}
+        excludedTypes={lead.interests.some((interest) => interest.direction === "accommodation") ? ["accommodation"] : []}
+        accommodationDates={lead.interests.find((interest) => interest.direction === "accommodation")?.details}
         onSubmit={submitItem}
       />
     </div>

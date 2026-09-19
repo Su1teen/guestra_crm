@@ -106,6 +106,7 @@ export interface LeadItemInput {
 }
 
 export interface LeadItemPatch {
+  catalogItemId?: string;
   status?: LeadItemStatus;
   name?: string;
   quantity?: number;
@@ -145,7 +146,7 @@ interface CrmContextValue {
   folioByLeadId: (leadId: string) => Folio | undefined;
   journeyFor: (leadId: string) => LeadJourney | undefined;
   /** Серверно-авторитетный переход на следующую стадию. Возвращает ошибку, если запрещён. */
-  advanceLead: (leadId: string) => Promise<JourneyActionResult>;
+  advanceLead: (leadId: string, force?: boolean) => Promise<JourneyActionResult>;
   loseLead: (leadId: string, lostReason: LostReason, comment?: string) => Promise<JourneyActionResult>;
   cancelLead: (leadId: string, reason: string) => Promise<JourneyActionResult>;
   rollbackLead: (leadId: string, reason: string) => Promise<JourneyActionResult>;
@@ -553,10 +554,10 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     };
   }, [actorId, mockStageActivity]);
 
-  const advanceLead = useCallback(async (leadId: string): Promise<JourneyActionResult> => {
+  const advanceLead = useCallback(async (leadId: string, force = false): Promise<JourneyActionResult> => {
     if (dataMode === "database") {
       try {
-        const result = await persist<{ nextStage?: LeadStage | null }>(`/api/crm/leads/${leadId}/advance`, { method: "POST", body: JSON.stringify({}) });
+        const result = await persist<{ nextStage?: LeadStage | null }>(`/api/crm/leads/${leadId}/advance`, { method: "POST", body: JSON.stringify({ force }) });
         return { ok: true, nextStage: result.nextStage ?? null };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : "Не удалось перевести лид" };
@@ -565,7 +566,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     const lead = data.leads.find((item) => item.id === leadId);
     if (!lead) return { ok: false, error: "Лид не найден" };
     const journey = journeyForLead(lead, data.offers, folioForLead(lead, data.folios, data.payments));
-    if (!journey.canAdvance) return { ok: false, error: journey.blockers[0]?.label ?? "Стадия недоступна" };
+    if (!journey.canAdvance && !force) return { ok: false, error: journey.blockers[0]?.label ?? "Стадия недоступна" };
     const nextStage = journey.nextStage;
     setData((previous) => applyMockAdvance(previous, leadId));
     return { ok: true, nextStage };

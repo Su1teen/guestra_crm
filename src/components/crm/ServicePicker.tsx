@@ -13,7 +13,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatTenge } from "@/lib/format";
 import { SERVICE_GROUPS, serviceGroupByCode, serviceGroupLabel } from "@shared/service-groups";
-import type { LeadItem, ServiceCatalogEntry } from "@/types/crm";
+import type { InterestDetails, LeadItem, ServiceCatalogEntry } from "@/types/crm";
 import type { LeadItemInput, LeadItemPatch } from "@/store/crm-store";
 
 interface ServicePickerProps {
@@ -22,6 +22,8 @@ interface ServicePickerProps {
   catalog: ServiceCatalogEntry[];
   propertyId: string;
   editing?: LeadItem | null;
+  excludedTypes?: string[];
+  accommodationDates?: InterestDetails;
   onSubmit: (input: LeadItemInput | LeadItemPatch, itemId?: string) => Promise<void>;
 }
 
@@ -64,7 +66,7 @@ const toIso = (date: string, time?: string) => {
  * Выбор услуги из каталога с полями под тип позиции.
  * Цена берётся из каталога (price snapshot) — вручную не редактируется.
  */
-export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing, onSubmit }: ServicePickerProps) => {
+export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing, excludedTypes = [], accommodationDates, onSubmit }: ServicePickerProps) => {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +74,7 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
   const entries = useMemo(
     () =>
       catalog
-        .filter((entry) => entry.active && entry.propertyId === propertyId)
+        .filter((entry) => entry.active && entry.propertyId === propertyId && (!excludedTypes.includes(entry.serviceType ?? "other") || editing?.type === "accommodation"))
         .sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0)),
     [catalog, propertyId],
   );
@@ -90,9 +92,9 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
         catalogItemId: editing.catalogItemId ?? "",
         quantity: editing.quantity,
         participants: editing.participants ?? 0,
-        startAt: editing.startAt?.slice(0, 10) ?? "",
+        startAt: editing.type === "accommodation" ? accommodationDates?.checkIn ?? editing.startAt?.slice(0, 10) ?? "" : editing.startAt?.slice(0, 10) ?? "",
         startTime: editing.startAt?.slice(11, 16) ?? "",
-        endAt: editing.endAt?.slice(0, 10) ?? "",
+        endAt: editing.type === "accommodation" ? accommodationDates?.checkOut ?? editing.endAt?.slice(0, 10) ?? "" : editing.endAt?.slice(0, 10) ?? "",
         nights: editing.nights ?? 1,
         adults: editing.adults ?? 2,
         children: editing.children ?? 0,
@@ -101,9 +103,10 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
     } else {
       setForm(emptyForm);
     }
-  }, [open, editing]);
+  }, [open, editing, accommodationDates]);
 
   const needsDateRange = serviceType === "accommodation";
+  const accommodationDatesLocked = Boolean(editing?.type === "accommodation" && accommodationDates);
   const needsDate = !needsDateRange;
   const needsParticipants = ["restaurant", "spa", "horse_riding", "activity", "corporate_event", "wedding_or_banquet"].includes(serviceType);
   const needsQuantity = ["massage", "bathhouse", "karaoke", "atv", "accommodation", "other"].includes(serviceType);
@@ -127,6 +130,7 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
     try {
       if (editing) {
         const patch: LeadItemPatch = {
+          catalogItemId: form.catalogItemId || undefined,
           quantity: form.quantity,
           participants: form.participants || undefined,
           adults: needsDateRange ? form.adults : undefined,
@@ -154,7 +158,7 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
           startAt: toIso(form.startAt, form.startTime),
           endAt: needsDateRange ? toIso(form.endAt) : undefined,
           nights: needsDateRange ? form.nights : undefined,
-          roomType: serviceType === "accommodation" ? entry.name : undefined,
+          roomType: serviceType === "accommodation" ? entry?.name : undefined,
           details,
         });
       }
@@ -177,9 +181,9 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
         </DialogHeader>
 
         <div className="space-y-4 py-2">
-          {!editing && (
+          {(!editing || editing.type === "accommodation") && (
             <div className="space-y-1.5">
-              <Label>Услуга из каталога *</Label>
+              <Label>{editing?.type === "accommodation" ? "Домик" : "Услуга из каталога *"}</Label>
               <Select value={form.catalogItemId} onValueChange={(value) => setForm({ ...form, catalogItemId: value })}>
                 <SelectTrigger><SelectValue placeholder="Выберите услугу…" /></SelectTrigger>
                 <SelectContent>
@@ -203,7 +207,7 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
               {entry?.description && <p className="text-xs text-muted-foreground">{entry.description}</p>}
             </div>
           )}
-          {editing && (
+          {editing && editing.type !== "accommodation" && (
             <p className="rounded-lg bg-secondary/60 px-3 py-2 text-sm">
               {editing.name}
               {editing.catalogItemId ? ` · ${serviceGroupLabel(editing.category ?? "")}` : ""}
@@ -220,7 +224,7 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
                     ? Math.max(1, Math.round((new Date(form.endAt).getTime() - new Date(startAt).getTime()) / 86_400_000))
                     : form.nights;
                   setForm({ ...form, startAt, nights });
-                }} />
+                }} disabled={accommodationDatesLocked} />
               </div>
               <div className="space-y-1.5">
                 <Label>Выезд *</Label>
@@ -230,11 +234,11 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
                     ? Math.max(1, Math.round((new Date(endAt).getTime() - new Date(form.startAt).getTime()) / 86_400_000))
                     : form.nights;
                   setForm({ ...form, endAt, nights });
-                }} />
+                }} disabled={accommodationDatesLocked} />
               </div>
               <div className="space-y-1.5">
                 <Label>Ночей</Label>
-                <Input type="number" min={1} value={form.nights} onChange={(event) => setForm({ ...form, nights: Number(event.target.value) })} />
+                <Input type="number" min={1} value={form.nights} onChange={(event) => setForm({ ...form, nights: Number(event.target.value) })} disabled={accommodationDatesLocked} />
               </div>
               {needsQuantity && (
                 <div className="space-y-1.5">
@@ -244,11 +248,11 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
               )}
               <div className="space-y-1.5">
                 <Label>Взрослые</Label>
-                <Input type="number" min={0} value={form.adults} onChange={(event) => setForm({ ...form, adults: Number(event.target.value) })} />
+                <Input type="number" min={0} value={form.adults} onChange={(event) => setForm({ ...form, adults: Number(event.target.value) })} disabled={accommodationDatesLocked} />
               </div>
               <div className="space-y-1.5">
                 <Label>Дети</Label>
-                <Input type="number" min={0} value={form.children} onChange={(event) => setForm({ ...form, children: Number(event.target.value) })} />
+                <Input type="number" min={0} value={form.children} onChange={(event) => setForm({ ...form, children: Number(event.target.value) })} disabled={accommodationDatesLocked} />
               </div>
             </div>
           ) : (
@@ -274,6 +278,12 @@ export const ServicePicker = ({ open, onOpenChange, catalog, propertyId, editing
                 </div>
               )}
             </div>
+          )}
+
+          {accommodationDatesLocked && (
+            <p className="rounded-lg bg-secondary/60 px-3 py-2 text-xs text-muted-foreground">
+              Даты и состав гостей берутся из категории «Проживание». Измените их выше в параметрах запроса.
+            </p>
           )}
 
           <div className="space-y-1.5">
