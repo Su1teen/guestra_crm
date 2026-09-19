@@ -556,7 +556,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
   const advanceLead = useCallback(async (leadId: string): Promise<JourneyActionResult> => {
     if (dataMode === "database") {
       try {
-        const result = await persist<{ nextStage?: LeadStage | null }>(`/api/crm/leads/${leadId}/journey/advance`, { method: "POST", body: JSON.stringify({}) });
+        const result = await persist<{ nextStage?: LeadStage | null }>(`/api/crm/leads/${leadId}/advance`, { method: "POST", body: JSON.stringify({}) });
         return { ok: true, nextStage: result.nextStage ?? null };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : "Не удалось перевести лид" };
@@ -574,7 +574,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
   const loseLead = useCallback(async (leadId: string, lostReason: LostReason, comment?: string): Promise<JourneyActionResult> => {
     if (dataMode === "database") {
       try {
-        await persist(`/api/crm/leads/${leadId}/journey/lose`, { method: "POST", body: JSON.stringify({ lostReason, comment }) });
+        await persist(`/api/crm/leads/${leadId}/lose`, { method: "POST", body: JSON.stringify({ lostReason, comment }) });
         return { ok: true };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : "Не удалось закрыть лид" };
@@ -619,7 +619,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
   const cancelLead = useCallback(async (leadId: string, reason: string): Promise<JourneyActionResult> => {
     if (dataMode === "database") {
       try {
-        await persist(`/api/crm/leads/${leadId}/journey/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
+        await persist(`/api/crm/leads/${leadId}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
         return { ok: true };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : "Не удалось отменить лид" };
@@ -660,7 +660,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
   const rollbackLead = useCallback(async (leadId: string, reason: string): Promise<JourneyActionResult> => {
     if (dataMode === "database") {
       try {
-        const result = await persist<{ nextStage?: LeadStage | null }>(`/api/crm/leads/${leadId}/journey/rollback`, { method: "POST", body: JSON.stringify({ reason }) });
+        const result = await persist<{ nextStage?: LeadStage | null }>(`/api/crm/leads/${leadId}/rollback`, { method: "POST", body: JSON.stringify({ reason }) });
         return { ok: true, nextStage: result.nextStage ?? null };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : "Не удалось вернуть лид" };

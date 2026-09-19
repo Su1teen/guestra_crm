@@ -95,6 +95,15 @@ describe("authentication and database bootstrap", () => {
     expect((await salesAgent.get("/api/crm/bootstrap")).status).toBe(403);
   });
 
+  it("keeps the legacy journey URL available while clients update", async () => {
+    const adminAgent = request.agent(app);
+    await adminAgent.post("/api/auth/login").send({ email: config.ADMIN_BOOTSTRAP_EMAIL, password: config.ADMIN_BOOTSTRAP_PASSWORD }).expect(200);
+    const result = await adminAgent.post("/api/crm/leads/missing-lead/journey/advance").send({});
+    expect(result.status).toBe(404);
+    expect(result.headers["content-type"]).toContain("application/json");
+    expect(result.body.error).toBe("Лид не найден");
+  });
+
   it("returns database data to admin and preserves mutations across reloads", async () => {
     const adminAgent = request.agent(app);
     await adminAgent.post("/api/auth/login").send({ email: config.ADMIN_BOOTSTRAP_EMAIL, password: config.ADMIN_BOOTSTRAP_PASSWORD }).expect(200);

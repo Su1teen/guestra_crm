@@ -131,11 +131,12 @@ export const createCrmRouter = (db: Database) => {
   });
 
   /** «Продолжить» — сервер сам определяет следующий этап и проверяет блокеры. */
-  router.post("/leads/:id/advance", async (request, response) => {
+  router.post(["/leads/:id/advance", "/leads/:id/journey/advance"], async (request, response) => {
+    const leadId = request.params.id as string;
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
-    const result = await advanceLead(db, request.params.id, employeeId);
+    const result = await advanceLead(db, leadId, employeeId);
     if (!result.ok) return response.status(result.status).json({ error: result.error, blockers: result.blockers, journey: result.journey });
-    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, leadId)).limit(1);
     response.json({ lead, journey: result.journey });
   });
 
@@ -152,32 +153,35 @@ export const createCrmRouter = (db: Database) => {
   });
 
   /** Terminal action — потерять открытую сделку. lostReason обязателен. */
-  router.post("/leads/:id/lose", async (request, response) => {
+  router.post(["/leads/:id/lose", "/leads/:id/journey/lose"], async (request, response) => {
+    const leadId = request.params.id as string;
     const { lostReason, comment } = z.object({ lostReason: z.string().min(1), comment: z.string().optional() }).parse(request.body);
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
-    const result = await transitionLead(db, request.params.id, "lost", employeeId, { lostReason, comment });
+    const result = await transitionLead(db, leadId, "lost", employeeId, { lostReason, comment });
     if (!result.ok) return response.status(result.status).json({ error: result.error, blockers: result.blockers, journey: result.journey });
-    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, leadId)).limit(1);
     response.json(lead);
   });
 
   /** Terminal action — отмена подтверждённого заказа. */
-  router.post("/leads/:id/cancel", async (request, response) => {
+  router.post(["/leads/:id/cancel", "/leads/:id/journey/cancel"], async (request, response) => {
+    const leadId = request.params.id as string;
     const { reason } = z.object({ reason: z.string().optional() }).parse(request.body);
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
-    const result = await transitionLead(db, request.params.id, "cancelled", employeeId, { comment: reason });
+    const result = await transitionLead(db, leadId, "cancelled", employeeId, { comment: reason });
     if (!result.ok) return response.status(result.status).json({ error: result.error, blockers: result.blockers, journey: result.journey });
-    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, leadId)).limit(1);
     response.json(lead);
   });
 
   /** Откат на предыдущий этап — отдельное действие с обязательной причиной. */
-  router.post("/leads/:id/rollback", async (request, response) => {
+  router.post(["/leads/:id/rollback", "/leads/:id/journey/rollback"], async (request, response) => {
+    const leadId = request.params.id as string;
     const { reason } = z.object({ reason: z.string().min(1) }).parse(request.body);
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
-    const result = await rollbackLead(db, request.params.id, employeeId, reason);
+    const result = await rollbackLead(db, leadId, employeeId, reason);
     if (!result.ok) return response.status(result.status).json({ error: result.error, journey: result.journey });
-    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, leadId)).limit(1);
     response.json({ lead, journey: result.journey });
   });
 
