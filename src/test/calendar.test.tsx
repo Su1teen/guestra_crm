@@ -1,16 +1,27 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Calendar from "@/pages/Calendar";
 import { CrmProvider } from "@/store/crm-store";
+import { AuthProvider } from "@/contexts/AuthContext";
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    id: "user_sales", email: "sales@guestra.com", role: "sales", dataMode: "mock",
+    employeeId: "emp_sultan", name: "Султан Аманжолов",
+  }), { status: 200, headers: { "Content-Type": "application/json" } })));
+});
+afterEach(() => vi.unstubAllGlobals());
 
 const renderCalendar = () =>
   render(
-    <CrmProvider>
-      <MemoryRouter>
-        <Calendar />
-      </MemoryRouter>
-    </CrmProvider>,
+    <AuthProvider>
+      <CrmProvider>
+        <MemoryRouter>
+          <Calendar />
+        </MemoryRouter>
+      </CrmProvider>
+    </AuthProvider>,
   );
 
 const todayLabel = new Intl.DateTimeFormat("ru-RU", {

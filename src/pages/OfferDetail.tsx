@@ -7,7 +7,6 @@ import { Field, InitialsAvatar } from "@/components/common/Identity";
 import { EmptyState, ErrorState, LoadingScreen } from "@/components/common/States";
 import { Button } from "@/components/ui/button";
 import { useCrm } from "@/store/crm-store";
-import { employeeById, organization, propertyById } from "@/data/reference";
 import {
   formatDateLong,
   formatDateTime,
@@ -23,7 +22,7 @@ const OfferDetail = () => {
   const { offerId = "" } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { status, reload, offerById, guestById, leadById, setOfferStatus, duplicateOffer } = useCrm();
+  const { status, reload, data, offerById, guestById, leadById, employeeById, propertyById, setOfferStatus, duplicateOffer } = useCrm();
 
   if (status === "error") return <ErrorState onRetry={reload} />;
   if (status === "loading") return <LoadingScreen />;
@@ -42,8 +41,8 @@ const OfferDetail = () => {
   }
 
   const lead = leadById(offer.leadId);
-  const property = propertyById(offer.propertyId);
-  const owner = employeeById(offer.ownerId);
+  const property = propertyById(offer.propertyId) ?? data.properties[0];
+  const owner = employeeById(offer.ownerId) ?? data.employees[0];
 
   const changeStatus = (next: Parameters<typeof setOfferStatus>[1], message: string) => {
     setOfferStatus(offer.id, next);
@@ -82,8 +81,8 @@ const OfferDetail = () => {
             <Button
               variant="outline"
               className="gap-2"
-              onClick={() => {
-                const copyId = duplicateOffer(offer.id);
+              onClick={async () => {
+                const copyId = await duplicateOffer(offer.id);
                 toast({ title: "Создана копия предложения" });
                 navigate(`/offers/${copyId}`);
               }}
@@ -124,7 +123,7 @@ const OfferDetail = () => {
           <div className="border-b border-border px-6 py-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-brand-600">{organization.legalName}</p>
+                <p className="text-xs font-semibold uppercase tracking-wider text-brand-600">{data.organization.legalName}</p>
                 <h2 className="mt-1 text-lg font-semibold text-foreground">Коммерческое предложение {offer.code}</h2>
                 <p className="text-sm text-muted-foreground">
                   {property.name} · {property.city}

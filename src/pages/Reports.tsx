@@ -32,7 +32,6 @@ import {
 } from "@/lib/labels";
 import { formatTenge, formatPercent } from "@/lib/format";
 import { downloadReportWorkbook } from "@/lib/report-excel";
-import { propertyById, employees } from "@/data/reference";
 import { useToast } from "@/hooks/use-toast";
 
 const FAVORITES_KEY = "guestra-crm-report-favorites";
@@ -46,7 +45,7 @@ interface ReportDefinition {
 
 const Reports = () => {
   const { toast } = useToast();
-  const { status, reload, property, guestById } = useCrm();
+  const { status, reload, property, guestById, propertyById, data } = useCrm();
   const scoped = useScopedData();
 
   const [favorites, setFavorites] = useState<string[]>(() => {
@@ -55,7 +54,7 @@ const Reports = () => {
     return stored ? JSON.parse(stored) : [];
   });
 
-  const propertyName = property === "all" ? "Все объекты" : propertyById(property).name;
+  const propertyName = property === "all" ? "Все объекты" : propertyById(property)?.name ?? property;
 
   const sales = summarizeSales(scoped.leads, scoped.offers, scoped.tasks);
   const funnel = buildFunnel(scoped.leads);
@@ -65,7 +64,7 @@ const Reports = () => {
   const directions = breakdownByDirection(scoped.leads);
   const qualities = breakdownByQuality(scoped.leads);
   const categories = breakdownByCategory(scoped.leads);
-  const employeeRevenue = revenueByEmployee(employees, scoped.leads);
+  const employeeRevenue = revenueByEmployee(data.employees, scoped.leads);
   const missed = missedRevenue(scoped.leads);
   const check = avgCheck(scoped.leads);
   const closeDays = avgCloseDays(scoped.leads);

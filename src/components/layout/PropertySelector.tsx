@@ -1,10 +1,9 @@
 import { Building2 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { properties } from "@/data/reference";
 import { useCrm, type PropertyFilter } from "@/store/crm-store";
 
 export const PropertySelector = () => {
-  const { property, setProperty } = useCrm();
+  const { property, setProperty, data } = useCrm();
 
   return (
     <Select value={property} onValueChange={(value) => setProperty(value as PropertyFilter)}>
@@ -16,7 +15,7 @@ export const PropertySelector = () => {
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="all">Все объекты ЛЕС</SelectItem>
-        {properties.map((item) => (
+        {data.properties.map((item) => (
           <SelectItem key={item.id} value={item.id}>
             {item.name}
           </SelectItem>

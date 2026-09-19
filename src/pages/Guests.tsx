@@ -11,7 +11,6 @@ import { FilterBar, FilterSelect, ResetFiltersButton, SearchInput } from "@/comp
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import type { Guest, SegmentKey } from "@/types/crm";
-import { propertyById } from "@/data/reference";
 import { formatDateNumeric, formatTenge, formatTengeCompact } from "@/lib/format";
 import { segmentLabels } from "@/lib/labels";
 
@@ -28,7 +27,7 @@ const staysOptions = [
 ];
 
 const Guests = () => {
-  const { status, reload } = useCrm();
+  const { status, reload, propertyById } = useCrm();
   const scoped = useScopedData();
   const navigate = useNavigate();
 
@@ -103,7 +102,7 @@ const Guests = () => {
       header: "Любимый объект",
       render: (guest) => (
         <div>
-          <p className="text-sm">{propertyById(guest.preferredPropertyId).name}</p>
+          <p className="text-sm">{propertyById(guest.preferredPropertyId)?.name ?? guest.preferredPropertyId}</p>
           {guest.propertyIds.length > 1 && (
             <p className="text-xs text-muted-foreground">{guest.propertyIds.length} объекта сети</p>
           )}

@@ -18,6 +18,7 @@ import {
   Star,
   Users,
   Wrench,
+  LogOut,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -32,6 +33,7 @@ import { GlobalSearch } from "@/components/layout/GlobalSearch";
 import { InitialsAvatar } from "@/components/common/Identity";
 import { formatDueDate } from "@/lib/format";
 import { taskTypeLabels } from "@/lib/labels";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface NavItem {
   to: string;
@@ -50,6 +52,7 @@ export const AppShell = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const { currentEmployee } = useCrm();
+  const { user, logout } = useAuth();
   const scoped = useScopedData();
 
   const unread = scoped.conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
@@ -154,10 +157,11 @@ export const AppShell = () => {
       <div className="border-t border-border p-4">
         <div className="flex items-center gap-3">
           <InitialsAvatar name={currentEmployee.name} initials={currentEmployee.initials} />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-foreground">{currentEmployee.name}</p>
-            <p className="truncate text-xs text-muted-foreground">{currentEmployee.role}</p>
+            <p className="truncate text-xs text-muted-foreground">{currentEmployee.role} · {user?.dataMode === "database" ? "База данных" : "Демо"}</p>
           </div>
+          <Button variant="ghost" size="icon" onClick={() => void logout()} aria-label="Выйти"><LogOut className="h-4 w-4" /></Button>
         </div>
       </div>
     </div>

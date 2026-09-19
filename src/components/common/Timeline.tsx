@@ -15,7 +15,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import type { ActivityEvent, ActivityType } from "@/types/crm";
 import { formatDateTime, formatTenge } from "@/lib/format";
-import { employeeById } from "@/data/reference";
+import { useCrm } from "@/store/crm-store";
 import { cn } from "@/lib/utils";
 
 const iconByType: Record<ActivityType, LucideIcon> = {
@@ -50,8 +50,9 @@ const accentByType: Record<ActivityType, string> = {
   campaign: "bg-rose-50 text-rose-600",
 };
 
-export const Timeline = ({ events, className }: { events: ActivityEvent[]; className?: string }) => (
-  <ol className={cn("relative space-y-4 pl-1", className)}>
+export const Timeline = ({ events, className }: { events: ActivityEvent[]; className?: string }) => {
+  const { employeeById } = useCrm();
+  return <ol className={cn("relative space-y-4 pl-1", className)}>
     {events.map((event, index) => {
       const Icon = iconByType[event.type] ?? StickyNote;
       const employee = event.employeeId ? employeeById(event.employeeId) : undefined;
@@ -80,5 +81,5 @@ export const Timeline = ({ events, className }: { events: ActivityEvent[]; class
         </li>
       );
     })}
-  </ol>
-);
+  </ol>;
+};

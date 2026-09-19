@@ -21,7 +21,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Label } from "@/components/ui/label";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
-import { propertyById } from "@/data/reference";
 import {
   directionLabels,
   directionTone,
@@ -37,7 +36,7 @@ import { useToast } from "@/hooks/use-toast";
 const Classification = () => {
   const { toast } = useToast();
   const navigate = useNavigate();
-  const { status, reload, guestById, employeeById, setLeadQuality } = useCrm();
+  const { status, reload, guestById, employeeById, propertyById, setLeadQuality } = useCrm();
   const scoped = useScopedData();
   const [search, setSearch] = useState("");
   const [qualityFilter, setQualityFilter] = useState<LeadQuality | "all">("all");
@@ -212,7 +211,7 @@ const Classification = () => {
               <DialogHeader>
                 <DialogTitle>Классификация · {selectedLead.code}</DialogTitle>
                 <DialogDescription>
-                  {guestById(selectedLead.guestId)?.fullName} · {propertyById(selectedLead.propertyId).name}
+                  {guestById(selectedLead.guestId)?.fullName} · {propertyById(selectedLead.propertyId)?.name ?? selectedLead.propertyId}
                 </DialogDescription>
               </DialogHeader>
 

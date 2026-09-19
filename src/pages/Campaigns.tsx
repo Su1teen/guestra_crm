@@ -10,7 +10,6 @@ import { SegmentedTabs } from "@/components/common/Filters";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import type { CampaignStatus } from "@/types/crm";
-import { propertyName } from "@/data/reference";
 import { formatDateLong, formatDateNumeric, formatPercent, formatTenge, formatTengeCompact } from "@/lib/format";
 import { campaignStatusLabels, campaignStatusTone, channelLabels } from "@/lib/labels";
 import { cn } from "@/lib/utils";
@@ -18,7 +17,7 @@ import { cn } from "@/lib/utils";
 type TabKey = "all" | CampaignStatus;
 
 const Campaigns = () => {
-  const { status, reload, data } = useCrm();
+  const { status, reload, data, propertyName } = useCrm();
   const scoped = useScopedData();
 
   const [tab, setTab] = useState<TabKey>("all");

@@ -10,14 +10,13 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { useCrm } from "@/store/crm-store";
-import { propertyName } from "@/data/reference";
 import { formatStayRange, formatTenge } from "@/lib/format";
 
 export const GlobalSearch = () => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const navigate = useNavigate();
-  const { data, guestById } = useCrm();
+  const { data, guestById, propertyName } = useCrm();
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {

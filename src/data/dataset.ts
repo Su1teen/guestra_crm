@@ -454,6 +454,18 @@ const stageActivityTitle: Record<LeadStage, string> = {
 };
 
 const messageScripts: Record<Channel, { in: string[]; out: string[] }> = {
+  telegram: {
+    in: [
+      "Здравствуйте! Подскажите свободные номера на ближайшие выходные.",
+      "Можно добавить SPA и поздний выезд?",
+      "Пришлите, пожалуйста, итоговый расчёт.",
+    ],
+    out: [
+      "Добрый день! Проверяю доступность и подготовлю варианты.",
+      "Добавила услуги в расчёт и отправила обновлённое предложение.",
+      "Бронь зафиксируем после предоплаты, ссылка указана в предложении.",
+    ],
+  },
   whatsapp: {
     in: [
       "Здравствуйте! Хотим приехать на выходные, есть свободные домики?",
@@ -517,6 +529,7 @@ const internalNotes = [
 ];
 
 const channelForSource = (source: LeadSource): Channel => {
+  if (source === "telegram") return "telegram";
   if (source === "whatsapp") return "whatsapp";
   if (source === "phone") return "phone";
   if (source === "website" || source === "corporate") return "website";

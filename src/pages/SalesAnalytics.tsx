@@ -29,7 +29,6 @@ import {
   lostReasonBreakdown,
   summarizeSales,
 } from "@/lib/analytics";
-import { propertyName } from "@/data/reference";
 import {
   formatDayMonth,
   formatPercent,
@@ -46,7 +45,7 @@ const brandColors = ["#4C6EF5", "#3B5BDB", "#7C8CF8", "#A5B4FC", "#C7D2FE", "#2F
 type Period = "7" | "30" | "90";
 
 const SalesAnalytics = ({ embedded = false }: { embedded?: boolean }) => {
-  const { status, reload } = useCrm();
+  const { status, reload, propertyName } = useCrm();
   const scoped = useScopedData();
   const [period, setPeriod] = useState<Period>("30");
 

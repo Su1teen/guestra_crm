@@ -21,7 +21,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
-import { employees as allEmployees } from "@/data/reference";
 import {
   housekeepingTaskStatusLabels,
   housekeepingTaskStatusTone,
@@ -51,9 +50,10 @@ const Housekeeping = () => {
     skipHousekeepingTask,
     toggleChecklistItem,
     createMaintenanceTicket,
+    data,
   } = useCrm();
   const scoped = useScopedData();
-  const employees = allEmployees;
+  const employees = data.employees;
   const [view, setView] = useState<"board" | "list">("board");
   const [typeFilter, setTypeFilter] = useState<HousekeepingTaskType | "all">("all");
   const [selectedTask, setSelectedTask] = useState<HousekeepingTask | null>(null);

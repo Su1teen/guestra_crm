@@ -25,12 +25,11 @@ import {
 } from "@/lib/labels";
 import { formatTenge, formatPercent, startOfDay, daysBetween } from "@/lib/format";
 import { downloadReportWorkbook } from "@/lib/report-excel";
-import { propertyById } from "@/data/reference";
 import { useToast } from "@/hooks/use-toast";
 
 const DailyReport = ({ embedded = false }: { embedded?: boolean }) => {
   const { toast } = useToast();
-  const { status, reload, property, data } = useCrm();
+  const { status, reload, property, data, propertyById } = useCrm();
   const scoped = useScopedData();
   const [reportDate] = useState(() => startOfDay(new Date()));
 
@@ -101,11 +100,11 @@ const DailyReport = ({ embedded = false }: { embedded?: boolean }) => {
     await downloadReportWorkbook({
       title: "Ежедневный отчёт продаж",
       reportType: "daily-sales-report",
-      propertyName: property === "all" ? "Все объекты" : propertyById(property).name,
+      propertyName: property === "all" ? "Все объекты" : propertyById(property)?.name ?? property,
       currencyCode: "KZT",
       parameters: {
         "Дата отчёта": reportDate.toLocaleDateString("ru-RU"),
-        "Объект": property === "all" ? "Все" : propertyById(property).name,
+        "Объект": property === "all" ? "Все" : propertyById(property)?.name ?? property,
       },
       kpis: [
         { label: "Новые обращения", value: todayLeads.length },
@@ -310,7 +309,7 @@ const DailyReport = ({ embedded = false }: { embedded?: boolean }) => {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {todayPms.map((snapshot) => (
               <div key={snapshot.propertyId} className="rounded-xl border border-border bg-card p-4">
-                <p className="text-xs text-muted-foreground">{propertyById(snapshot.propertyId).name}</p>
+                <p className="text-xs text-muted-foreground">{propertyById(snapshot.propertyId)?.name ?? snapshot.propertyId}</p>
                 <div className="mt-2 space-y-1 text-sm">
                   <p>Occupancy: {snapshot.occupancy === null ? "Нет данных" : formatPercent(snapshot.occupancy * 100, 0)}</p>
                   <p>ADR: {snapshot.adr === null ? "Нет данных" : formatTenge(snapshot.adr)}</p>

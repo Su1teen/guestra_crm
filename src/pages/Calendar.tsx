@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/dialog";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
-import { employeeById, propertyName } from "@/data/reference";
 import type { Guest, GuestStay, Offer, Task, TaskType } from "@/types/crm";
 import {
   addDays,
@@ -91,7 +90,7 @@ const kindLabel = (kind: ActivityKind) =>
   kind === "offer_deadline" ? "Дедлайн предложения" : taskTypeLabels[kind];
 
 const Calendar = () => {
-  const { status, reload, property, guestById, toggleTaskDone } = useCrm();
+  const { status, reload, property, guestById, toggleTaskDone, employeeById, propertyName } = useCrm();
   const scoped = useScopedData();
   const navigate = useNavigate();
 
@@ -519,7 +518,7 @@ const Calendar = () => {
                         <p className="truncate text-xs text-muted-foreground">
                           {kindLabel(task.type)}
                           {task.guestId ? ` · ${guestById(task.guestId)?.fullName ?? ""}` : ""}
-                          {` · ${employeeById(task.ownerId).shortName}`}
+                          {` · ${employeeById(task.ownerId)?.shortName ?? "Не назначен"}`}
                         </p>
                       </div>
                       <Button

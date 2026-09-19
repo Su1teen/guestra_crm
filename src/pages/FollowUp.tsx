@@ -12,7 +12,6 @@ import { PersonCell } from "@/components/common/Identity";
 import { Button } from "@/components/ui/button";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
-import { employees as allEmployees } from "@/data/reference";
 import { overdueFollowUps, followUpCompletion } from "@/lib/analytics";
 import {
   directionLabels,
@@ -39,9 +38,9 @@ const QUEUE_ORDER: FollowUpQueue[] = [
 const FollowUp = () => {
   const { toast } = useToast();
   const navigate = useNavigate();
-  const { status, reload, completeFollowUp, skipFollowUp, rescheduleFollowUp, reassignFollowUp, guestById, employeeById } = useCrm();
+  const { status, reload, completeFollowUp, skipFollowUp, rescheduleFollowUp, reassignFollowUp, guestById, employeeById, data } = useCrm();
   const scoped = useScopedData();
-  const employees = allEmployees;
+  const employees = data.employees;
   const [queue, setQueue] = useState<FollowUpQueue | "all">("all");
   const [ownerFilter, setOwnerFilter] = useState("all");
 

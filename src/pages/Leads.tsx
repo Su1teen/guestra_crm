@@ -14,7 +14,7 @@ import {
 } from "@/components/common/Filters";
 import {
   activityOptions,
-  ownerOptions,
+  useOwnerOptions,
   periodOptions,
   sourceOptions,
   stageOptions,
@@ -24,13 +24,13 @@ import {
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import type { Lead, LeadStage } from "@/types/crm";
-import { employeeById, propertyById } from "@/data/reference";
 import { formatRelative, formatStayRange, formatTenge, occupancyLabel } from "@/lib/format";
 import { intentLabels, intentTone, sourceLabels, stageLabels, stageTone } from "@/lib/labels";
 import { formatTengeCompact } from "@/lib/format";
 
 const Leads = () => {
-  const { status, reload, guestById } = useCrm();
+  const { status, reload, guestById, employeeById, propertyById } = useCrm();
+  const ownerOptions = useOwnerOptions();
   const scoped = useScopedData();
   const navigate = useNavigate();
   const [params] = useSearchParams();
@@ -67,11 +67,11 @@ const Leads = () => {
       header: "Объект",
       render: (lead) => (
         <div>
-          <p className="text-sm text-foreground">{propertyById(lead.propertyId).name}</p>
+          <p className="text-sm text-foreground">{propertyById(lead.propertyId)?.name ?? lead.propertyId}</p>
           <p className="text-xs text-muted-foreground">{lead.roomType}</p>
         </div>
       ),
-      sortValue: (lead) => propertyById(lead.propertyId).name,
+      sortValue: (lead) => propertyById(lead.propertyId)?.name ?? lead.propertyId,
       hideBelow: "md",
     },
     {
@@ -114,8 +114,8 @@ const Leads = () => {
     {
       key: "owner",
       header: "Ответственный",
-      render: (lead) => <span className="text-sm text-muted-foreground">{employeeById(lead.ownerId).shortName}</span>,
-      sortValue: (lead) => employeeById(lead.ownerId).name,
+      render: (lead) => <span className="text-sm text-muted-foreground">{employeeById(lead.ownerId)?.shortName ?? "Не назначен"}</span>,
+      sortValue: (lead) => employeeById(lead.ownerId)?.name ?? lead.ownerId,
       hideBelow: "lg",
     },
     {

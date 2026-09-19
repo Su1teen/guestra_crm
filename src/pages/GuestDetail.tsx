@@ -12,7 +12,6 @@ import { CreateTaskDialog } from "@/components/crm/CreateTaskDialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useCrm } from "@/store/crm-store";
-import { employeeById, propertyById } from "@/data/reference";
 import {
   formatDateLong,
   formatDateNumeric,
@@ -43,7 +42,7 @@ type TabKey = "overview" | "stays" | "conversations" | "services" | "payments" |
 const GuestDetail = () => {
   const { guestId = "" } = useParams();
   const navigate = useNavigate();
-  const { status, reload, data, guestById, leadsForGuest, addGuestNote } = useCrm();
+  const { status, reload, data, guestById, leadsForGuest, addGuestNote, employeeById, propertyById } = useCrm();
 
   const [tab, setTab] = useState<TabKey>("overview");
   const [note, setNote] = useState("");
@@ -163,7 +162,7 @@ const GuestDetail = () => {
           </Field>
         </SectionCard>
         <SectionCard>
-          <Field label="Любимый объект">{propertyById(guest.preferredPropertyId).name}</Field>
+          <Field label="Любимый объект">{propertyById(guest.preferredPropertyId)?.name ?? guest.preferredPropertyId}</Field>
         </SectionCard>
         <SectionCard>
           <Field label="Последний визит">{guest.lastStayDate ? formatDateLong(guest.lastStayDate) : "—"}</Field>
@@ -187,7 +186,7 @@ const GuestDetail = () => {
                     </StatusPill>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-3">
-                    <Field label="Объект">{propertyById(activeLead.propertyId).name}</Field>
+                    <Field label="Объект">{propertyById(activeLead.propertyId)?.name ?? activeLead.propertyId}</Field>
                     <Field label="Проживание">
                       {formatStayRange(activeLead.checkIn, activeLead.checkOut)} · {nightsLabel(activeLead.nights)}
                     </Field>
@@ -202,7 +201,7 @@ const GuestDetail = () => {
             <SectionCard title="Последнее проживание">
               {lastStay ? (
                 <div className="grid gap-3 sm:grid-cols-3">
-                  <Field label="Объект">{propertyById(lastStay.propertyId).name}</Field>
+                  <Field label="Объект">{propertyById(lastStay.propertyId)?.name ?? lastStay.propertyId}</Field>
                   <Field label="Даты">{formatStayRange(lastStay.checkIn, lastStay.checkOut)}</Field>
                   <Field label="Сумма">{formatTenge(lastStay.amount)}</Field>
                   <Field label="Категория">{lastStay.roomType}</Field>
@@ -274,7 +273,7 @@ const GuestDetail = () => {
             {related.stays.map((stay) => (
               <li key={stay.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
                 <div>
-                  <p className="text-sm font-medium text-foreground">{propertyById(stay.propertyId).name}</p>
+                  <p className="text-sm font-medium text-foreground">{propertyById(stay.propertyId)?.name ?? stay.propertyId}</p>
                   <p className="text-xs text-muted-foreground">
                     {formatStayRange(stay.checkIn, stay.checkOut)} · {nightsLabel(stay.nights)} · {stay.roomType}
                   </p>
@@ -305,7 +304,7 @@ const GuestDetail = () => {
                 <li key={conversation.id} className="px-5 py-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-sm font-medium text-foreground">
-                      {channelLabels[conversation.channel]} · {propertyById(conversation.propertyId).shortName}
+                      {channelLabels[conversation.channel]} · {propertyById(conversation.propertyId)?.shortName ?? conversation.propertyId}
                     </p>
                     <span className="text-xs text-muted-foreground">{formatDateTime(conversation.lastMessageAt)}</span>
                   </div>
@@ -383,7 +382,7 @@ const GuestDetail = () => {
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   <span className="font-semibold text-foreground">{CHANNELS.find((item) => item.id === review.channel)?.name}</span>
                   <span>· {review.rating} / {review.maxRating}</span>
-                  <span>· {propertyById(review.propertyId).name}</span>
+                  <span>· {propertyById(review.propertyId)?.name ?? review.propertyId}</span>
                   <span>· {formatDateNumeric(review.date)}</span>
                 </div>
                 <p className="mt-2 text-sm">{review.text}</p>
@@ -419,7 +418,7 @@ const GuestDetail = () => {
                 <li key={item.id} className="px-5 py-4">
                   <p className="text-sm text-foreground">{item.text}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {employeeById(item.authorId).name} · {formatDateTime(item.createdAt)}
+                    {employeeById(item.authorId)?.name ?? "Сотрудник"} · {formatDateTime(item.createdAt)}
                   </p>
                 </li>
               ))}

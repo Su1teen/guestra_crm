@@ -22,7 +22,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
-import { propertyById, employees as allEmployees } from "@/data/reference";
 import {
   maintenanceCategoryLabels,
   maintenancePriorityLabels,
@@ -46,9 +45,11 @@ const Maintenance = () => {
     assignMaintenanceTicket,
     verifyMaintenanceTicket,
     createMaintenanceTicket,
+    data,
+    propertyById,
   } = useCrm();
   const scoped = useScopedData();
-  const employees = allEmployees;
+  const employees = data.employees;
   const [statusFilter, setStatusFilter] = useState<MaintenanceStatus | "all">("all");
   const [categoryFilter, setCategoryFilter] = useState<MaintenanceCategory | "all">("all");
   const [createOpen, setCreateOpen] = useState(false);

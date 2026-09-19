@@ -11,7 +11,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
-import { employeeById, employees, propertyById } from "@/data/reference";
 import { formatDateLong, formatRelative, formatStayRange, formatTenge, formatTime, occupancyLabel } from "@/lib/format";
 import {
   channelLabels,
@@ -33,7 +32,7 @@ const channelOptions = [
 ];
 
 const Inbox = () => {
-  const { status, reload, guestById, leadById, offerById, currentEmployee, sendMessage, markConversationRead, setConversationStatus, assignConversation } =
+  const { status, reload, data, guestById, leadById, offerById, currentEmployee, employeeById, propertyById, sendMessage, markConversationRead, setConversationStatus, assignConversation } =
     useCrm();
   const scoped = useScopedData();
   const navigate = useNavigate();
@@ -185,8 +184,8 @@ const Inbox = () => {
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold text-foreground">{guest.fullName}</p>
                 <p className="text-xs text-muted-foreground">
-                  {channelLabels[selected.channel]} · {propertyById(selected.propertyId).name} ·{" "}
-                  {selected.assigneeId ? employeeById(selected.assigneeId).shortName : "без ответственного"}
+                  {channelLabels[selected.channel]} · {propertyById(selected.propertyId)?.name ?? selected.propertyId} ·{" "}
+                  {selected.assigneeId ? employeeById(selected.assigneeId)?.shortName ?? "без ответственного" : "без ответственного"}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -257,7 +256,7 @@ const Inbox = () => {
                     )}
                   >
                     {formatTime(message.at)}
-                    {message.employeeId ? ` · ${employeeById(message.employeeId).shortName}` : ""}
+                    {message.employeeId ? ` · ${employeeById(message.employeeId)?.shortName ?? "Сотрудник"}` : ""}
                   </p>
                 </div>
               ))}
@@ -321,7 +320,7 @@ const Inbox = () => {
                   <StatusPill tone={stageTone[lead.stage]}>{stageLabels[lead.stage]}</StatusPill>
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {propertyById(lead.propertyId).name} · {formatStayRange(lead.checkIn, lead.checkOut)}
+                  {propertyById(lead.propertyId)?.name ?? lead.propertyId} · {formatStayRange(lead.checkIn, lead.checkOut)}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {lead.roomType} · {occupancyLabel(lead.adults, lead.children)}
@@ -353,7 +352,7 @@ const Inbox = () => {
                 }}
                 options={[
                   { value: "none", label: "Без ответственного" },
-                  ...employees.map((employee) => ({ value: employee.id, label: employee.name })),
+                  ...data.employees.map((employee) => ({ value: employee.id, label: employee.name })),
                 ]}
                 className="w-full"
               />

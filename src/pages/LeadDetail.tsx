@@ -42,7 +42,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCrm } from "@/store/crm-store";
-import { employeeById, employees, propertyById } from "@/data/reference";
 import {
   formatDateLong,
   formatDateTime,
@@ -74,7 +73,7 @@ import type { LeadStage } from "@/types/crm";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
-const toLocalDate = (iso: string) => iso.slice(0, 10);
+const toLocalDate = (iso: string | null | undefined) => iso?.slice(0, 10) ?? "";
 
 const LeadDetail = () => {
   const { leadId = "" } = useParams();
@@ -86,6 +85,8 @@ const LeadDetail = () => {
     data,
     leadById,
     guestById,
+    employeeById,
+    propertyById,
     moveLeadStage,
     addLeadActivity,
     updateLead,
@@ -123,8 +124,8 @@ const LeadDetail = () => {
     );
   }
 
-  const owner = employeeById(lead.ownerId);
-  const property = propertyById(lead.propertyId);
+  const owner = employeeById(lead.ownerId) ?? data.employees[0];
+  const property = propertyById(lead.propertyId) ?? data.properties[0];
   const offers = data.offers.filter((offer) => offer.leadId === lead.id);
   const tasks = data.tasks.filter((task) => task.leadId === lead.id);
   const conversation = data.conversations.find((item) => item.leadId === lead.id);
@@ -222,8 +223,8 @@ const LeadDetail = () => {
             <Button
               variant="outline"
               className="gap-2"
-              onClick={() => {
-                const offerId = createOfferFromLead(lead.id);
+              onClick={async () => {
+                const offerId = await createOfferFromLead(lead.id);
                 if (offerId) {
                   toast({ title: "Черновик предложения создан" });
                   navigate(`/offers/${offerId}`);
@@ -533,7 +534,7 @@ const LeadDetail = () => {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {employees.map((employee) => (
+                  {data.employees.map((employee) => (
                     <SelectItem key={employee.id} value={employee.id}>
                       {employee.name}
                     </SelectItem>

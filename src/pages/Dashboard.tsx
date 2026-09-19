@@ -58,13 +58,12 @@ import {
   formatTengeCompact,
   isSameDay,
 } from "@/lib/format";
-import { propertyName } from "@/data/reference";
 import { sourceLabels, stageLabels, stageTone, taskTypeLabels, taskPriorityTone, taskPriorityLabels } from "@/lib/labels";
 
 const chartAxis = { stroke: "#94a3b8", fontSize: 12 };
 
 const Dashboard = () => {
-  const { status, reload, currentEmployee, guestById, property } = useCrm();
+  const { status, reload, currentEmployee, guestById, property, propertyName } = useCrm();
   const scoped = useScopedData();
   const navigate = useNavigate();
 

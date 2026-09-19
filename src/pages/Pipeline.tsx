@@ -24,7 +24,7 @@ import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import {
   activityOptions,
-  ownerOptions,
+  useOwnerOptions,
   periodOptions,
   sourceOptions,
   useLeadFilters,
@@ -42,6 +42,7 @@ const allStages: LeadStage[] = [...PIPELINE_STAGES, ...TERMINAL_STAGES];
 
 const Pipeline = () => {
   const { status, reload, moveLeadStage, guestById } = useCrm();
+  const ownerOptions = useOwnerOptions();
   const scoped = useScopedData();
   const navigate = useNavigate();
   const { toast } = useToast();

@@ -55,6 +55,7 @@ export const stageTone: Record<LeadStage, Tone> = {
 
 export const sourceLabels: Record<LeadSource, string> = {
   whatsapp: "WhatsApp",
+  telegram: "Telegram",
   website: "Сайт",
   phone: "Телефон",
   instagram: "Instagram",
@@ -171,6 +172,7 @@ export const campaignStatusTone: Record<CampaignStatus, Tone> = {
 
 export const channelLabels: Record<Channel, string> = {
   whatsapp: "WhatsApp",
+  telegram: "Telegram",
   phone: "Телефон",
   website: "Сайт",
   instagram: "Instagram",

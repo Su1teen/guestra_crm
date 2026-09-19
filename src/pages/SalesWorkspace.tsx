@@ -3,7 +3,6 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { BarChart3, CalendarDays, Download, Layers3, Users } from 'lucide-react';
 import { useCrm } from '../store/crm-store';
 import { useScopedData } from '../hooks/use-scoped-data';
-import { propertyName } from '../data/reference';
 import SalesAnalytics from './SalesAnalytics';
 import DailyReport from './DailyReport';
 import Performance from './Performance';
@@ -19,7 +18,7 @@ type TabId = typeof tabs[number]['id'];
 export default function SalesWorkspace() {
   const [params, setParams] = useSearchParams();
   const current = tabs.find((tab) => tab.id === params.get('tab'))?.id ?? 'overview';
-  const { data, property, status } = useCrm();
+  const { data, property, status, propertyName } = useCrm();
   const scoped = useScopedData();
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState('');
@@ -29,7 +28,7 @@ export default function SalesWorkspace() {
     setError('');
     try {
       const { downloadSalesWorkbook } = await import('../lib/sales-workbook');
-      await downloadSalesWorkbook(scoped, data.employees, propertyName(property));
+      await downloadSalesWorkbook(scoped, data.employees, propertyName(property), data.properties);
     } catch (cause) {
       console.error('Sales workbook export failed', cause);
       setError('Не удалось сформировать Excel. Повторите попытку.');

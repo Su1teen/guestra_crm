@@ -1,4 +1,5 @@
-export type PropertyId = "les_borovoe" | "les_astana" | "les_alakol";
+/** Property IDs are server-owned in database mode; mock mode still uses les_* IDs. */
+export type PropertyId = string;
 
 export interface Organization {
   id: string;
@@ -18,7 +19,7 @@ export interface Property {
 
 export type LeadStage = "new" | "qualified" | "offer" | "payment_pending" | "confirmed" | "lost" | "cancelled";
 
-export type LeadSource = "whatsapp" | "website" | "phone" | "instagram" | "returning" | "corporate" | "referral";
+export type LeadSource = "whatsapp" | "telegram" | "website" | "phone" | "instagram" | "returning" | "corporate" | "referral";
 
 /**
  * Коммерческая температура обращения. Не путать с качеством обращения
@@ -62,7 +63,7 @@ export type SegmentKey =
   | "no_response_after_offer"
   | "reactivation_ready";
 
-export type Channel = "whatsapp" | "phone" | "website" | "instagram" | "other";
+export type Channel = "whatsapp" | "telegram" | "phone" | "website" | "instagram" | "other";
 
 export type OfferStatus = "draft" | "sent" | "viewed" | "accepted" | "expired" | "rejected";
 
@@ -211,12 +212,20 @@ export interface GuestNote {
 }
 
 export interface GuestIdentity {
-  primaryPhone: string;
+  primaryPhone: string | null;
   emails: string[];
-  documentType: "passport" | "id_card";
-  documentNumber: string;
-  citizenship: string;
-  birthDate: string;
+  documentType: "passport" | "id_card" | null;
+  documentNumber: string | null;
+  citizenship: string | null;
+  birthDate: string | null;
+}
+
+export interface GuestContactIdentity {
+  id: string;
+  channel: Channel;
+  externalUserId: string;
+  externalChatId?: string | null;
+  username?: string | null;
 }
 
 export interface Guest {
@@ -224,8 +233,8 @@ export interface Guest {
   firstName: string;
   lastName: string;
   fullName: string;
-  phone: string;
-  email: string;
+  phone: string | null;
+  email: string | null;
   company?: string;
   language: string;
   segments: SegmentKey[];
@@ -237,6 +246,7 @@ export interface Guest {
   createdAt: string;
   identity: GuestIdentity;
   preferences: GuestPreference;
+  contactIdentities?: GuestContactIdentity[];
 }
 
 export interface LeadStageHistory {
@@ -273,9 +283,9 @@ export interface Lead {
   source: LeadSource;
   stage: LeadStage;
   intent: LeadIntent;
-  roomType: string;
-  checkIn: string;
-  checkOut: string;
+  roomType: string | null;
+  checkIn: string | null;
+  checkOut: string | null;
   nights: number;
   adults: number;
   children: number;

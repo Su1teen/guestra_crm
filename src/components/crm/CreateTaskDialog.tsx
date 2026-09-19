@@ -13,7 +13,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { employees } from "@/data/reference";
 import { taskPriorityLabels, taskTypeLabels } from "@/lib/labels";
 import type { PropertyId, TaskPriority, TaskType } from "@/types/crm";
 import { useCrm } from "@/store/crm-store";
@@ -33,7 +32,7 @@ interface CreateTaskDialogProps {
 }
 
 export const CreateTaskDialog = ({ trigger, propertyId, leadId, guestId, defaultTitle }: CreateTaskDialogProps) => {
-  const { createTask, currentEmployee } = useCrm();
+  const { createTask, currentEmployee, data } = useCrm();
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(defaultTitle ?? "");
@@ -123,7 +122,7 @@ export const CreateTaskDialog = ({ trigger, propertyId, leadId, guestId, default
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {employees.map((employee) => (
+                  {data.employees.map((employee) => (
                     <SelectItem key={employee.id} value={employee.id}>
                       {employee.name}
                     </SelectItem>

@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { crmDataset } from "@/data/dataset";
-import { CURRENT_EMPLOYEE_ID } from "@/data/reference";
+import { useAuth } from "@/contexts/AuthContext";
+import { apiRequest } from "@/lib/api";
 import { applyManualOverride } from "@/lib/classification";
 import { generateFollowUps } from "@/lib/followup";
 import type {
@@ -68,15 +69,18 @@ interface CrmContextValue {
   property: PropertyFilter;
   setProperty: (property: PropertyFilter) => void;
   currentEmployee: Employee;
+  dataMode: "mock" | "database";
   guestById: (id: string) => Guest | undefined;
   leadById: (id: string) => Lead | undefined;
   offerById: (id: string) => Offer | undefined;
   employeeById: (id: string) => Employee | undefined;
+  propertyById: (id: PropertyId) => CrmDataset["properties"][number] | undefined;
+  propertyName: (id: PropertyId | "all") => string;
   leadsForGuest: (guestId: string) => Lead[];
   moveLeadStage: (leadId: string, stage: LeadStage) => void;
   addLeadActivity: (leadId: string, title: string, description?: string) => void;
   updateLead: (leadId: string, patch: UpdateLeadInput) => void;
-  createOfferFromLead: (leadId: string) => string | undefined;
+  createOfferFromLead: (leadId: string) => Promise<string | undefined>;
   createTask: (input: CreateTaskInput) => void;
   updateTask: (taskId: string, patch: Partial<Pick<Task, "status" | "priority" | "dueAt" | "ownerId">>) => void;
   toggleTaskDone: (taskId: string) => void;
@@ -85,7 +89,7 @@ interface CrmContextValue {
   setConversationStatus: (conversationId: string, status: Conversation["status"]) => void;
   assignConversation: (conversationId: string, employeeId: string) => void;
   setOfferStatus: (offerId: string, status: OfferStatus) => void;
-  duplicateOffer: (offerId: string) => string;
+  duplicateOffer: (offerId: string) => Promise<string>;
   addGuestNote: (guestId: string, text: string) => void;
   // Follow-up actions
   completeFollowUp: (followUpId: string, lostReason?: string) => void;
@@ -150,9 +154,7 @@ const CrmContext = createContext<CrmContextValue | null>(null);
 const readStoredProperty = (): PropertyFilter => {
   if (typeof window === "undefined") return "all";
   const stored = window.localStorage.getItem(PROPERTY_STORAGE_KEY);
-  if (stored === "all" || stored === "les_borovoe" || stored === "les_astana" || stored === "les_alakol") {
-    return stored;
-  }
+  if (stored) return stored;
   return "all";
 };
 
@@ -202,36 +204,84 @@ const overdueAdjusted = (task: Task): Task => {
   return task;
 };
 
+const emptyDatabaseDataset: CrmDataset = {
+  organization: { id: "", name: "", legalName: "", currency: "KZT", propertyIds: [] },
+  properties: [], employees: [], guests: [], stays: [], services: [], payments: [], notes: [], guestActivity: [],
+  leads: [], offers: [], tasks: [], conversations: [], segments: [], campaigns: [], metrics: [], followUps: [], rooms: [],
+  housekeepingTasks: [], maintenanceTickets: [], operationalTasks: [], pmsSnapshots: [],
+};
+
 export const CrmProvider = ({ children }: { children: ReactNode }) => {
-  const [data, setData] = useState<CrmDataset>(() => ({
-    ...crmDataset,
-    tasks: crmDataset.tasks.map(overdueAdjusted),
+  const { user } = useAuth();
+  const dataMode = user?.dataMode ?? "mock";
+  const [data, setData] = useState<CrmDataset>(() => dataMode === "database" ? emptyDatabaseDataset : ({
+    ...crmDataset, tasks: crmDataset.tasks.map(overdueAdjusted),
   }));
   const [status, setStatus] = useState<DataStatus>("loading");
   const [property, setPropertyState] = useState<PropertyFilter>(readStoredProperty);
 
+  const loadDatabase = useCallback(async () => {
+    setStatus("loading");
+    try {
+      const next = await apiRequest<CrmDataset>("/api/crm/bootstrap");
+      setData(next);
+      setPropertyState((current) => {
+        const valid = current === "all" || next.properties.some((item) => item.id === current);
+        if (!valid) window.localStorage.setItem(PROPERTY_STORAGE_KEY, "all");
+        return valid ? current : "all";
+      });
+      setStatus("ready");
+    } catch (error) {
+      console.error(error);
+      setStatus("error");
+    }
+  }, []);
+
   useEffect(() => {
-    if (status !== "loading") return;
-    const timer = window.setTimeout(() => setStatus("ready"), 450);
+    if (dataMode === "database") {
+      void loadDatabase();
+      return;
+    }
+    setData({ ...crmDataset, tasks: crmDataset.tasks.map(overdueAdjusted) });
+    const timer = window.setTimeout(() => setStatus("ready"), 250);
     return () => window.clearTimeout(timer);
-  }, [status]);
+  }, [dataMode, loadDatabase]);
 
   const setProperty = useCallback((next: PropertyFilter) => {
     setPropertyState(next);
     window.localStorage.setItem(PROPERTY_STORAGE_KEY, next);
   }, []);
 
-  const reload = useCallback(() => setStatus("loading"), []);
+  const reload = useCallback(() => {
+    if (dataMode === "database") void loadDatabase();
+    else {
+      setStatus("loading");
+      setData({ ...crmDataset, tasks: crmDataset.tasks.map(overdueAdjusted) });
+      window.setTimeout(() => setStatus("ready"), 250);
+    }
+  }, [dataMode, loadDatabase]);
   const simulateError = useCallback(() => setStatus("error"), []);
 
   const guestIndex = useMemo(() => new Map(data.guests.map((guest) => [guest.id, guest])), [data.guests]);
   const leadIndex = useMemo(() => new Map(data.leads.map((lead) => [lead.id, lead])), [data.leads]);
   const offerIndex = useMemo(() => new Map(data.offers.map((offer) => [offer.id, offer])), [data.offers]);
   const employeeIndex = useMemo(() => new Map(data.employees.map((employee) => [employee.id, employee])), [data.employees]);
+  const propertyIndex = useMemo(() => new Map(data.properties.map((item) => [item.id, item])), [data.properties]);
 
-  const currentEmployee = employeeIndex.get(CURRENT_EMPLOYEE_ID) ?? data.employees[0];
+  const actorId = user?.employeeId ?? "emp_sultan";
+  const currentEmployee = useMemo(() => employeeIndex.get(actorId) ?? data.employees[0] ?? {
+    id: actorId, name: user?.name ?? "Пользователь", shortName: user?.name ?? "Пользователь", initials: "GU",
+    role: user?.role === "admin" ? "Администратор CRM" : "Менеджер продаж", email: user?.email ?? "", phone: "", propertyIds: [],
+  }, [actorId, data.employees, employeeIndex, user?.email, user?.name, user?.role]);
+
+  const persist = useCallback(async <T,>(path: string, init: RequestInit): Promise<T> => {
+    const result = await apiRequest<T>(path, init);
+    await loadDatabase();
+    return result;
+  }, [loadDatabase]);
 
   const moveLeadStage = useCallback((leadId: string, stage: LeadStage) => {
+    if (dataMode === "database") { void persist(`/api/crm/leads/${leadId}/stage`, { method: "POST", body: JSON.stringify({ stage }) }); return; }
     setData((previous) => ({
       ...previous,
       leads: previous.leads.map((lead) => {
@@ -245,7 +295,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
             stage === "confirmed" ? "partial" : stage === "payment_pending" ? "awaiting" : lead.paymentStatus,
           probability:
             stage === "new" ? 15 : stage === "qualified" ? 35 : stage === "offer" ? 55 : stage === "payment_pending" ? 80 : stage === "confirmed" ? 100 : 0,
-          stageHistory: [...lead.stageHistory, { stage, at: timestamp, employeeId: CURRENT_EMPLOYEE_ID }],
+          stageHistory: [...lead.stageHistory, { stage, at: timestamp, employeeId: actorId }],
           activity: [
             ...lead.activity,
             {
@@ -253,15 +303,16 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
               at: timestamp,
               type: "stage_change" as const,
               title: `Стадия изменена`,
-              employeeId: CURRENT_EMPLOYEE_ID,
+              employeeId: actorId,
             },
           ],
         };
       }),
     }));
-  }, []);
+  }, [actorId, dataMode, persist]);
 
   const addLeadActivity = useCallback((leadId: string, title: string, description?: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/leads/${leadId}/activities`, { method: "POST", body: JSON.stringify({ title, description }) }); return; }
     setData((previous) => ({
       ...previous,
       leads: previous.leads.map((lead) =>
@@ -277,16 +328,17 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
                   type: "note" as const,
                   title,
                   description,
-                  employeeId: CURRENT_EMPLOYEE_ID,
+                  employeeId: actorId,
                 },
               ],
             }
           : lead,
       ),
     }));
-  }, []);
+  }, [actorId, dataMode, persist]);
 
   const updateLead = useCallback((leadId: string, patch: UpdateLeadInput) => {
+    if (dataMode === "database") { void persist(`/api/crm/leads/${leadId}`, { method: "PATCH", body: JSON.stringify(patch) }); return; }
     setData((previous) => ({
       ...previous,
       leads: previous.leads.map((lead) => {
@@ -312,15 +364,19 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
               at: timestamp,
               type: "note" as const,
               title: "Лид обновлён",
-              employeeId: CURRENT_EMPLOYEE_ID,
+              employeeId: actorId,
             },
           ],
         };
       }),
     }));
-  }, []);
+  }, [actorId, dataMode, persist]);
 
-  const createOfferFromLead = useCallback((leadId: string) => {
+  const createOfferFromLead = useCallback(async (leadId: string) => {
+    if (dataMode === "database") {
+      const offer = await persist<{ id: string }>(`/api/crm/leads/${leadId}/offers`, { method: "POST" });
+      return offer.id;
+    }
     const offerId = `offer_new_${Math.random().toString(36).slice(2, 8)}`;
     setData((previous) => {
       const lead = previous.leads.find((item) => item.id === leadId);
@@ -369,7 +425,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
                     at: timestamp,
                     type: "offer_created" as const,
                     title: "Предложение подготовлено",
-                    employeeId: CURRENT_EMPLOYEE_ID,
+                    employeeId: actorId,
                     amount: item.totalAmount,
                   },
                 ],
@@ -379,9 +435,10 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       };
     });
     return offerId;
-  }, []);
+  }, [actorId, dataMode, persist]);
 
   const createTask = useCallback((input: CreateTaskInput) => {
+    if (dataMode === "database") { void persist("/api/crm/tasks", { method: "POST", body: JSON.stringify(input) }); return; }
     setData((previous) => ({
       ...previous,
       tasks: [
@@ -393,16 +450,22 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         ...previous.tasks,
       ],
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const updateTask = useCallback((taskId: string, patch: Partial<Pick<Task, "status" | "priority" | "dueAt" | "ownerId">>) => {
+    if (dataMode === "database") { void persist(`/api/crm/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(patch) }); return; }
     setData((previous) => ({
       ...previous,
       tasks: previous.tasks.map((task) => (task.id === taskId ? overdueAdjusted({ ...task, ...patch }) : task)),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const toggleTaskDone = useCallback((taskId: string) => {
+    if (dataMode === "database") {
+      const task = data.tasks.find((item) => item.id === taskId);
+      if (task) void persist(`/api/crm/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify({ status: task.status === "done" ? "todo" : "done", completedAt: task.status === "done" ? null : nowIso() }) });
+      return;
+    }
     setData((previous) => ({
       ...previous,
       tasks: previous.tasks.map((task) => {
@@ -413,7 +476,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         return { ...task, status: "done", completedAt: nowIso() };
       }),
     }));
-  }, []);
+  }, [data.tasks, dataMode, persist]);
 
   const sendMessage = useCallback((conversationId: string, text: string, asNote = false) => {
     setData((previous) => ({
@@ -432,7 +495,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
               id: `${conversation.id}_m${conversation.messages.length + 1}`,
               conversationId: conversation.id,
               direction: asNote ? ("note" as const) : ("out" as const),
-              employeeId: CURRENT_EMPLOYEE_ID,
+              employeeId: actorId,
               text,
               at: timestamp,
             },
@@ -440,7 +503,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         };
       }),
     }));
-  }, []);
+  }, [actorId]);
 
   const markConversationRead = useCallback((conversationId: string) => {
     setData((previous) => ({
@@ -470,6 +533,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const setOfferStatus = useCallback((offerId: string, offerStatus: OfferStatus) => {
+    if (dataMode === "database") { void persist(`/api/crm/offers/${offerId}/status`, { method: "PATCH", body: JSON.stringify({ status: offerStatus }) }); return; }
     setData((previous) => ({
       ...previous,
       offers: previous.offers.map((offer) => {
@@ -483,9 +547,13 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         };
       }),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
-  const duplicateOffer = useCallback((offerId: string) => {
+  const duplicateOffer = useCallback(async (offerId: string) => {
+    if (dataMode === "database") {
+      const offer = await persist<{ id: string }>(`/api/crm/offers/${offerId}/duplicate`, { method: "POST" });
+      return offer.id;
+    }
     const newId = `offer_copy_${Math.random().toString(36).slice(2, 8)}`;
     setData((previous) => {
       const source = previous.offers.find((offer) => offer.id === offerId);
@@ -507,16 +575,17 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       };
     });
     return newId;
-  }, []);
+  }, [dataMode, persist]);
 
   const addGuestNote = useCallback((guestId: string, text: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/guests/${guestId}/notes`, { method: "POST", body: JSON.stringify({ text }) }); return; }
     setData((previous) => ({
       ...previous,
       notes: [
         {
           id: `note_new_${previous.notes.length + 1}`,
           guestId,
-          authorId: CURRENT_EMPLOYEE_ID,
+          authorId: actorId,
           createdAt: nowIso(),
           text,
         },
@@ -530,16 +599,17 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           type: "note" as const,
           title: "Внутренняя заметка",
           description: text,
-          employeeId: CURRENT_EMPLOYEE_ID,
+          employeeId: actorId,
         },
         ...previous.guestActivity,
       ],
     }));
-  }, []);
+  }, [actorId, dataMode, persist]);
 
   // --- Follow-up actions ---
 
   const completeFollowUp = useCallback((followUpId: string, lostReason?: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/follow-ups/${followUpId}`, { method: "PATCH", body: JSON.stringify({ action: "complete", reason: lostReason }) }); return; }
     const timestamp = nowIso();
     setData((previous) => ({
       ...previous,
@@ -549,34 +619,38 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           : item,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const skipFollowUp = useCallback((followUpId: string, reason: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/follow-ups/${followUpId}`, { method: "PATCH", body: JSON.stringify({ action: "skip", reason }) }); return; }
     setData((previous) => ({
       ...previous,
       followUps: previous.followUps.map((item) =>
         item.id === followUpId ? { ...item, status: "skipped" as const, lostReason: reason } : item,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const rescheduleFollowUp = useCallback((followUpId: string, dueAt: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/follow-ups/${followUpId}`, { method: "PATCH", body: JSON.stringify({ action: "reschedule", dueAt }) }); return; }
     setData((previous) => ({
       ...previous,
       followUps: previous.followUps.map((item) => (item.id === followUpId ? { ...item, dueAt } : item)),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const reassignFollowUp = useCallback((followUpId: string, ownerId: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/follow-ups/${followUpId}`, { method: "PATCH", body: JSON.stringify({ action: "reassign", ownerId }) }); return; }
     setData((previous) => ({
       ...previous,
       followUps: previous.followUps.map((item) => (item.id === followUpId ? { ...item, ownerId } : item)),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   // --- Classification ---
 
   const setLeadQuality = useCallback((leadId: string, quality: LeadQuality) => {
+    if (dataMode === "database") { void persist(`/api/crm/leads/${leadId}/classification`, { method: "POST", body: JSON.stringify({ quality }) }); return; }
     const timestamp = nowIso();
     setData((previous) => ({
       ...previous,
@@ -584,7 +658,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         lead.id === leadId
           ? {
               ...lead,
-              classification: applyManualOverride(lead.classification, quality, CURRENT_EMPLOYEE_ID, timestamp),
+              classification: applyManualOverride(lead.classification, quality, actorId, timestamp),
               lastActivityAt: timestamp,
               activity: [
                 ...lead.activity,
@@ -593,18 +667,19 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
                   at: timestamp,
                   type: "note" as const,
                   title: `Классификация изменена: ${quality}`,
-                  employeeId: CURRENT_EMPLOYEE_ID,
+                  employeeId: actorId,
                 },
               ],
             }
           : lead,
       ),
     }));
-  }, []);
+  }, [actorId, dataMode, persist]);
 
   // --- Housekeeping actions ---
 
   const assignHousekeepingTask = useCallback((taskId: string, employeeId: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/housekeeping/${taskId}`, { method: "PATCH", body: JSON.stringify({ action: "assign", employeeId }) }); return; }
     const timestamp = nowIso();
     setData((previous) => ({
       ...previous,
@@ -614,9 +689,10 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           : task,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const startHousekeepingTask = useCallback((taskId: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/housekeeping/${taskId}`, { method: "PATCH", body: JSON.stringify({ action: "start" }) }); return; }
     const timestamp = nowIso();
     setData((previous) => ({
       ...previous,
@@ -624,9 +700,10 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         task.id === taskId ? { ...task, status: "in_progress" as const, startedAt: timestamp } : task,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const completeHousekeepingTask = useCallback((taskId: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/housekeeping/${taskId}`, { method: "PATCH", body: JSON.stringify({ action: "complete" }) }); return; }
     const timestamp = nowIso();
     setData((previous) => ({
       ...previous,
@@ -634,9 +711,10 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         task.id === taskId ? { ...task, status: "completed" as const, completedAt: timestamp } : task,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const inspectHousekeepingTask = useCallback((taskId: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/housekeeping/${taskId}`, { method: "PATCH", body: JSON.stringify({ action: "inspect" }) }); return; }
     const timestamp = nowIso();
     setData((previous) => ({
       ...previous,
@@ -647,9 +725,10 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         room.activeTaskId === taskId ? { ...room, status: "inspected" as const, activeTaskId: undefined } : room,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const reopenHousekeepingTask = useCallback((taskId: string, reason?: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/housekeeping/${taskId}`, { method: "PATCH", body: JSON.stringify({ action: "reopen", reason }) }); return; }
     setData((previous) => ({
       ...previous,
       housekeepingTasks: previous.housekeepingTasks.map((task) =>
@@ -658,18 +737,20 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           : task,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const skipHousekeepingTask = useCallback((taskId: string, reason: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/housekeeping/${taskId}`, { method: "PATCH", body: JSON.stringify({ action: "skip", reason }) }); return; }
     setData((previous) => ({
       ...previous,
       housekeepingTasks: previous.housekeepingTasks.map((task) =>
         task.id === taskId ? { ...task, status: "skipped" as const, skippedReason: reason } : task,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const toggleChecklistItem = useCallback((taskId: string, itemIndex: number) => {
+    if (dataMode === "database") { void persist(`/api/crm/housekeeping/${taskId}/checklist/${itemIndex}`, { method: "PATCH" }); return; }
     setData((previous) => ({
       ...previous,
       housekeepingTasks: previous.housekeepingTasks.map((task) =>
@@ -683,10 +764,11 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           : task,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const createHousekeepingTask = useCallback(
     (input: { roomId: string; type: HousekeepingTaskType; priority?: number; dueAt: string; notes?: string; guestWishes?: string; leadId?: string; guestId?: string }) => {
+      if (dataMode === "database") { void persist("/api/crm/housekeeping", { method: "POST", body: JSON.stringify(input) }); return; }
       const taskId = `hk_new_${Date.now()}`;
       setData((previous) => {
         const room = previous.rooms.find((item) => item.id === input.roomId);
@@ -721,7 +803,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         };
       });
     },
-    [],
+    [dataMode, persist],
   );
 
   // --- Maintenance actions ---
@@ -737,6 +819,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       propertyId: PropertyId;
       housekeepingTaskId?: string;
     }) => {
+      if (dataMode === "database") { void persist("/api/crm/maintenance", { method: "POST", body: JSON.stringify(input) }); return; }
       const ticketId = `mnt_new_${Date.now()}`;
       setData((previous) => {
         const room = input.roomId ? previous.rooms.find((item) => item.id === input.roomId) : undefined;
@@ -774,10 +857,11 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         };
       });
     },
-    [],
+    [dataMode, persist],
   );
 
   const setMaintenanceStatus = useCallback((ticketId: string, ticketStatus: MaintenanceTicket["status"]) => {
+    if (dataMode === "database") { void persist(`/api/crm/maintenance/${ticketId}`, { method: "PATCH", body: JSON.stringify({ status: ticketStatus }) }); return; }
     const timestamp = nowIso();
     setData((previous) => ({
       ...previous,
@@ -791,18 +875,20 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           : ticket,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const assignMaintenanceTicket = useCallback((ticketId: string, employeeId: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/maintenance/${ticketId}`, { method: "PATCH", body: JSON.stringify({ employeeId }) }); return; }
     setData((previous) => ({
       ...previous,
       maintenanceTickets: previous.maintenanceTickets.map((ticket) =>
         ticket.id === ticketId ? { ...ticket, assigneeId: employeeId, status: "assigned" as const } : ticket,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const verifyMaintenanceTicket = useCallback((ticketId: string, result: string) => {
+    if (dataMode === "database") { void persist(`/api/crm/maintenance/${ticketId}`, { method: "PATCH", body: JSON.stringify({ verify: true, result }) }); return; }
     const timestamp = nowIso();
     setData((previous) => ({
       ...previous,
@@ -815,7 +901,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           : room,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   // --- Operational tasks ---
 
@@ -831,6 +917,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       dueAt: string;
       assigneeId?: string;
     }) => {
+      if (dataMode === "database") { void persist("/api/crm/operational-tasks", { method: "POST", body: JSON.stringify(input) }); return; }
       const taskId = `opt_new_${Date.now()}`;
       const newTask: OperationalTask = {
         id: taskId,
@@ -849,10 +936,11 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       };
       setData((previous) => ({ ...previous, operationalTasks: [newTask, ...previous.operationalTasks] }));
     },
-    [],
+    [dataMode, persist],
   );
 
   const setOperationalTaskStatus = useCallback((taskId: string, taskStatus: OperationalTask["status"]) => {
+    if (dataMode === "database") { void persist(`/api/crm/operational-tasks/${taskId}`, { method: "PATCH", body: JSON.stringify({ status: taskStatus }) }); return; }
     const timestamp = nowIso();
     setData((previous) => ({
       ...previous,
@@ -862,27 +950,29 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           : task,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   // --- Special requests ---
 
   const addLeadSpecialRequest = useCallback((leadId: string, request: SpecialRequestEntry) => {
+    if (dataMode === "database") { void persist(`/api/crm/leads/${leadId}/special-requests`, { method: "POST", body: JSON.stringify(request) }); return; }
     setData((previous) => ({
       ...previous,
       leads: previous.leads.map((lead) =>
         lead.id === leadId ? { ...lead, specialRequests: [...lead.specialRequests, request] } : lead,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   // --- Room status ---
 
   const setRoomStatus = useCallback((roomId: string, roomStatus: RoomStatus) => {
+    if (dataMode === "database") { void persist(`/api/crm/rooms/${roomId}/status`, { method: "PATCH", body: JSON.stringify({ status: roomStatus }) }); return; }
     setData((previous) => ({
       ...previous,
       rooms: previous.rooms.map((room) => (room.id === roomId ? { ...room, status: roomStatus } : room)),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const value = useMemo<CrmContextValue>(
     () => ({
@@ -893,10 +983,13 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       property,
       setProperty,
       currentEmployee,
+      dataMode,
       guestById: (id: string) => guestIndex.get(id),
       leadById: (id: string) => leadIndex.get(id),
       offerById: (id: string) => offerIndex.get(id),
       employeeById: (id: string) => employeeIndex.get(id),
+      propertyById: (id: PropertyId) => propertyIndex.get(id),
+      propertyName: (id: PropertyId | "all") => id === "all" ? "Все объекты ЛЕС" : propertyIndex.get(id)?.name ?? id,
       leadsForGuest: (guestId: string) => data.leads.filter((lead) => lead.guestId === guestId),
       moveLeadStage,
       addLeadActivity,
@@ -949,6 +1042,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       createOperationalTask,
       createTask,
       currentEmployee,
+      dataMode,
       inspectHousekeepingTask,
       data,
       duplicateOffer,
@@ -958,6 +1052,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       markConversationRead,
       moveLeadStage,
       offerIndex,
+      propertyIndex,
       property,
       reload,
       reopenHousekeepingTask,

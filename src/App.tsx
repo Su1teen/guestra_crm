@@ -4,6 +4,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CrmProvider } from "@/store/crm-store";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { AppShell } from "@/components/layout/AppShell";
 import Dashboard from "@/pages/Dashboard";
 import Inbox from "@/pages/Inbox";
@@ -30,13 +31,19 @@ import Reputation from "@/pages/Reputation";
 import Housekeeping from "@/pages/Housekeeping";
 import Maintenance from "@/pages/Maintenance";
 import NotFound from "./pages/NotFound.tsx";
+import Login from "@/pages/Login";
+import { LoadingScreen } from "@/components/common/States";
 
 const queryClient = new QueryClient();
 
 const AppRoutes = () => {
+  const { status, user } = useAuth();
+  if (status === "loading") return <LoadingScreen />;
+  if (!user) return <Login />;
   return (
-    <Routes>
-      <Route element={<AppShell />}>
+    <CrmProvider>
+      <Routes>
+        <Route element={<AppShell />}>
         <Route index element={<Dashboard />} />
         <Route path="inbox" element={<Inbox />} />
         <Route path="pipeline" element={<Pipeline />} />
@@ -61,15 +68,16 @@ const AppRoutes = () => {
         <Route path="reputation" element={<Reputation />} />
         <Route path="housekeeping" element={<Housekeeping />} />
         <Route path="maintenance" element={<Maintenance />} />
-      </Route>
-      <Route path="*" element={<NotFound />} />
-    </Routes>
+        </Route>
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </CrmProvider>
   );
 };
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
-    <CrmProvider>
+    <AuthProvider>
       <TooltipProvider>
         <Toaster />
         <Sonner />
@@ -77,7 +85,7 @@ const App = () => (
           <AppRoutes />
         </BrowserRouter>
       </TooltipProvider>
-    </CrmProvider>
+    </AuthProvider>
   </QueryClientProvider>
 );
 

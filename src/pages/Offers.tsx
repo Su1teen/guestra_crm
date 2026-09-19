@@ -11,10 +11,9 @@ import { FilterBar, FilterSelect, ResetFiltersButton, SearchInput } from "@/comp
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import type { Offer, OfferStatus } from "@/types/crm";
-import { employeeById, propertyById } from "@/data/reference";
 import { formatDateNumeric, formatStayRange, formatTenge, formatTengeCompact } from "@/lib/format";
 import { offerStatusLabels, offerStatusTone } from "@/lib/labels";
-import { ownerOptions } from "@/hooks/use-lead-filters";
+import { useOwnerOptions } from "@/hooks/use-lead-filters";
 
 const statusOptions = [
   { value: "all", label: "Все статусы" },
@@ -22,7 +21,8 @@ const statusOptions = [
 ];
 
 const Offers = () => {
-  const { status, reload, guestById } = useCrm();
+  const { status, reload, guestById, employeeById, propertyById } = useCrm();
+  const ownerOptions = useOwnerOptions();
   const scoped = useScopedData();
   const navigate = useNavigate();
 
@@ -80,7 +80,7 @@ const Offers = () => {
       header: "Объект",
       render: (offer) => (
         <div>
-          <p className="text-sm">{propertyById(offer.propertyId).name}</p>
+          <p className="text-sm">{propertyById(offer.propertyId)?.name ?? offer.propertyId}</p>
           <p className="text-xs text-muted-foreground">{offer.roomType}</p>
         </div>
       ),
@@ -132,7 +132,7 @@ const Offers = () => {
     {
       key: "owner",
       header: "Ответственный",
-      render: (offer) => <span className="text-sm text-muted-foreground">{employeeById(offer.ownerId).shortName}</span>,
+      render: (offer) => <span className="text-sm text-muted-foreground">{employeeById(offer.ownerId)?.shortName ?? "Не назначен"}</span>,
       hideBelow: "xl",
     },
   ];

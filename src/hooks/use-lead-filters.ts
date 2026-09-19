@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import type { Lead, LeadStage } from "@/types/crm";
 import { useCrm } from "@/store/crm-store";
 import { daysBetween } from "@/lib/format";
-import { employees } from "@/data/reference";
 import { sourceLabels, stageLabels } from "@/lib/labels";
 import type { FilterOption } from "@/components/common/Filters";
 
@@ -31,10 +30,13 @@ export const stageOptions: FilterOption[] = [
   ...(Object.keys(stageLabels) as LeadStage[]).map((stage) => ({ value: stage, label: stageLabels[stage] })),
 ];
 
-export const ownerOptions: FilterOption[] = [
-  { value: "all", label: "Все ответственные" },
-  ...employees.map((employee) => ({ value: employee.id, label: employee.name })),
-];
+export const useOwnerOptions = (): FilterOption[] => {
+  const { data } = useCrm();
+  return useMemo(() => [
+    { value: "all", label: "Все ответственные" },
+    ...data.employees.map((employee) => ({ value: employee.id, label: employee.name })),
+  ], [data.employees]);
+};
 
 export const sourceOptions: FilterOption[] = [
   { value: "all", label: "Все источники" },

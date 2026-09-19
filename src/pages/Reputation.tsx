@@ -4,7 +4,6 @@ import { MessageSquareText, ShieldAlert, Star, TrendingUp } from 'lucide-react';
 import { useCrm } from '@/store/crm-store';
 import { PageHeader } from '@/components/common/PageHeader';
 import { EmptyState, ErrorState, LoadingScreen } from '@/components/common/States';
-import { propertyById } from '@/data/reference';
 import { buildReputationReviews, CHANNELS, isNegative, type ReviewChannel } from '@/lib/reputation-demo';
 import './reputation.css';
 
@@ -16,7 +15,7 @@ function readStatuses(): StatusMap {
 const pct = (part: number, total: number) => total ? Math.round(part / total * 100) : 0;
 
 export default function Reputation() {
-  const { data, property, status, reload } = useCrm();
+  const { data, property, status, reload, propertyById } = useCrm();
   const [channel, setChannel] = useState<ReviewChannel | 'all'>('all');
   const [filter, setFilter] = useState<'all' | 'negative' | 'unanswered'>('all');
   const [selected, setSelected] = useState<string | null>(null);
@@ -48,7 +47,7 @@ export default function Reputation() {
       const source = CHANNELS.find((item) => item.id === review.channel)!;
       const item = statuses[review.id];
       const open = selected === review.id;
-      return <article key={review.id} className="rep-review"><div className="rep-review-main"><div className="rep-review-head"><span className="rep-channel-tag">{source.name}</span><span className={`rep-score ${isNegative(review) ? 'negative' : ''}`}><Star size={13} /> {review.rating} / {review.maxRating}</span><span className="rep-topic">{review.topic}</span><span className="rep-date">{new Date(review.date).toLocaleDateString('ru-RU')}</span></div><p className="rep-quote">«{review.text}»</p><div className="rep-review-foot"><Link to={`/guests/${review.guestId}`}>{review.guestName}</Link><span>· {propertyById(review.propertyId).name}</span><span className={`rep-state ${item?.status === 'answered' ? 'answered' : ''}`}>{item?.status === 'answered' ? 'Ответ отмечен' : item?.status === 'draft' ? 'Черновик' : 'Нужен ответ'}</span><button type="button" onClick={() => { setSelected(open ? null : review.id); setDraft(item?.reply ?? ''); }}>{open ? 'Скрыть' : 'Работа с отзывом'}</button></div></div>{open && <div className="rep-reply"><label htmlFor={`reply-${review.id}`}>Внутренний черновик ответа</label><textarea id={`reply-${review.id}`} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Поблагодарите гостя и ответьте по существу. Отправка на площадку выполняется отдельно." /><div><button type="button" onClick={() => updateStatus(review.id, { status: 'draft', reply: draft })} disabled={!draft.trim()}>Сохранить черновик</button><button type="button" className="primary" onClick={() => { updateStatus(review.id, { status: 'answered', reply: draft }); setSelected(null); }} disabled={!draft.trim()}>Отметить как отвеченный</button></div></div>}</article>;
+      return <article key={review.id} className="rep-review"><div className="rep-review-main"><div className="rep-review-head"><span className="rep-channel-tag">{source.name}</span><span className={`rep-score ${isNegative(review) ? 'negative' : ''}`}><Star size={13} /> {review.rating} / {review.maxRating}</span><span className="rep-topic">{review.topic}</span><span className="rep-date">{new Date(review.date).toLocaleDateString('ru-RU')}</span></div><p className="rep-quote">«{review.text}»</p><div className="rep-review-foot"><Link to={`/guests/${review.guestId}`}>{review.guestName}</Link><span>· {propertyById(review.propertyId)?.name ?? review.propertyId}</span><span className={`rep-state ${item?.status === 'answered' ? 'answered' : ''}`}>{item?.status === 'answered' ? 'Ответ отмечен' : item?.status === 'draft' ? 'Черновик' : 'Нужен ответ'}</span><button type="button" onClick={() => { setSelected(open ? null : review.id); setDraft(item?.reply ?? ''); }}>{open ? 'Скрыть' : 'Работа с отзывом'}</button></div></div>{open && <div className="rep-reply"><label htmlFor={`reply-${review.id}`}>Внутренний черновик ответа</label><textarea id={`reply-${review.id}`} value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Поблагодарите гостя и ответьте по существу. Отправка на площадку выполняется отдельно." /><div><button type="button" onClick={() => updateStatus(review.id, { status: 'draft', reply: draft })} disabled={!draft.trim()}>Сохранить черновик</button><button type="button" className="primary" onClick={() => { updateStatus(review.id, { status: 'answered', reply: draft }); setSelected(null); }} disabled={!draft.trim()}>Отметить как отвеченный</button></div></div>}</article>;
     })}{visible.length === 0 && <EmptyState compact title="По этим фильтрам отзывов нет" />}</div></section>
     <p className="rep-note">2ГИС рассчитывает публичный рейтинг по собственной формуле; число на карточке нельзя пересчитать простым средним оценок. Для реальной интеграции понадобятся идентификатор площадки, URL отзыва, связь с гостем и статус публикации ответа.</p>
   </div>;

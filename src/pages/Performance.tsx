@@ -14,14 +14,13 @@ import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import { employeePerformance, type EmployeePerformance } from "@/lib/analytics";
 import { formatPercent, formatResponseTime, formatTengeCompact } from "@/lib/format";
-import { propertyById } from "@/data/reference";
 import { stageLabels, stageTone, taskStatusLabels, taskStatusTone } from "@/lib/labels";
 
 const average = (values: number[]) =>
   values.length === 0 ? 0 : values.reduce((total, value) => total + value, 0) / values.length;
 
 const Performance = ({ embedded = false }: { embedded?: boolean }) => {
-  const { status, reload } = useCrm();
+  const { status, reload, propertyById } = useCrm();
   const scoped = useScopedData();
   const { data } = useCrm();
   const [selected, setSelected] = useState<EmployeePerformance | null>(null);
@@ -53,7 +52,7 @@ const Performance = ({ embedded = false }: { embedded?: boolean }) => {
         <PersonCell
           name={row.employee.name}
           initials={row.employee.initials}
-          subtitle={`${row.employee.role} · ${row.employee.propertyIds.map((id) => propertyById(id).shortName).join(", ")}`}
+          subtitle={`${row.employee.role} · ${row.employee.propertyIds.map((id) => propertyById(id)?.shortName ?? id).join(", ")}`}
         />
       ),
       sortValue: (row) => row.employee.name,
@@ -134,7 +133,7 @@ const Performance = ({ embedded = false }: { embedded?: boolean }) => {
                       <div key={lead.id} className="flex items-center justify-between gap-3 p-3">
                         <div>
                           <p className="text-sm font-medium">{lead.code}</p>
-                          <p className="text-xs text-muted-foreground">{propertyById(lead.propertyId).name} · {formatTengeCompact(lead.totalAmount)}</p>
+                          <p className="text-xs text-muted-foreground">{propertyById(lead.propertyId)?.name ?? lead.propertyId} · {formatTengeCompact(lead.totalAmount)}</p>
                         </div>
                         <StatusPill tone={stageTone[lead.stage]}>{stageLabels[lead.stage]}</StatusPill>
                       </div>

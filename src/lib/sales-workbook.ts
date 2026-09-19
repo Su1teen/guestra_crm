@@ -4,9 +4,8 @@ import {
   summarizeSales, summarizeSla,
 } from './analytics';
 import { directionLabels, lostReasonLabels, sourceLabels, stageLabels } from './labels';
-import { propertyById } from '../data/reference';
 import type { ScopedData } from '../hooks/use-scoped-data';
-import type { Employee } from '../types/crm';
+import type { Employee, Property } from '../types/crm';
 import { buildReportWorkbook, downloadReportWorkbook, type DownloadReportWorkbookOptions, type ReportColumn } from './report-excel';
 
 const count = (key: string, header: string): ReportColumn => ({ key, header, format: 'number' });
@@ -14,10 +13,11 @@ const money = (key: string, header: string): ReportColumn => ({ key, header, for
 const percent = (key: string, header: string): ReportColumn => ({ key, header, format: 'percent' });
 const word = (key: string, header: string): ReportColumn => ({ key, header });
 
-export function salesWorkbookOptions(scoped: ScopedData, employees: Employee[], propertyName: string): DownloadReportWorkbookOptions {
+export function salesWorkbookOptions(scoped: ScopedData, employees: Employee[], propertyName: string, properties: Property[] = []): DownloadReportWorkbookOptions {
   const sales = summarizeSales(scoped.leads, scoped.offers, scoped.tasks);
   const sla = summarizeSla(scoped.leads);
   const employeeNames = new Map(employees.map((employee) => [employee.id, employee.name]));
+  const propertyNames = new Map(properties.map((property) => [property.id, property.name]));
   const guestNames = new Map(scoped.guests.map((guest) => [guest.id, guest.fullName]));
   return {
     title: 'Продажи · единая книга', reportType: 'sales-all-sections', propertyName,
@@ -36,7 +36,7 @@ export function salesWorkbookOptions(scoped: ScopedData, employees: Employee[], 
       word('source', 'Источник'), word('owner', 'Менеджер'), money('amount', 'Сумма сделки'),
       percent('probability', 'Вероятность'), word('created', 'Создана')],
     rows: scoped.leads.map((lead) => ({
-      code: lead.code, property: propertyById(lead.propertyId).name, guest: guestNames.get(lead.guestId) ?? '—',
+      code: lead.code, property: propertyNames.get(lead.propertyId) ?? lead.propertyId, guest: guestNames.get(lead.guestId) ?? '—',
       stage: stageLabels[lead.stage], source: sourceLabels[lead.source], owner: employeeNames.get(lead.ownerId) ?? lead.ownerId,
       amount: lead.totalAmount, probability: lead.probability, created: lead.createdAt.slice(0, 10),
     })),
@@ -45,7 +45,7 @@ export function salesWorkbookOptions(scoped: ScopedData, employees: Employee[], 
         count('qualified', 'Квалифицировано'), count('offers', 'Предложения'), count('confirmed', 'Подтверждено'),
         money('revenue', 'Сумма продаж'), count('lost', 'Потеряно')],
         rows: scoped.metrics.slice().sort((a, b) => a.date.localeCompare(b.date)).map((point) => ({
-          date: point.date, property: propertyById(point.propertyId).name, leads: point.leads,
+          date: point.date, property: propertyNames.get(point.propertyId) ?? point.propertyId, leads: point.leads,
           qualified: point.qualified, offers: point.offers, confirmed: point.confirmed, revenue: point.revenue, lost: point.lost,
         })) },
       { name: 'Воронка', columns: [word('stage', 'Стадия'), count('count', 'Достигли стадии'),
@@ -79,7 +79,7 @@ export function salesWorkbookOptions(scoped: ScopedData, employees: Employee[], 
           owner: employeeNames.get(offer.ownerId) ?? offer.ownerId, total: offer.total, created: offer.createdAt.slice(0, 10) })) },
       { name: 'SLA', columns: [word('code', 'Сделка'), word('property', 'Отель'), count('target', 'Цель, мин'),
         count('response', 'Ответ, мин'), word('state', 'Статус')],
-        rows: scoped.leads.map((lead) => ({ code: lead.code, property: propertyById(lead.propertyId).name,
+        rows: scoped.leads.map((lead) => ({ code: lead.code, property: propertyNames.get(lead.propertyId) ?? lead.propertyId,
           target: lead.slaMinutes, response: lead.firstResponseMinutes,
           state: lead.firstResponseMinutes ? (lead.firstResponseMinutes <= lead.slaMinutes ? 'В SLA' : 'Вне SLA') : 'Без ответа' })) },
       { name: 'Follow-up', columns: [word('lead', 'Сделка'), word('reason', 'Причина'), word('status', 'Статус'),
@@ -105,8 +105,8 @@ export function salesWorkbookOptions(scoped: ScopedData, employees: Employee[], 
   };
 }
 
-export const buildSalesWorkbook = (scoped: ScopedData, employees: Employee[], propertyName: string) =>
-  buildReportWorkbook(salesWorkbookOptions(scoped, employees, propertyName));
+export const buildSalesWorkbook = (scoped: ScopedData, employees: Employee[], propertyName: string, properties?: Property[]) =>
+  buildReportWorkbook(salesWorkbookOptions(scoped, employees, propertyName, properties));
 
-export const downloadSalesWorkbook = (scoped: ScopedData, employees: Employee[], propertyName: string) =>
-  downloadReportWorkbook(salesWorkbookOptions(scoped, employees, propertyName));
+export const downloadSalesWorkbook = (scoped: ScopedData, employees: Employee[], propertyName: string, properties?: Property[]) =>
+  downloadReportWorkbook(salesWorkbookOptions(scoped, employees, propertyName, properties));

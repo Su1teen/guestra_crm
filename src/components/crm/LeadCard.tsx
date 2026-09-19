@@ -2,7 +2,6 @@ import { CalendarDays, Users, BedDouble, Clock, ArrowRight } from "lucide-react"
 import type { Lead } from "@/types/crm";
 import { StatusPill } from "@/components/common/StatusPill";
 import { InitialsAvatar } from "@/components/common/Identity";
-import { propertyName, employeeById } from "@/data/reference";
 import { formatDueDate, formatRelative, formatStayRange, formatTenge, occupancyLabel } from "@/lib/format";
 import { intentLabels, intentTone, sourceLabels } from "@/lib/labels";
 import { useCrm } from "@/store/crm-store";
@@ -17,7 +16,7 @@ interface LeadCardProps {
 }
 
 export const LeadCard = ({ lead, onOpen, draggable, onDragStart, className }: LeadCardProps) => {
-  const { guestById } = useCrm();
+  const { guestById, propertyName, employeeById } = useCrm();
   const guest = guestById(lead.guestId);
   const owner = employeeById(lead.ownerId);
 
@@ -87,7 +86,7 @@ export const LeadCard = ({ lead, onOpen, draggable, onDragStart, className }: Le
         </p>
       )}
 
-      <p className="mt-2 truncate text-[11px] text-muted-foreground">Ответственный: {owner.shortName}</p>
+      <p className="mt-2 truncate text-[11px] text-muted-foreground">Ответственный: {owner?.shortName ?? "Не назначен"}</p>
     </article>
   );
 };

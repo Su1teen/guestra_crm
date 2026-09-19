@@ -11,7 +11,6 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
-import { employeeById, propertyById } from "@/data/reference";
 import type { Task, TaskType } from "@/types/crm";
 import { formatDueDate } from "@/lib/format";
 import {
@@ -22,7 +21,7 @@ import {
   taskTypeAccent,
   taskTypeLabels,
 } from "@/lib/labels";
-import { ownerOptions } from "@/hooks/use-lead-filters";
+import { useOwnerOptions } from "@/hooks/use-lead-filters";
 import { cn } from "@/lib/utils";
 
 type TabKey = "mine" | "team" | "overdue" | "done";
@@ -38,7 +37,8 @@ const priorityOptions = [
 ];
 
 const Tasks = () => {
-  const { status, reload, currentEmployee, toggleTaskDone, updateTask, guestById, property } = useCrm();
+  const { status, reload, currentEmployee, toggleTaskDone, updateTask, guestById, property, employeeById, propertyById } = useCrm();
+  const ownerOptions = useOwnerOptions();
   const scoped = useScopedData();
   const navigate = useNavigate();
 
@@ -107,7 +107,7 @@ const Tasks = () => {
             <StatusPill tone={taskPriorityTone[task.priority]}>{taskPriorityLabels[task.priority]}</StatusPill>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            {taskTypeLabels[task.type]} · {formatDueDate(task.dueAt)} · {propertyById(task.propertyId).shortName}
+            {taskTypeLabels[task.type]} · {formatDueDate(task.dueAt)} · {propertyById(task.propertyId)?.shortName ?? task.propertyId}
             {guest ? ` · ${guest.fullName}` : ""}
           </p>
           {task.description && <p className="mt-1 text-xs text-muted-foreground">{task.description}</p>}
@@ -120,7 +120,7 @@ const Tasks = () => {
             className="hidden md:flex"
             ariaLabel="Ответственный"
           />
-          <span className="text-xs text-muted-foreground md:hidden">{employeeById(task.ownerId).shortName}</span>
+          <span className="text-xs text-muted-foreground md:hidden">{employeeById(task.ownerId)?.shortName ?? "Не назначен"}</span>
           {task.leadId && (
             <Button variant="ghost" size="sm" onClick={() => navigate(`/leads/${task.leadId}`)}>
               Сделка
