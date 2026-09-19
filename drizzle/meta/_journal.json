@@ -11,8 +11,8 @@
     },
     {
       "idx": 1,
-      "version": "5",
-      "when": 1726905600000,
+      "version": "7",
+      "when": 1789798879753,
       "tag": "0001_resort_customer_journey",
       "breakpoints": true
     }

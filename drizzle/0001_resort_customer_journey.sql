@@ -3,29 +3,47 @@
 
 -- 1. Add new columns to leads
 ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "paid_amount" integer NOT NULL DEFAULT 0;
+--> statement-breakpoint
 ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "payment_due_at" timestamp with time zone;
+--> statement-breakpoint
 ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "payment_terms" text;
+--> statement-breakpoint
 
 -- 2. Make guest_services.stay_id nullable and add new columns
 ALTER TABLE "guest_services" ALTER COLUMN "stay_id" DROP NOT NULL;
+--> statement-breakpoint
 ALTER TABLE "guest_services" ADD COLUMN IF NOT EXISTS "lead_id" text REFERENCES "leads"("id") ON DELETE SET NULL;
+--> statement-breakpoint
 ALTER TABLE "guest_services" ADD COLUMN IF NOT EXISTS "property_id" text REFERENCES "properties"("id") ON DELETE SET NULL;
+--> statement-breakpoint
 ALTER TABLE "guest_services" ADD COLUMN IF NOT EXISTS "service_type" text;
+--> statement-breakpoint
 ALTER TABLE "guest_services" ADD COLUMN IF NOT EXISTS "quantity" integer NOT NULL DEFAULT 1;
+--> statement-breakpoint
 ALTER TABLE "guest_services" ADD COLUMN IF NOT EXISTS "participants" integer;
+--> statement-breakpoint
 ALTER TABLE "guest_services" ADD COLUMN IF NOT EXISTS "start_at" timestamp with time zone;
+--> statement-breakpoint
 ALTER TABLE "guest_services" ADD COLUMN IF NOT EXISTS "end_at" timestamp with time zone;
+--> statement-breakpoint
 ALTER TABLE "guest_services" ADD COLUMN IF NOT EXISTS "booking_reference" text;
+--> statement-breakpoint
 ALTER TABLE "guest_services" ADD COLUMN IF NOT EXISTS "status" text NOT NULL DEFAULT 'completed';
+--> statement-breakpoint
 
 -- 3. Make offers accommodation fields nullable, add terms
 ALTER TABLE "offers" ALTER COLUMN "room_type" DROP NOT NULL;
+--> statement-breakpoint
 ALTER TABLE "offers" ALTER COLUMN "check_in" DROP NOT NULL;
+--> statement-breakpoint
 ALTER TABLE "offers" ALTER COLUMN "check_out" DROP NOT NULL;
+--> statement-breakpoint
 ALTER TABLE "offers" ADD COLUMN IF NOT EXISTS "terms" text;
+--> statement-breakpoint
 
 -- 4. Add leadItemId to offer_lines
 ALTER TABLE "offer_lines" ADD COLUMN IF NOT EXISTS "lead_item_id" text;
+--> statement-breakpoint
 
 -- 5. Create lead_interests table
 CREATE TABLE IF NOT EXISTS "lead_interests" (
@@ -39,8 +57,11 @@ CREATE TABLE IF NOT EXISTS "lead_interests" (
   "created_at" timestamp with time zone NOT NULL DEFAULT now(),
   "updated_at" timestamp with time zone NOT NULL DEFAULT now()
 );
+--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "lead_interests_lead_direction_uidx" ON "lead_interests" ("lead_id", "direction");
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "lead_interests_lead_idx" ON "lead_interests" ("lead_id");
+--> statement-breakpoint
 
 -- 6. Create lead_items table
 CREATE TABLE IF NOT EXISTS "lead_items" (
@@ -67,7 +88,9 @@ CREATE TABLE IF NOT EXISTS "lead_items" (
   "created_at" timestamp with time zone NOT NULL DEFAULT now(),
   "updated_at" timestamp with time zone NOT NULL DEFAULT now()
 );
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "lead_items_lead_idx" ON "lead_items" ("lead_id");
+--> statement-breakpoint
 
 -- 7. Create service_catalog table
 CREATE TABLE IF NOT EXISTS "service_catalog" (
@@ -85,7 +108,9 @@ CREATE TABLE IF NOT EXISTS "service_catalog" (
   "created_at" timestamp with time zone NOT NULL DEFAULT now(),
   "updated_at" timestamp with time zone NOT NULL DEFAULT now()
 );
+--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "service_catalog_property_code_uidx" ON "service_catalog" ("property_id", "code");
+--> statement-breakpoint
 
 -- 8. Backfill: Create lead_interests from existing lead_classifications
 INSERT INTO "lead_interests" ("id", "lead_id", "direction", "is_primary", "status")
@@ -97,6 +122,7 @@ SELECT
   'active'
 FROM "lead_classifications"
 ON CONFLICT DO NOTHING;
+--> statement-breakpoint
 
 -- 9. Backfill: Create accommodation lead_items from existing leads with room_type
 INSERT INTO "lead_items" ("id", "lead_id", "type", "name", "status", "quantity", "start_at", "end_at", "adults", "children", "room_type", "nights", "total_amount", "currency")
@@ -123,6 +149,7 @@ SELECT
 FROM "leads"
 WHERE "room_type" IS NOT NULL
 ON CONFLICT DO NOTHING;
+--> statement-breakpoint
 
 -- 10. Backfill legacy lead_services without deleting or mutating source rows
 INSERT INTO "lead_items" ("id", "lead_id", "type", "category", "name", "status", "quantity", "total_amount", "currency", "metadata")
@@ -145,3 +172,4 @@ SELECT
 FROM "lead_services" ls
 JOIN "leads" l ON l."id" = ls."lead_id"
 ON CONFLICT DO NOTHING;
+--> statement-breakpoint

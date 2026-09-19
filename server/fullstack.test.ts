@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { and, eq } from "drizzle-orm";
+import { readMigrationFiles } from "drizzle-orm/migrator";
+import { migrate as migratePglite } from "drizzle-orm/pglite/migrator";
 import request from "supertest";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
@@ -42,6 +44,24 @@ beforeAll(async () => {
   db = drizzle(client, { schema: s }) as unknown as Database;
   await bootstrapDatabase(db, config);
   app = createApp(db, config);
+});
+
+describe("database migrations", () => {
+  it("orders and applies the resort journey migration after the initial schema", async () => {
+    const migrations = readMigrationFiles({ migrationsFolder: "drizzle" });
+    expect(migrations).toHaveLength(2);
+    expect(migrations[1].folderMillis).toBeGreaterThan(migrations[0].folderMillis);
+
+    const client = new PGlite();
+    const migrationDb = drizzle(client);
+    await migratePglite(migrationDb, { migrationsFolder: "drizzle" });
+    const columns = await client.query<{ column_name: string }>("select column_name from information_schema.columns where table_name = 'leads'");
+    expect(columns.rows.map((column) => column.column_name)).toContain("paid_amount");
+    await bootstrapDatabase(migrationDb as unknown as Database, config);
+    const seededLeads = await client.query<{ id: string }>("select id from leads where id = 'lead_live_3'");
+    expect(seededLeads.rows).toHaveLength(1);
+    await client.close();
+  });
 });
 
 describe("authentication and database bootstrap", () => {
