@@ -17,9 +17,9 @@ export interface Property {
   roomTypes: string[];
 }
 
-export type LeadStage = "new" | "qualified" | "offer" | "payment_pending" | "confirmed" | "lost" | "cancelled";
+export type LeadStage = "new" | "qualified" | "planning" | "offer" | "payment_pending" | "confirmed" | "completed" | "lost" | "cancelled";
 
-export type LeadSource = "whatsapp" | "telegram" | "website" | "phone" | "instagram" | "returning" | "corporate" | "referral";
+export type LeadSource = "whatsapp" | "telegram" | "website" | "phone" | "instagram" | "returning" | "corporate" | "referral" | "email" | "walk_in";
 
 /**
  * Коммерческая температура обращения. Не путать с качеством обращения
@@ -90,6 +90,7 @@ export type InterestDirection =
   | "wedding_or_banquet"
   | "restaurant"
   | "spa"
+  | "massage"
   | "bathhouse"
   | "karaoke"
   | "activities"
@@ -130,6 +131,10 @@ export interface ClassificationSnapshot {
     at: string;
     previousQuality: LeadQuality;
   };
+  /** Primary direction for backwards compatibility */
+  primaryDirection?: InterestDirection;
+  /** All interest directions when lead has multiple interests */
+  directions?: InterestDirection[];
 }
 
 export type ActivityType =
@@ -145,7 +150,12 @@ export type ActivityType =
   | "service"
   | "note"
   | "task"
-  | "campaign";
+  | "campaign"
+  | "interest_added"
+  | "interest_removed"
+  | "item_added"
+  | "item_updated"
+  | "item_removed";
 
 export interface Employee {
   id: string;
@@ -169,10 +179,19 @@ export interface GuestPreference {
 export interface GuestService {
   id: string;
   guestId: string;
-  stayId: string;
+  stayId?: string;
+  leadId?: string;
+  propertyId?: string;
   name: string;
   date: string;
   amount: number;
+  quantity?: number;
+  participants?: number;
+  startAt?: string;
+  endAt?: string;
+  bookingReference?: string;
+  serviceType?: string;
+  status?: string;
 }
 
 export interface GuestStay {
@@ -275,6 +294,80 @@ export interface LeadServiceLine {
   amount: number;
 }
 
+// ---------------------------------------------------------------------------
+// Lead Interests & Items — multi-service deal composition
+// ---------------------------------------------------------------------------
+
+export type LeadItemType =
+  | "accommodation"
+  | "restaurant"
+  | "spa"
+  | "massage"
+  | "bathhouse"
+  | "karaoke"
+  | "horse_riding"
+  | "atv"
+  | "activity"
+  | "transfer"
+  | "corporate_event"
+  | "wedding_or_banquet"
+  | "other";
+
+export type LeadItemStatus = "interest" | "selected" | "quoted" | "confirmed" | "completed" | "cancelled";
+
+export type ServicePricingMode = "fixed" | "per_person" | "per_hour" | "quote" | "external";
+
+export interface LeadInterest {
+  id: string;
+  leadId: string;
+  direction: InterestDirection;
+  isPrimary: boolean;
+  status: string;
+  ownerId?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeadItem {
+  id: string;
+  leadId: string;
+  interestId?: string;
+  type: LeadItemType;
+  category?: string;
+  name: string;
+  status: LeadItemStatus;
+  quantity: number;
+  startAt?: string;
+  endAt?: string;
+  adults?: number;
+  children?: number;
+  participants?: number;
+  roomType?: string;
+  nights?: number;
+  unitAmount?: number;
+  totalAmount?: number;
+  currency: string;
+  externalReference?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ServiceCatalogEntry {
+  id: string;
+  propertyId: string;
+  code: string;
+  category: string;
+  name: string;
+  description?: string;
+  active: boolean;
+  pricingMode: ServicePricingMode;
+  defaultPrice?: number;
+  currency: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface Lead {
   id: string;
   code: string;
@@ -312,12 +405,23 @@ export interface Lead {
   classification: ClassificationSnapshot;
   /** Структурированные особые пожелания гостя для маршрутизации в службы. */
   specialRequests: SpecialRequestEntry[];
+  /** Amount already paid towards this deal */
+  paidAmount: number;
+  /** Payment due date */
+  paymentDueAt?: string;
+  /** Payment terms description */
+  paymentTerms?: string;
+  /** Multi-interest directions for this lead */
+  interests: LeadInterest[];
+  /** Deal composition items */
+  items: LeadItem[];
 }
 
 export interface OfferLine {
   label: string;
   quantity?: string;
   amount: number;
+  leadItemId?: string;
 }
 
 export interface Offer {
@@ -326,9 +430,9 @@ export interface Offer {
   leadId: string;
   guestId: string;
   propertyId: PropertyId;
-  roomType: string;
-  checkIn: string;
-  checkOut: string;
+  roomType?: string | null;
+  checkIn?: string | null;
+  checkOut?: string | null;
   nights: number;
   adults: number;
   children: number;
@@ -342,6 +446,7 @@ export interface Offer {
   total: number;
   deposit: number;
   comment?: string;
+  terms?: string;
 }
 
 export interface Task {
@@ -757,4 +862,5 @@ export interface CrmDataset {
   maintenanceTickets: MaintenanceTicket[];
   operationalTasks: OperationalTask[];
   pmsSnapshots: PmsDailySnapshot[];
+  serviceCatalog: ServiceCatalogEntry[];
 }

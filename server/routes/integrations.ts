@@ -21,7 +21,7 @@ const leadUpsertSchema = z.object({
   channel: z.literal("telegram"), externalUserId: z.string().min(1), externalChatId: nullableString,
   externalMessageId: z.string().min(1), username: nullableString, firstName: nullableString,
   propertyId: z.string().min(1),
-  stage: z.enum(["new", "qualified", "offer", "payment_pending", "confirmed", "lost", "cancelled"]),
+  stage: z.enum(["new", "qualified", "planning", "offer", "payment_pending", "confirmed", "completed", "lost", "cancelled"]),
   direction: z.enum(["accommodation", "corporate_event", "wedding_or_banquet", "restaurant", "spa", "bathhouse", "karaoke", "activities", "transfer", "partnership", "vacancy", "supplier", "spam", "wrong_contact", "other"]),
   quality: z.enum(["target", "needs_qualification", "non_target"]),
   temperature: z.enum(["hot", "warm", "cold"]), probability: z.number().int().min(0).max(100),
@@ -31,6 +31,25 @@ const leadUpsertSchema = z.object({
   roomType: nullableString, totalAmount: z.number().int().min(0).nullable().optional(), nextActionLabel: nullableString,
   nextActionDueAt: nullableString,
   specialRequests: z.array(z.object({ type: z.string(), label: z.string(), route: z.string(), note: nullableString })).default([]),
+
+  primaryDirection: z.string().optional(),
+  directions: z.array(z.string()).optional(),
+  items: z.array(z.object({
+    type: z.string(),
+    name: z.string(),
+    category: z.string().optional(),
+    quantity: z.number().int().min(1).optional().default(1),
+    startAt: z.string().optional(),
+    endAt: z.string().optional(),
+    adults: z.number().int().min(0).optional(),
+    children: z.number().int().min(0).optional(),
+    participants: z.number().int().min(0).optional(),
+    roomType: z.string().optional(),
+    nights: z.number().int().min(0).optional(),
+    totalAmount: z.number().int().min(0).optional(),
+    metadata: z.record(z.unknown()).optional(),
+  })).optional(),
+
 });
 
 const offerUpsertSchema = z.object({
@@ -129,6 +148,20 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
     } else {
       await db.update(s.leadClassifications).set({ direction: input.direction, quality: existingClassification.manualOverrideEmployeeId ? existingClassification.quality : input.quality, temperature: input.temperature, probability: input.probability, reasons, missingData: input.missingData, recommendedAction: input.recommendedAction, updatedAt: timestamp }).where(eq(s.leadClassifications.leadId, lead.id));
     }
+    
+    if (input.directions && input.directions.length > 0) {
+      for (const dir of input.directions) {
+        await db.insert(s.leadInterests).values({ id: id("interest"), leadId: lead.id, direction: dir, isPrimary: dir === (input.primaryDirection || input.directions[0]), status: "active" }).onConflictDoNothing();
+      }
+    }
+    if (input.items && input.items.length > 0) {
+      const itemsToInsert = input.items.map(item => ({ id: id("item"), leadId: lead.id, ...item }));
+      await db.insert(s.leadItems).values(itemsToInsert);
+    }
+    if (input.primaryDirection) {
+      await db.update(s.leadClassifications).set({ direction: input.primaryDirection, updatedAt: timestamp }).where(eq(s.leadClassifications.leadId, lead.id));
+    }
+
     changedFacts.push("AI: классификация обновлена");
     for (const title of [...new Set(changedFacts)]) await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "note", title, occurredAt: timestamp });
     for (const item of input.specialRequests) await db.insert(s.leadSpecialRequests).values({ id: id("request"), leadId: lead.id, type: item.type, label: item.label, route: item.route, note: item.note ?? null }).onConflictDoUpdate({ target: [s.leadSpecialRequests.leadId, s.leadSpecialRequests.type, s.leadSpecialRequests.label], set: { route: item.route, note: item.note ?? null, updatedAt: timestamp } });

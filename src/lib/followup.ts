@@ -53,23 +53,24 @@ const recommendedActionFor = (reason: FollowUpReason): string => {
     offer_not_sent: "Отправить подготовленное предложение",
     offer_not_viewed: "Напомнить о предложении",
     no_reply_after_view: "Позвонить и обсудить предложение",
-    no_prepayment: "Напомнить о предоплате",
+    no_prepayment: "Напомнить об оплате",
     callback_later: "Связаться в согласованное время",
     client_silent: "Написать и предложить альтернативу",
     offer_expiring: "Продлить срок предложения или закрыть сделку",
-    cancelled_reactivation: "Предложить альтернативные даты",
+    cancelled_reactivation: "Предложить альтернативные даты / услуги",
     past_guest_offer: "Отправить персональное предложение",
   };
   return actions[reason];
 };
 
 const contextFor = (lead: Lead, reason: FollowUpReason): string => {
-  const parts: string[] = [`${lead.code} · стадия «${lead.stage}»`];
+  const direction = lead.interests?.length ? lead.interests[0].direction : lead.classification.direction;
+  const parts: string[] = [`${lead.code} · стадия «${lead.stage}» · ${direction}`];
   if (lead.specialRequest) parts.push(lead.specialRequest);
   if (reason === "no_response") parts.push("Обращение без ответа менеджера");
   if (reason === "offer_not_viewed") parts.push("Предложение отправлено, не просмотрено");
   if (reason === "no_reply_after_view") parts.push("Гость просмотрел предложение и замолчал");
-  if (reason === "no_prepayment") parts.push("Согласовано, ожидаем предоплату");
+  if (reason === "no_prepayment") parts.push("Согласовано, ожидаем оплату");
   return parts.join(" · ");
 };
 
@@ -153,6 +154,28 @@ export const generateFollowUpCandidates = (
     if (lead.stage === "lost" && lead.lostReason !== "non_target" && lead.lostReason !== "duplicate") {
       candidates.push(makeCandidate(lead, "past_guest_offer", addDays(now, 7), now, lead.totalAmount));
     }
+    
+    // 12. Non-accommodation specific rules:
+    const primaryDir = lead.interests?.length ? lead.interests[0].direction : lead.classification.direction;
+    if (primaryDir === "restaurant" && isOpen(lead) && lead.stage !== "new" && hoursSinceActivity >= 6) {
+      // Restaurant lead with no response/activity for 6 hours
+      candidates.push(makeCandidate(lead, "client_silent", addDays(now, 0), now, lead.totalAmount));
+    }
+    if ((primaryDir === "spa" || primaryDir === "massage" || primaryDir === "bathhouse") && latestOffer && latestOffer.status === "sent" && hoursSinceActivity >= 4) {
+      // SPA/massage quote without confirmation (4 hours)
+      candidates.push(makeCandidate(lead, "offer_not_viewed", addDays(now, 0), now, lead.totalAmount));
+    }
+    if ((primaryDir === "corporate_event" || primaryDir === "wedding_or_banquet") && latestOffer && latestOffer.expiresAt) {
+      // Event proposal expiring
+      const daysToExpiry = daysBetween(now, latestOffer.expiresAt);
+      if (daysToExpiry >= 0 && daysToExpiry <= 3) {
+        candidates.push(makeCandidate(lead, "offer_expiring", addDays(now, 0), now, lead.totalAmount));
+      }
+    }
+    if (lead.stage === "payment_pending" && lead.paymentStatus === "awaiting" && hoursSinceActivity >= 2) {
+       // Payment pending reminder for non-accommodation can be faster (2 hours)
+       candidates.push(makeCandidate(lead, "no_prepayment", addDays(now, 0), now, lead.deposit || lead.totalAmount));
+    }
   }
 
   return candidates;
@@ -171,7 +194,7 @@ const makeCandidate = (
   leadId: lead.id,
   guestId: lead.guestId,
   propertyId: lead.propertyId,
-  channel: lead.source === "whatsapp" ? "whatsapp" : lead.source === "phone" ? "phone" : lead.source === "website" ? "website" : "other",
+  channel: lead.source === "whatsapp" ? "whatsapp" : lead.source === "telegram" ? "telegram" : lead.source === "phone" ? "phone" : lead.source === "website" ? "website" : lead.source === "instagram" ? "instagram" : "other",
   direction: lead.classification.direction,
   reason,
   stage: lead.stage,

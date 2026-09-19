@@ -13,6 +13,9 @@ import type {
   HousekeepingTask,
   HousekeepingTaskType,
   Lead,
+  LeadInterest,
+  LeadItem,
+  LeadItemStatus,
   LeadQuality,
   LeadStage,
   MaintenanceCategory,
@@ -22,6 +25,7 @@ import type {
   OfferStatus,
   OperationalRoute,
   OperationalTask,
+  PaymentStatus,
   PropertyId,
   Room,
   RoomStatus,
@@ -147,6 +151,29 @@ interface CrmContextValue {
   addLeadSpecialRequest: (leadId: string, request: SpecialRequestEntry) => void;
   // Room status
   setRoomStatus: (roomId: string, status: RoomStatus) => void;
+  // CRM transformation additions
+  createGuest: (input: { fullName: string; firstName?: string; lastName?: string; phone?: string; email?: string; company?: string; language?: string; preferredPropertyId?: string; source?: string }) => Promise<Guest>;
+  updateGuest: (id: string, patch: Partial<Guest>) => Promise<void>;
+  createLead: (input: {
+    guestId?: string;
+    guest?: { fullName: string; firstName?: string; phone?: string; email?: string; company?: string; language?: string; source?: string };
+    propertyId: string;
+    source: string;
+    stage?: LeadStage;
+    primaryDirection: string;
+    directions?: string[];
+    interests?: Array<{ direction: string; isPrimary?: boolean }>;
+    items?: Array<{ type: string; name: string; quantity?: number; startAt?: string; endAt?: string; adults?: number; children?: number; participants?: number; roomType?: string; nights?: number; totalAmount?: number; metadata?: Record<string, unknown> }>;
+    roomType?: string; checkIn?: string; checkOut?: string; nights?: number; adults?: number; children?: number; totalAmount?: number;
+    note?: string;
+  }) => Promise<Lead>;
+  addLeadInterest: (leadId: string, interest: { direction: string; isPrimary?: boolean; status?: string; notes?: string }) => Promise<void>;
+  updateLeadInterest: (leadId: string, interestId: string, patch: { isPrimary?: boolean; status?: string; notes?: string }) => Promise<void>;
+  removeLeadInterest: (leadId: string, interestId: string) => Promise<void>;
+  addLeadItem: (leadId: string, item: { interestId?: string; type: string; name: string; status?: string; quantity?: number; startAt?: string; endAt?: string; adults?: number; children?: number; participants?: number; roomType?: string; nights?: number; unitAmount?: number; totalAmount?: number; currency?: string; metadata?: Record<string, unknown> }) => Promise<void>;
+  updateLeadItem: (leadId: string, itemId: string, patch: { status?: LeadItemStatus; quantity?: number; startAt?: string; endAt?: string; totalAmount?: number; metadata?: Record<string, unknown> }) => Promise<void>;
+  removeLeadItem: (leadId: string, itemId: string) => Promise<void>;
+  recordPayment: (leadId: string, payment: { amount: number; method?: "card" | "transfer" | "cash"; reference?: string; notes?: string }) => Promise<void>;
 }
 
 const CrmContext = createContext<CrmContextValue | null>(null);
@@ -209,6 +236,7 @@ const emptyDatabaseDataset: CrmDataset = {
   properties: [], employees: [], guests: [], stays: [], services: [], payments: [], notes: [], guestActivity: [],
   leads: [], offers: [], tasks: [], conversations: [], segments: [], campaigns: [], metrics: [], followUps: [], rooms: [],
   housekeepingTasks: [], maintenanceTickets: [], operationalTasks: [], pmsSnapshots: [],
+  serviceCatalog: [],
 };
 
 export const CrmProvider = ({ children }: { children: ReactNode }) => {
@@ -292,9 +320,9 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           stage,
           lastActivityAt: timestamp,
           paymentStatus:
-            stage === "confirmed" ? "partial" : stage === "payment_pending" ? "awaiting" : lead.paymentStatus,
+            stage === "payment_pending" ? (lead.paymentStatus === "paid" ? "paid" : "awaiting") : lead.paymentStatus,
           probability:
-            stage === "new" ? 15 : stage === "qualified" ? 35 : stage === "offer" ? 55 : stage === "payment_pending" ? 80 : stage === "confirmed" ? 100 : 0,
+            stage === "new" ? 15 : stage === "qualified" ? 35 : stage === "planning" ? 45 : stage === "offer" ? 60 : stage === "payment_pending" ? 80 : stage === "confirmed" || stage === "completed" ? 100 : 0,
           stageHistory: [...lead.stageHistory, { stage, at: timestamp, employeeId: actorId }],
           activity: [
             ...lead.activity,
@@ -402,11 +430,18 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
             ownerId: lead.ownerId,
             createdAt: timestamp,
             expiresAt: expires,
-            lines: [
-              { label: `Проживание · ${lead.roomType}`, quantity: `${lead.nights} ноч.`, amount: lead.roomAmount },
-              ...lead.services.map((service) => ({ label: service.name, amount: service.amount })),
-              ...(lead.discount > 0 ? [{ label: "Скидка постоянного гостя", amount: -lead.discount }] : []),
-            ],
+            lines: lead.items?.length
+              ? lead.items.map((it) => ({
+                  label: `${it.name}${it.roomType ? ` (${it.roomType})` : ""}`,
+                  quantity: it.nights ? `${it.nights} ноч.` : it.quantity > 1 ? `${it.quantity} шт.` : undefined,
+                  amount: it.totalAmount ?? 0,
+                  leadItemId: it.id,
+                }))
+              : [
+                  ...(lead.roomType ? [{ label: `Проживание · ${lead.roomType}`, quantity: `${lead.nights} ноч.`, amount: lead.roomAmount }] : []),
+                  ...lead.services.map((service) => ({ label: service.name, amount: service.amount })),
+                  ...(lead.discount > 0 ? [{ label: "Скидка постоянного гостя", amount: -lead.discount }] : []),
+                ],
             total: lead.totalAmount,
             deposit: lead.deposit,
             comment: lead.specialRequest,
@@ -974,6 +1009,481 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, [dataMode, persist]);
 
+  // --- Guest CRUD ---
+
+  const createGuest = useCallback(
+    async (input: { fullName: string; firstName?: string; lastName?: string; phone?: string; email?: string; company?: string; language?: string; preferredPropertyId?: string; source?: string }) => {
+      if (dataMode === "database") {
+        const guest = await persist<Guest>("/api/crm/guests", { method: "POST", body: JSON.stringify(input) });
+        return guest;
+      }
+      const guestId = `guest_new_${Date.now()}`;
+      const newGuest: Guest = {
+        id: guestId,
+        fullName: input.fullName,
+        firstName: input.firstName ?? input.fullName.split(" ")[0] ?? "",
+        lastName: input.lastName ?? input.fullName.split(" ")[1] ?? "",
+        phone: input.phone ?? null,
+        email: input.email ?? null,
+        company: input.company,
+        language: input.language ?? "Русский",
+        preferredPropertyId: (input.preferredPropertyId as PropertyId) ?? "les_borovoe",
+        segments: ["new"],
+        staysCount: 0,
+        propertyIds: [(input.preferredPropertyId as PropertyId) ?? "les_borovoe"],
+        lifetimeValue: 0,
+        createdAt: nowIso(),
+        identity: {
+          primaryPhone: input.phone ?? null,
+          emails: input.email ? [input.email] : [],
+          documentType: null,
+          documentNumber: null,
+          citizenship: "Казахстан",
+          birthDate: null,
+        },
+        preferences: {
+          language: input.language ?? "Русский",
+          roomPreference: "Любое",
+          bedPreference: "Любое",
+          foodPreference: "Стандарт",
+          specialRequests: [],
+        },
+      };
+      setData((prev) => ({ ...prev, guests: [newGuest, ...prev.guests] }));
+      return newGuest;
+    },
+    [dataMode, persist],
+  );
+
+  const updateGuest = useCallback(
+    async (id: string, patch: Partial<Guest>) => {
+      if (dataMode === "database") {
+        await persist(`/api/crm/guests/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+        return;
+      }
+      setData((prev) => ({
+        ...prev,
+        guests: prev.guests.map((g) => (g.id === id ? { ...g, ...patch, lastActivityAt: nowIso() } : g)),
+      }));
+    },
+    [dataMode, persist],
+  );
+
+  // --- Lead & multi-service deals ---
+
+  const createLead = useCallback(
+    async (input: {
+      guestId?: string;
+      guest?: { fullName: string; firstName?: string; phone?: string; email?: string; company?: string; language?: string; source?: string };
+      propertyId: string;
+      source: string;
+      stage?: LeadStage;
+      primaryDirection: string;
+      directions?: string[];
+      interests?: Array<{ direction: string; isPrimary?: boolean }>;
+      items?: Array<{ type: string; name: string; quantity?: number; startAt?: string; endAt?: string; adults?: number; children?: number; participants?: number; roomType?: string; nights?: number; totalAmount?: number; metadata?: Record<string, unknown> }>;
+      roomType?: string; checkIn?: string; checkOut?: string; nights?: number; adults?: number; children?: number; totalAmount?: number;
+      note?: string;
+    }) => {
+      if (dataMode === "database") {
+        const lead = await persist<Lead>("/api/crm/leads", { method: "POST", body: JSON.stringify(input) });
+        return lead;
+      }
+      const timestamp = nowIso();
+      const leadId = `lead_new_${Date.now()}`;
+      let guestId = input.guestId;
+      if (!guestId && input.guest) {
+        const createdGuest = await createGuest({
+          fullName: input.guest.fullName,
+          firstName: input.guest.firstName,
+          phone: input.guest.phone,
+          email: input.guest.email,
+          company: input.guest.company,
+          language: input.guest.language,
+          preferredPropertyId: input.propertyId,
+          source: input.source,
+        });
+        guestId = createdGuest.id;
+      }
+      const stage = input.stage ?? "new";
+      const totalAmount = input.totalAmount ?? (input.items?.reduce((s, it) => s + (it.totalAmount ?? 0), 0) || 0);
+      const deposit = Math.round(totalAmount / 2 / 1000) * 1000;
+
+      const newInterests: LeadInterest[] = (input.interests && input.interests.length > 0)
+        ? input.interests.map((int, idx) => ({
+            id: `interest_${leadId}_${idx}`,
+            leadId,
+            direction: int.direction as any,
+            isPrimary: Boolean(int.isPrimary),
+            status: "active",
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          }))
+        : [
+            {
+              id: `interest_${leadId}_0`,
+              leadId,
+              direction: (input.primaryDirection || "accommodation") as any,
+              isPrimary: true,
+              status: "active",
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            },
+            ...(input.directions || []).filter((d) => d !== input.primaryDirection).map((d, idx) => ({
+              id: `interest_${leadId}_${idx + 1}`,
+              leadId,
+              direction: d as any,
+              isPrimary: false,
+              status: "active",
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            })),
+          ];
+
+      const newItems: LeadItem[] = (input.items || []).map((it, idx) => ({
+        id: `item_${leadId}_${idx}`,
+        leadId,
+        type: it.type as any,
+        name: it.name,
+        status: "selected",
+        quantity: it.quantity ?? 1,
+        startAt: it.startAt,
+        endAt: it.endAt,
+        adults: it.adults,
+        children: it.children,
+        participants: it.participants,
+        roomType: it.roomType,
+        nights: it.nights,
+        totalAmount: it.totalAmount,
+        currency: "KZT",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }));
+
+      const newLead: Lead = {
+        id: leadId,
+        code: `G-${3_000 + data.leads.length}`,
+        guestId: guestId ?? data.guests[0]?.id ?? "guest_001",
+        propertyId: (input.propertyId as PropertyId) ?? "les_borovoe",
+        source: (input.source as any) ?? "other",
+        stage,
+        intent: "warm",
+        roomType: input.roomType ?? null,
+        checkIn: input.checkIn ?? null,
+        checkOut: input.checkOut ?? null,
+        nights: input.nights ?? 0,
+        adults: input.adults ?? 0,
+        children: input.children ?? 0,
+        roomAmount: input.totalAmount ?? 0,
+        services: [],
+        discount: 0,
+        totalAmount,
+        deposit,
+        paidAmount: 0,
+        paymentStatus: "not_required",
+        ownerId: actorId,
+        createdAt: timestamp,
+        lastActivityAt: timestamp,
+        probability: stage === "new" ? 15 : stage === "qualified" ? 35 : stage === "planning" ? 45 : 60,
+        firstResponseMinutes: 0,
+        slaMinutes: 30,
+        stageHistory: [{ stage, at: timestamp, employeeId: actorId }],
+        activity: [
+          {
+            id: `${leadId}_created`,
+            at: timestamp,
+            type: "lead_created",
+            title: "Лид создан вручную",
+            employeeId: actorId,
+          },
+          ...(input.note
+            ? [
+                {
+                  id: `${leadId}_note_0`,
+                  at: timestamp,
+                  type: "note" as const,
+                  title: "Заметка к лиду",
+                  description: input.note,
+                  employeeId: actorId,
+                },
+              ]
+            : []),
+        ],
+        classification: {
+          direction: (input.primaryDirection || "accommodation") as any,
+          quality: "needs_qualification",
+          temperature: "warm",
+          probability: stage === "new" ? 15 : 35,
+          reasons: [{ code: "manual_creation", label: "Создан вручную менеджером" }],
+          missingData: [],
+          recommendedAction: "Квалифицировать запрос",
+          primaryDirection: (input.primaryDirection || "accommodation") as any,
+          directions: newInterests.map((i) => i.direction),
+        },
+        specialRequests: [],
+        interests: newInterests,
+        items: newItems,
+      };
+
+      setData((prev) => ({ ...prev, leads: [newLead, ...prev.leads] }));
+      return newLead;
+    },
+    [actorId, createGuest, data.guests, data.leads.length, dataMode, persist],
+  );
+
+  const addLeadInterest = useCallback(
+    async (leadId: string, interest: { direction: string; isPrimary?: boolean; status?: string; notes?: string }) => {
+      if (dataMode === "database") {
+        await persist(`/api/crm/leads/${leadId}/interests`, { method: "POST", body: JSON.stringify(interest) });
+        return;
+      }
+      const timestamp = nowIso();
+      const interestObj: LeadInterest = {
+        id: `interest_${leadId}_${Date.now()}`,
+        leadId,
+        direction: interest.direction as any,
+        isPrimary: Boolean(interest.isPrimary),
+        status: interest.status ?? "active",
+        notes: interest.notes,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      setData((prev) => ({
+        ...prev,
+        leads: prev.leads.map((l) => {
+          if (l.id !== leadId) return l;
+          const interests = interest.isPrimary
+            ? [...l.interests.map((i) => ({ ...i, isPrimary: false })), interestObj]
+            : [...l.interests, interestObj];
+          return {
+            ...l,
+            interests,
+            lastActivityAt: timestamp,
+            activity: [
+              ...l.activity,
+              {
+                id: `${leadId}_act_${Date.now()}`,
+                at: timestamp,
+                type: "interest_added" as any,
+                title: `Добавлено направление: ${interest.direction}`,
+                employeeId: actorId,
+              },
+            ],
+          };
+        }),
+      }));
+    },
+    [actorId, dataMode, persist],
+  );
+
+  const updateLeadInterest = useCallback(
+    async (leadId: string, interestId: string, patch: { isPrimary?: boolean; status?: string; notes?: string }) => {
+      if (dataMode === "database") {
+        await persist(`/api/crm/leads/${leadId}/interests/${interestId}`, { method: "PATCH", body: JSON.stringify(patch) });
+        return;
+      }
+      setData((prev) => ({
+        ...prev,
+        leads: prev.leads.map((l) => {
+          if (l.id !== leadId) return l;
+          return {
+            ...l,
+            interests: l.interests.map((i) => (i.id === interestId ? { ...i, ...patch, updatedAt: nowIso() } : i)),
+          };
+        }),
+      }));
+    },
+    [dataMode, persist],
+  );
+
+  const removeLeadInterest = useCallback(
+    async (leadId: string, interestId: string) => {
+      if (dataMode === "database") {
+        await persist(`/api/crm/leads/${leadId}/interests/${interestId}`, { method: "DELETE" });
+        return;
+      }
+      const timestamp = nowIso();
+      setData((prev) => ({
+        ...prev,
+        leads: prev.leads.map((l) => {
+          if (l.id !== leadId) return l;
+          return {
+            ...l,
+            interests: l.interests.filter((i) => i.id !== interestId),
+            lastActivityAt: timestamp,
+            activity: [
+              ...l.activity,
+              {
+                id: `${leadId}_act_${Date.now()}`,
+                at: timestamp,
+                type: "interest_removed" as any,
+                title: "Направление удалено",
+                employeeId: actorId,
+              },
+            ],
+          };
+        }),
+      }));
+    },
+    [actorId, dataMode, persist],
+  );
+
+  const addLeadItem = useCallback(
+    async (
+      leadId: string,
+      item: { interestId?: string; type: string; name: string; status?: string; quantity?: number; startAt?: string; endAt?: string; adults?: number; children?: number; participants?: number; roomType?: string; nights?: number; unitAmount?: number; totalAmount?: number; currency?: string; metadata?: Record<string, unknown> },
+    ) => {
+      if (dataMode === "database") {
+        await persist(`/api/crm/leads/${leadId}/items`, { method: "POST", body: JSON.stringify(item) });
+        return;
+      }
+      const timestamp = nowIso();
+      const itemObj: LeadItem = {
+        id: `item_${leadId}_${Date.now()}`,
+        leadId,
+        interestId: item.interestId,
+        type: item.type as any,
+        name: item.name,
+        status: (item.status as any) ?? "selected",
+        quantity: item.quantity ?? 1,
+        startAt: item.startAt,
+        endAt: item.endAt,
+        adults: item.adults,
+        children: item.children,
+        participants: item.participants,
+        roomType: item.roomType,
+        nights: item.nights,
+        unitAmount: item.unitAmount,
+        totalAmount: item.totalAmount,
+        currency: item.currency ?? "KZT",
+        metadata: item.metadata,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      setData((prev) => ({
+        ...prev,
+        leads: prev.leads.map((l) => {
+          if (l.id !== leadId) return l;
+          const items = [...l.items, itemObj];
+          const totalAmount = items.reduce((sum, it) => sum + (it.totalAmount ?? 0), 0) || l.totalAmount;
+          return {
+            ...l,
+            items,
+            totalAmount,
+            lastActivityAt: timestamp,
+            activity: [
+              ...l.activity,
+              {
+                id: `${leadId}_act_${Date.now()}`,
+                at: timestamp,
+                type: "item_added" as any,
+                title: `Добавлена позиция: ${item.name}`,
+                employeeId: actorId,
+              },
+            ],
+          };
+        }),
+      }));
+    },
+    [actorId, dataMode, persist],
+  );
+
+  const updateLeadItem = useCallback(
+    async (leadId: string, itemId: string, patch: { status?: LeadItemStatus; quantity?: number; startAt?: string; endAt?: string; totalAmount?: number; metadata?: Record<string, unknown> }) => {
+      if (dataMode === "database") {
+        await persist(`/api/crm/leads/${leadId}/items/${itemId}`, { method: "PATCH", body: JSON.stringify(patch) });
+        return;
+      }
+      const timestamp = nowIso();
+      setData((prev) => ({
+        ...prev,
+        leads: prev.leads.map((l) => {
+          if (l.id !== leadId) return l;
+          const items: LeadItem[] = l.items.map((it) => (it.id === itemId ? { ...it, ...patch, updatedAt: timestamp } : it));
+          const totalAmount = items.reduce((sum, it) => sum + (it.totalAmount ?? 0), 0) || l.totalAmount;
+          return {
+            ...l,
+            items,
+            totalAmount,
+            lastActivityAt: timestamp,
+          };
+        }),
+      }));
+    },
+    [dataMode, persist],
+  );
+
+  const removeLeadItem = useCallback(
+    async (leadId: string, itemId: string) => {
+      if (dataMode === "database") {
+        await persist(`/api/crm/leads/${leadId}/items/${itemId}`, { method: "DELETE" });
+        return;
+      }
+      const timestamp = nowIso();
+      setData((prev) => ({
+        ...prev,
+        leads: prev.leads.map((l) => {
+          if (l.id !== leadId) return l;
+          const items = l.items.filter((it) => it.id !== itemId);
+          const totalAmount = items.reduce((sum, it) => sum + (it.totalAmount ?? 0), 0);
+          return {
+            ...l,
+            items,
+            totalAmount,
+            lastActivityAt: timestamp,
+            activity: [
+              ...l.activity,
+              {
+                id: `${leadId}_act_${Date.now()}`,
+                at: timestamp,
+                type: "item_removed" as any,
+                title: "Позиция удалена",
+                employeeId: actorId,
+              },
+            ],
+          };
+        }),
+      }));
+    },
+    [actorId, dataMode, persist],
+  );
+
+  const recordPayment = useCallback(
+    async (leadId: string, payment: { amount: number; method?: "card" | "transfer" | "cash"; reference?: string; notes?: string }) => {
+      if (dataMode === "database") {
+        await persist(`/api/crm/leads/${leadId}/payments`, { method: "POST", body: JSON.stringify(payment) });
+        return;
+      }
+      const timestamp = nowIso();
+      setData((prev) => ({
+        ...prev,
+        leads: prev.leads.map((l) => {
+          if (l.id !== leadId) return l;
+          const paidAmount = (l.paidAmount ?? 0) + payment.amount;
+          const paymentStatus: PaymentStatus = paidAmount >= l.totalAmount ? "paid" : paidAmount > 0 ? "partial" : "not_required";
+          return {
+            ...l,
+            paidAmount,
+            paymentStatus,
+            lastActivityAt: timestamp,
+            activity: [
+              ...l.activity,
+              {
+                id: `${leadId}_act_${Date.now()}`,
+                at: timestamp,
+                type: "payment",
+                title: `Внесена оплата: ${payment.amount.toLocaleString()} ₸`,
+                amount: payment.amount,
+                employeeId: actorId,
+              },
+            ],
+          };
+        }),
+      }));
+    },
+    [actorId, dataMode, persist],
+  );
+
   const value = useMemo<CrmContextValue>(
     () => ({
       data,
@@ -1026,37 +1536,54 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       setOperationalTaskStatus,
       addLeadSpecialRequest,
       setRoomStatus,
+      createGuest,
+      updateGuest,
+      createLead,
+      addLeadInterest,
+      updateLeadInterest,
+      removeLeadInterest,
+      addLeadItem,
+      updateLeadItem,
+      removeLeadItem,
+      recordPayment,
     }),
     [
       addGuestNote,
       addLeadActivity,
+      addLeadInterest,
+      addLeadItem,
       addLeadSpecialRequest,
       assignConversation,
       assignHousekeepingTask,
       assignMaintenanceTicket,
       completeFollowUp,
       completeHousekeepingTask,
+      createGuest,
       createHousekeepingTask,
+      createLead,
       createMaintenanceTicket,
       createOfferFromLead,
       createOperationalTask,
       createTask,
       currentEmployee,
       dataMode,
-      inspectHousekeepingTask,
       data,
       duplicateOffer,
       employeeIndex,
       guestIndex,
+      inspectHousekeepingTask,
       leadIndex,
       markConversationRead,
       moveLeadStage,
       offerIndex,
       propertyIndex,
       property,
-      reload,
-      reopenHousekeepingTask,
       reassignFollowUp,
+      recordPayment,
+      reload,
+      removeLeadInterest,
+      removeLeadItem,
+      reopenHousekeepingTask,
       rescheduleFollowUp,
       sendMessage,
       setConversationStatus,
@@ -1073,7 +1600,10 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       status,
       toggleChecklistItem,
       toggleTaskDone,
+      updateGuest,
       updateLead,
+      updateLeadInterest,
+      updateLeadItem,
       updateTask,
       verifyMaintenanceTicket,
     ],

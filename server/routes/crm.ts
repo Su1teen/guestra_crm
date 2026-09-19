@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
@@ -42,11 +42,11 @@ export const createCrmRouter = (db: Database) => {
   });
 
   router.post("/leads/:id/stage", async (request, response) => {
-    const { stage } = z.object({ stage: z.enum(["new", "qualified", "offer", "payment_pending", "confirmed", "lost", "cancelled"]) }).parse(request.body);
+    const { stage } = z.object({ stage: z.enum(["new", "qualified", "planning", "offer", "payment_pending", "confirmed", "completed", "lost", "cancelled"]) }).parse(request.body);
     const [existing] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
     if (!existing) return response.status(404).json({ error: "Лид не найден" });
     if (existing.stage === stage) return response.json(existing);
-    const probability = stage === "new" ? 15 : stage === "qualified" ? 35 : stage === "offer" ? 55 : stage === "payment_pending" ? 80 : stage === "confirmed" ? 100 : 0;
+    const probability = stage === "new" ? 15 : stage === "qualified" ? 35 : stage === "planning" ? 45 : stage === "offer" ? 60 : stage === "payment_pending" ? 80 : stage === "confirmed" ? 100 : stage === "completed" ? 100 : 0;
     const timestamp = now();
     const [lead] = await db.update(s.leads).set({ stage, probability, lastActivityAt: timestamp, updatedAt: timestamp, paymentStatus: stage === "payment_pending" ? "awaiting" : existing.paymentStatus }).where(eq(s.leads.id, existing.id)).returning();
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
@@ -80,12 +80,20 @@ export const createCrmRouter = (db: Database) => {
 
   router.post("/leads/:id/offers", async (request, response) => {
     const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
-    if (!lead || !lead.roomType || !lead.checkIn || !lead.checkOut) return response.status(400).json({ error: "Для предложения нужны категория и даты" });
+    if (!lead) return response.status(404).json({ error: "Лид не найден" });
     const services = await db.select().from(s.leadServices).where(eq(s.leadServices.leadId, lead.id));
     const offerId = id("offer");
     const timestamp = now();
     const [offer] = await db.insert(s.offers).values({ id: offerId, code: `КП-${Date.now().toString().slice(-6)}`, leadId: lead.id, guestId: lead.guestId, propertyId: lead.propertyId, roomType: lead.roomType, checkIn: lead.checkIn, checkOut: lead.checkOut, nights: lead.nights, adults: lead.adults, children: lead.children, status: "draft", ownerId: lead.ownerId, expiresAt: new Date(Date.now() + 4 * 86_400_000).toISOString(), total: lead.totalAmount, deposit: lead.deposit, comment: lead.specialRequest }).returning();
-    await db.insert(s.offerLines).values([{ id: id("line"), offerId, label: `Проживание · ${lead.roomType}`, quantity: `${lead.nights} ноч.`, amount: lead.roomAmount, position: 0 }, ...services.map((item, index) => ({ id: id("line"), offerId, label: item.name, amount: item.amount, position: index + 1 }))]);
+    const items = await db.select().from(s.leadItems).where(eq(s.leadItems.leadId, lead.id));
+    const linesToInsert = [];
+    if (items.length > 0) {
+      items.forEach((item, index) => linesToInsert.push({ id: id("line"), offerId, label: item.name, quantity: item.quantity?.toString(), amount: item.totalAmount ?? 0, position: index, leadItemId: item.id }));
+    } else if (lead.roomType) {
+      linesToInsert.push({ id: id("line"), offerId, label: `Проживание · ${lead.roomType}`, quantity: `${lead.nights} ноч.`, amount: lead.roomAmount, position: 0 });
+    }
+    services.forEach((item, index) => linesToInsert.push({ id: id("line"), offerId, label: item.name, amount: item.amount, position: linesToInsert.length + index }));
+    if (linesToInsert.length > 0) await db.insert(s.offerLines).values(linesToInsert);
     await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "offer_created", title: "Предложение подготовлено", amount: lead.totalAmount, occurredAt: timestamp });
     response.status(201).json(offer);
   });
@@ -191,6 +199,180 @@ export const createCrmRouter = (db: Database) => {
     const { status } = z.object({ status: z.string() }).parse(request.body);
     const [room] = await db.update(s.rooms).set({ status, updatedAt: now() }).where(eq(s.rooms.id, request.params.id)).returning();
     response.json(room);
+  });
+
+
+  router.get("/service-catalog", async (_request, response) => response.json(await db.select().from(s.serviceCatalog)));
+
+  router.post("/guests", async (request, response) => {
+    const body = z.object({ fullName: z.string().min(1), firstName: z.string().optional(), lastName: z.string().optional(), phone: z.string().optional(), email: z.string().optional(), company: z.string().optional(), language: z.string().optional(), preferredPropertyId: z.string().optional() }).parse(request.body);
+    if (body.phone || body.email) {
+      const orConditions = [];
+      if (body.phone) orConditions.push(eq(s.guests.phone, body.phone));
+      if (body.email) orConditions.push(eq(s.guests.email, body.email));
+      if (orConditions.length > 0) {
+        const [existing] = await db.select().from(s.guests).where(or(...orConditions)).limit(1);
+        if (existing) return response.status(409).json({ error: "Гость с таким контактом уже существует", existingGuestId: existing.id });
+      }
+    }
+    const guestId = id("guest");
+    const [guest] = await db.insert(s.guests).values({ id: guestId, organizationId: "org_les_live", ...body }).returning();
+    response.status(201).json(guest);
+  });
+
+  router.patch("/guests/:id", async (request, response) => {
+    const body = z.object({ fullName: z.string().optional(), firstName: z.string().optional(), lastName: z.string().optional(), phone: z.string().optional(), email: z.string().optional(), company: z.string().optional(), language: z.string().optional() }).parse(request.body);
+    const [guest] = await db.update(s.guests).set({ ...body, updatedAt: now() }).where(eq(s.guests.id, request.params.id)).returning();
+    response.json(guest);
+  });
+
+  router.post("/leads", async (request, response) => {
+    const schema = z.object({
+      guestId: z.string().optional(),
+      guest: z.object({ fullName: z.string(), firstName: z.string().optional(), lastName: z.string().optional(), phone: z.string().optional(), email: z.string().optional(), company: z.string().optional(), language: z.string().optional(), source: z.string().optional() }).optional(),
+      propertyId: z.string(), source: z.string(), stage: z.string().default("new"), intent: z.string().default("warm"), ownerId: z.string().optional(),
+      primaryDirection: z.string(), directions: z.array(z.string()).optional(),
+      interests: z.array(z.object({ direction: z.string(), isPrimary: z.boolean().optional(), notes: z.string().optional() })).optional(),
+      items: z.array(z.any()).optional(),
+      roomType: z.string().optional(), checkIn: z.string().optional(), checkOut: z.string().optional(), adults: z.number().optional(), children: z.number().optional(), totalAmount: z.number().optional(),
+      nextActionLabel: z.string().optional(), nextActionDueAt: z.string().optional(), note: z.string().optional()
+    });
+    const body = schema.parse(request.body);
+    
+    let guestId = body.guestId;
+    if (!guestId && body.guest) {
+      if (body.guest.phone || body.guest.email) {
+        const orConditions = [];
+        if (body.guest.phone) orConditions.push(eq(s.guests.phone, body.guest.phone));
+        if (body.guest.email) orConditions.push(eq(s.guests.email, body.guest.email));
+        if (orConditions.length > 0) {
+          const [existing] = await db.select().from(s.guests).where(or(...orConditions)).limit(1);
+          if (existing) return response.status(409).json({ error: "Гость с таким контактом уже существует", existingGuestId: existing.id });
+        }
+      }
+      guestId = id("guest");
+      await db.insert(s.guests).values({ id: guestId, organizationId: "org_les_live", ...body.guest });
+    }
+    if (!guestId) return response.status(400).json({ error: "Guest is required" });
+
+    let ownerId = body.ownerId;
+    if (!ownerId) {
+      const [mapping] = await db.select().from(s.employeeProperties).where(eq(s.employeeProperties.propertyId, body.propertyId)).limit(1);
+      ownerId = mapping?.employeeId ?? null;
+    }
+
+    const leadId = id("lead");
+    const code = `G-M-${Date.now().toString().slice(-7)}`;
+    const checkIn = body.checkIn ? new Date(body.checkIn).toISOString() : null;
+    const checkOut = body.checkOut ? new Date(body.checkOut).toISOString() : null;
+    let nights = 0;
+    if (checkIn && checkOut) {
+       nights = Math.max(1, Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000));
+    }
+    const probability = body.stage === "new" ? 15 : body.stage === "qualified" ? 35 : body.stage === "planning" ? 45 : body.stage === "offer" ? 60 : body.stage === "payment_pending" ? 80 : body.stage === "confirmed" ? 100 : body.stage === "completed" ? 100 : 0;
+    
+    const [lead] = await db.insert(s.leads).values({
+      id: leadId, code, guestId, propertyId: body.propertyId, source: body.source, stage: body.stage, intent: body.intent, ownerId,
+      roomType: body.roomType ?? null, checkIn, checkOut, nights, adults: body.adults ?? 0, children: body.children ?? 0, totalAmount: body.totalAmount ?? 0,
+      nextActionLabel: body.nextActionLabel ?? null, nextActionDueAt: body.nextActionDueAt ?? null, probability
+    }).returning();
+
+    await db.insert(s.leadClassifications).values({ leadId, direction: body.primaryDirection });
+
+    const interestsToInsert = [];
+    if (body.directions) {
+      for (const dir of body.directions) {
+        interestsToInsert.push({ id: id("interest"), leadId, direction: dir, isPrimary: dir === body.primaryDirection, status: "active" });
+      }
+    }
+    if (interestsToInsert.length > 0) {
+      await db.insert(s.leadInterests).values(interestsToInsert);
+    }
+
+    const itemsToInsert = [];
+    if (body.items) {
+      for (const item of body.items) {
+        itemsToInsert.push({ id: id("item"), leadId, type: item.type, name: item.name, category: item.category ?? null, quantity: item.quantity ?? 1, startAt: item.startAt ?? null, endAt: item.endAt ?? null, adults: item.adults ?? null, children: item.children ?? null, participants: item.participants ?? null, roomType: item.roomType ?? null, nights: item.nights ?? null, unitAmount: item.unitAmount ?? null, totalAmount: item.totalAmount ?? null, metadata: item.metadata ?? null });
+      }
+    }
+    if (itemsToInsert.length > 0) {
+      await db.insert(s.leadItems).values(itemsToInsert);
+    }
+
+    const employeeId = (request as any).authUser?.employeeId;
+    const timestamp = now();
+    await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId, stage: body.stage, employeeId, changedAt: timestamp });
+    await db.insert(s.leadActivities).values({ id: id("activity"), leadId, employeeId, type: "lead_created", title: "Лид создан вручную", occurredAt: timestamp });
+    if (body.note) {
+      await db.insert(s.leadActivities).values({ id: id("activity"), leadId, employeeId, type: "note", title: "Заметка", description: body.note, occurredAt: timestamp });
+    }
+    await db.insert(s.guestProperties).values({ guestId, propertyId: body.propertyId }).onConflictDoNothing();
+
+    const [finalGuest] = await db.select().from(s.guests).where(eq(s.guests.id, guestId)).limit(1);
+    response.status(201).json({ guest: finalGuest, lead, interests: interestsToInsert, items: itemsToInsert });
+  });
+
+  router.post("/leads/:id/interests", async (request, response) => {
+    const body = z.object({ direction: z.string(), isPrimary: z.boolean().optional(), notes: z.string().optional() }).parse(request.body);
+    if (body.isPrimary) {
+      await db.update(s.leadInterests).set({ isPrimary: false, updatedAt: now() }).where(and(eq(s.leadInterests.leadId, request.params.id), eq(s.leadInterests.isPrimary, true)));
+    }
+    const [interest] = await db.insert(s.leadInterests).values({ id: id("interest"), leadId: request.params.id, ...body, status: "active" }).returning();
+    response.status(201).json(interest);
+  });
+  
+  router.patch("/leads/:id/interests/:interestId", async (request, response) => {
+    const body = z.object({ direction: z.string().optional(), isPrimary: z.boolean().optional(), notes: z.string().optional() }).parse(request.body);
+    if (body.isPrimary) {
+      await db.update(s.leadInterests).set({ isPrimary: false, updatedAt: now() }).where(and(eq(s.leadInterests.leadId, request.params.id), eq(s.leadInterests.isPrimary, true)));
+    }
+    const [interest] = await db.update(s.leadInterests).set({ ...body, updatedAt: now() }).where(eq(s.leadInterests.id, request.params.interestId)).returning();
+    response.json(interest);
+  });
+
+  router.delete("/leads/:id/interests/:interestId", async (request, response) => {
+    const [interest] = await db.delete(s.leadInterests).where(eq(s.leadInterests.id, request.params.interestId)).returning();
+    if (interest?.isPrimary) {
+      const [another] = await db.select().from(s.leadInterests).where(eq(s.leadInterests.leadId, request.params.id)).limit(1);
+      if (another) {
+        await db.update(s.leadInterests).set({ isPrimary: true, updatedAt: now() }).where(eq(s.leadInterests.id, another.id));
+      }
+    }
+    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as any).authUser?.employeeId, type: "note", title: "Интерес удален", occurredAt: now() });
+    response.json({ success: true });
+  });
+
+  router.post("/leads/:id/items", async (request, response) => {
+    const body = z.any().parse(request.body);
+    const [item] = await db.insert(s.leadItems).values({ id: id("item"), leadId: request.params.id, ...body }).returning();
+    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as any).authUser?.employeeId, type: "note", title: "Добавлена позиция", occurredAt: now() });
+    response.status(201).json(item);
+  });
+
+  router.patch("/leads/:id/items/:itemId", async (request, response) => {
+    const body = z.any().parse(request.body);
+    const [item] = await db.update(s.leadItems).set({ ...body, updatedAt: now() }).where(eq(s.leadItems.id, request.params.itemId)).returning();
+    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as any).authUser?.employeeId, type: "note", title: "Позиция обновлена", occurredAt: now() });
+    response.json(item);
+  });
+
+  router.delete("/leads/:id/items/:itemId", async (request, response) => {
+    await db.delete(s.leadItems).where(eq(s.leadItems.id, request.params.itemId));
+    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: request.params.id, employeeId: (request as any).authUser?.employeeId, type: "note", title: "Позиция удалена", occurredAt: now() });
+    response.json({ success: true });
+  });
+
+  router.post("/leads/:id/payments", async (request, response) => {
+    const body = z.object({ amount: z.number(), method: z.string(), status: z.string().optional(), reference: z.string().optional(), date: z.string().optional() }).parse(request.body);
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+    if (!lead) return response.status(404).json({ error: "Лид не найден" });
+    const timestamp = body.date ? new Date(body.date).toISOString() : now();
+    await db.insert(s.guestPayments).values({ id: id("payment"), leadId: lead.id, guestId: lead.guestId, amount: body.amount, method: body.method, status: body.status ?? "paid", reference: body.reference, date: timestamp });
+    const newPaidAmount = (lead.paidAmount ?? 0) + body.amount;
+    const paymentStatus = newPaidAmount >= lead.totalAmount ? "paid" : (newPaidAmount > 0 ? "partial" : lead.paymentStatus);
+    await db.update(s.leads).set({ paidAmount: newPaidAmount, paymentStatus, updatedAt: now() }).where(eq(s.leads.id, lead.id));
+    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, employeeId: (request as any).authUser?.employeeId, type: "payment", title: "Добавлена оплата", amount: body.amount, occurredAt: timestamp });
+    response.json({ success: true, paidAmount: newPaidAmount, paymentStatus });
   });
 
   return router;

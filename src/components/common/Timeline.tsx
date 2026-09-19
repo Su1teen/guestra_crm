@@ -4,13 +4,17 @@ import {
   CreditCard,
   FileText,
   MessageSquare,
+  MinusCircle,
   Phone,
+  PlusCircle,
+  RefreshCw,
   Sparkles,
   StickyNote,
   Send,
   Eye,
   CheckSquare,
   Megaphone,
+  Tag,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ActivityEvent, ActivityType } from "@/types/crm";
@@ -32,6 +36,11 @@ const iconByType: Record<ActivityType, LucideIcon> = {
   note: StickyNote,
   task: CheckSquare,
   campaign: Megaphone,
+  interest_added: Tag,
+  interest_removed: MinusCircle,
+  item_added: PlusCircle,
+  item_updated: RefreshCw,
+  item_removed: MinusCircle,
 };
 
 const accentByType: Record<ActivityType, string> = {
@@ -48,38 +57,45 @@ const accentByType: Record<ActivityType, string> = {
   note: "bg-slate-100 text-slate-600",
   task: "bg-sky-50 text-sky-600",
   campaign: "bg-rose-50 text-rose-600",
+  interest_added: "bg-indigo-50 text-indigo-600",
+  interest_removed: "bg-rose-50 text-rose-600",
+  item_added: "bg-emerald-50 text-emerald-600",
+  item_updated: "bg-amber-50 text-amber-600",
+  item_removed: "bg-rose-50 text-rose-600",
 };
 
 export const Timeline = ({ events, className }: { events: ActivityEvent[]; className?: string }) => {
   const { employeeById } = useCrm();
-  return <ol className={cn("relative space-y-4 pl-1", className)}>
-    {events.map((event, index) => {
-      const Icon = iconByType[event.type] ?? StickyNote;
-      const employee = event.employeeId ? employeeById(event.employeeId) : undefined;
-      return (
-        <li key={event.id} className="relative flex gap-3">
-          {index < events.length - 1 && <span className="absolute left-[15px] top-8 h-full w-px bg-border" />}
-          <span
-            className={cn(
-              "relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
-              accentByType[event.type] ?? "bg-secondary text-muted-foreground",
-            )}
-          >
-            <Icon className="h-4 w-4" />
-          </span>
-          <div className="min-w-0 flex-1 pb-1">
-            <div className="flex flex-wrap items-baseline justify-between gap-x-3">
-              <p className="text-sm font-medium text-foreground">{event.title}</p>
-              <span className="text-xs text-muted-foreground">{formatDateTime(event.at)}</span>
+  return (
+    <ol className={cn("relative space-y-4 pl-1", className)}>
+      {events.map((event, index) => {
+        const Icon = iconByType[event.type] ?? StickyNote;
+        const employee = event.employeeId ? employeeById(event.employeeId) : undefined;
+        return (
+          <li key={event.id} className="relative flex gap-3">
+            {index < events.length - 1 && <span className="absolute left-[15px] top-8 h-full w-px bg-border" />}
+            <span
+              className={cn(
+                "relative z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
+                accentByType[event.type] ?? "bg-secondary text-muted-foreground",
+              )}
+            >
+              <Icon className="h-4 w-4" />
+            </span>
+            <div className="min-w-0 flex-1 pb-1">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+                <p className="text-sm font-medium text-foreground">{event.title}</p>
+                <span className="text-xs text-muted-foreground">{formatDateTime(event.at)}</span>
+              </div>
+              {event.description && <p className="mt-0.5 text-sm text-muted-foreground">{event.description}</p>}
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                {employee && <span>{employee.name}</span>}
+                {event.amount !== undefined && <span className="font-medium text-foreground">{formatTenge(event.amount)}</span>}
+              </div>
             </div>
-            {event.description && <p className="mt-0.5 text-sm text-muted-foreground">{event.description}</p>}
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              {employee && <span>{employee.name}</span>}
-              {event.amount !== undefined && <span className="font-medium text-foreground">{formatTenge(event.amount)}</span>}
-            </div>
-          </div>
-        </li>
-      );
-    })}
-  </ol>;
+          </li>
+        );
+      })}
+    </ol>
+  );
 };

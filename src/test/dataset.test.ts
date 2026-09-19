@@ -49,12 +49,15 @@ describe("Dataset consistency", () => {
     expect(crmDataset.organization.currency).toBe("KZT");
   });
 
-  it("каждый лид имеет классификацию", () => {
+  it("каждый лид имеет классификацию и новые поля resort journey", () => {
     crmDataset.leads.forEach((lead) => {
       expect(lead.classification).toBeTruthy();
       expect(lead.classification.direction).toBeTruthy();
       expect(lead.classification.quality).toBeTruthy();
       expect(lead.classification.temperature).toBeTruthy();
+      expect(Array.isArray(lead.interests)).toBe(true);
+      expect(Array.isArray(lead.items)).toBe(true);
+      expect(typeof lead.paidAmount).toBe("number");
     });
   });
 

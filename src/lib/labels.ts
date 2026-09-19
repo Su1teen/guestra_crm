@@ -29,16 +29,18 @@ import type {
 
 export type Tone = "brand" | "success" | "warning" | "danger" | "neutral" | "info";
 
-export const PIPELINE_STAGES: LeadStage[] = ["new", "qualified", "offer", "payment_pending", "confirmed"];
+export const PIPELINE_STAGES: LeadStage[] = ["new", "qualified", "planning", "offer", "payment_pending", "confirmed", "completed"];
 
 export const TERMINAL_STAGES: LeadStage[] = ["lost", "cancelled"];
 
 export const stageLabels: Record<LeadStage, string> = {
   new: "Новый",
   qualified: "Квалифицирован",
+  planning: "Комплектация",
   offer: "Предложение",
   payment_pending: "Ожидает оплаты",
   confirmed: "Подтверждён",
+  completed: "Завершён",
   lost: "Проигран",
   cancelled: "Отменён",
 };
@@ -46,9 +48,11 @@ export const stageLabels: Record<LeadStage, string> = {
 export const stageTone: Record<LeadStage, Tone> = {
   new: "info",
   qualified: "brand",
+  planning: "brand",
   offer: "brand",
   payment_pending: "warning",
   confirmed: "success",
+  completed: "success",
   lost: "danger",
   cancelled: "neutral",
 };
@@ -62,6 +66,8 @@ export const sourceLabels: Record<LeadSource, string> = {
   returning: "Повторный гость",
   corporate: "Корпоративный клиент",
   referral: "Рекомендация",
+  email: "Email",
+  walk_in: "Визит",
 };
 
 export const intentLabels: Record<LeadIntent, string> = {
@@ -265,6 +271,7 @@ export const directionLabels: Record<InterestDirection, string> = {
   wedding_or_banquet: "Свадьба / банкет",
   restaurant: "Ресторан SOVA",
   spa: "SPA",
+  massage: "Массаж",
   bathhouse: "Бани и чаны",
   karaoke: "Караоке",
   activities: "Активности",
@@ -283,6 +290,7 @@ export const directionTone: Record<InterestDirection, Tone> = {
   wedding_or_banquet: "brand",
   restaurant: "warning",
   spa: "success",
+  massage: "success",
   bathhouse: "warning",
   karaoke: "info",
   activities: "info",
@@ -302,6 +310,7 @@ export const directionRoute: Record<InterestDirection, OperationalRoute | "sales
   wedding_or_banquet: "sales",
   restaurant: "restaurant",
   spa: "spa",
+  massage: "spa",
   bathhouse: "spa",
   karaoke: "restaurant",
   activities: "reception",
@@ -562,4 +571,29 @@ export const extendedSegmentLabels: Record<SegmentKey, string> = {
   cancellers: "Отменявшие",
   no_response_after_offer: "Не ответили после предложения",
   reactivation_ready: "Готовы к реактивации",
+};
+
+export const itemTypeLabels: Record<string, string> = {
+  accommodation: "Проживание",
+  restaurant: "Ресторан",
+  spa: "SPA",
+  massage: "Массаж",
+  bathhouse: "Баня",
+  karaoke: "Караоке",
+  horse_riding: "Конная прогулка",
+  atv: "Квадроциклы",
+  activity: "Активность",
+  transfer: "Трансфер",
+  corporate_event: "Корпоратив",
+  wedding_or_banquet: "Свадьба / банкет",
+  other: "Другое",
+};
+
+export const itemStatusLabels: Record<string, string> = {
+  interest: "Интерес",
+  selected: "Выбрано",
+  quoted: "Рассчитано",
+  confirmed: "Подтверждено",
+  completed: "Завершено",
+  cancelled: "Отменено",
 };

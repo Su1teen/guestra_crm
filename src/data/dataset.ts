@@ -30,6 +30,8 @@ import type {
   InterestDirection,
   Lead,
   LeadIntent,
+  LeadInterest,
+  LeadItem,
   LeadQuality,
   LeadServiceLine,
   LeadSource,
@@ -52,6 +54,7 @@ import type {
   SalesMetricPoint,
   Segment,
   SegmentKey,
+  ServiceCatalogEntry,
   SpecialRequestEntry,
   SpecialRequestType,
   Task,
@@ -367,23 +370,27 @@ interface LeadPlan {
 }
 
 const leadPlan: LeadPlan[] = [
-  { stage: "new", count: 11 },
-  { stage: "qualified", count: 9 },
-  { stage: "offer", count: 8 },
-  { stage: "payment_pending", count: 8 },
-  { stage: "confirmed", count: 9 },
-  { stage: "lost", count: 5 },
+  { stage: "new", count: 10 },
+  { stage: "qualified", count: 7 },
+  { stage: "planning", count: 6 },
+  { stage: "offer", count: 7 },
+  { stage: "payment_pending", count: 7 },
+  { stage: "confirmed", count: 7 },
+  { stage: "completed", count: 3 },
+  { stage: "lost", count: 4 },
   { stage: "cancelled", count: 2 },
 ];
 
-const sources: LeadSource[] = ["whatsapp", "website", "phone", "instagram", "returning", "corporate", "referral"];
+const sources: LeadSource[] = ["whatsapp", "website", "phone", "instagram", "returning", "corporate", "referral", "email", "walk_in"];
 
 const nextActionsByStage: Record<LeadStage, string[]> = {
-  new: ["Позвонить и уточнить даты", "Ответить в WhatsApp", "Проверить доступность и написать"],
-  qualified: ["Подготовить предложение", "Согласовать категорию размещения", "Уточнить количество гостей"],
+  new: ["Позвонить и уточнить запрос", "Ответить в чате", "Проверить доступность и написать"],
+  qualified: ["Согласовать состав услуг", "Уточнить детали запроса", "Сформировать потребности"],
+  planning: ["Скомплектовать услуги", "Согласовать даты и участников", "Подготовить расчёт"],
   offer: ["Follow-up по предложению", "Позвонить и обсудить предложение", "Напомнить о сроке действия"],
-  payment_pending: ["Напомнить о предоплате", "Отправить реквизиты повторно", "Уточнить статус оплаты"],
-  confirmed: ["Отправить подтверждение и памятку", "Согласовать трансфер", "Передать пожелания службе приёма"],
+  payment_pending: ["Напомнить об оплате", "Отправить реквизиты повторно", "Уточнить статус оплаты"],
+  confirmed: ["Отправить подтверждение и памятку", "Согласовать трансфер", "Передать пожелания службам"],
+  completed: ["Запросить отзыв о визите", "Поблагодарить за выбор курорта"],
   lost: ["Добавить в кампанию реактивации"],
   cancelled: ["Уточнить причину отмены"],
 };
@@ -422,8 +429,8 @@ const nextGuestForLead = (preferReturning: boolean) => {
 };
 
 const buildStageHistory = (stage: LeadStage, createdAt: string, ownerId: string): LeadStageHistory[] => {
-  const order: LeadStage[] = ["new", "qualified", "offer", "payment_pending", "confirmed"];
-  const target = stage === "lost" || stage === "cancelled" ? int(1, 3) : order.indexOf(stage);
+  const order: LeadStage[] = ["new", "qualified", "planning", "offer", "payment_pending", "confirmed", "completed"];
+  const target = stage === "lost" || stage === "cancelled" ? int(1, 4) : order.indexOf(stage);
   const history: LeadStageHistory[] = [];
   const base = new Date(createdAt).getTime();
   for (let index = 0; index <= target; index += 1) {
@@ -446,11 +453,13 @@ const buildStageHistory = (stage: LeadStage, createdAt: string, ownerId: string)
 const stageActivityTitle: Record<LeadStage, string> = {
   new: "Лид создан",
   qualified: "Лид квалифицирован",
+  planning: "Комплектация сделки",
   offer: "Стадия: предложение",
   payment_pending: "Ожидает оплаты",
-  confirmed: "Бронирование подтверждено",
+  confirmed: "Заказ подтверждён",
+  completed: "Услуга / проживание завершено",
   lost: "Лид проигран",
-  cancelled: "Бронирование отменено",
+  cancelled: "Заказ отменён",
 };
 
 const messageScripts: Record<Channel, { in: string[]; out: string[] }> = {
@@ -676,16 +685,16 @@ leadPlan.forEach(({ stage, count }) => {
           : pick([40, 180, 420, 1_300, 2_100, 3_400]);
     const lastActivityAt = minutesAgo(lastActivityMinutes);
     const intent: LeadIntent =
-      stage === "payment_pending" || stage === "confirmed"
+      stage === "payment_pending" || stage === "confirmed" || stage === "completed"
         ? "hot"
-        : lastActivityMinutes < 120 && (stage === "offer" || stage === "qualified")
+        : lastActivityMinutes < 120 && (stage === "offer" || stage === "qualified" || stage === "planning")
           ? "hot"
           : lastActivityMinutes < 1_440
             ? "warm"
             : "cold";
 
     const paymentStatus: PaymentStatus =
-      stage === "confirmed" ? (chance(0.4) ? "paid" : "partial") : stage === "payment_pending" ? "awaiting" : stage === "cancelled" ? "refunded" : "not_required";
+      stage === "confirmed" || stage === "completed" ? (chance(0.4) ? "paid" : "partial") : stage === "payment_pending" ? "awaiting" : stage === "cancelled" ? "refunded" : "not_required";
     const deposit = Math.round(totalAmount / 2 / 1000) * 1000;
     const stageHistory = buildStageHistory(stage, createdAt, owner.id);
     const leadId = `lead_${String(leadCounter).padStart(3, "0")}`;
@@ -877,6 +886,88 @@ leadPlan.forEach(({ stage, count }) => {
     const leadSpecialRequests = generateSpecialRequests(children > 0, direction, random);
 
     const nextActionPool = nextActionsByStage[stage];
+
+    const leadInterestsList: LeadInterest[] = [
+      {
+        id: `interest_${leadId}_primary`,
+        leadId,
+        direction,
+        isPrimary: true,
+        status: "active",
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ];
+
+    if (serviceLines.length > 0) {
+      if (serviceLines.some((s) => s.name.toLowerCase().includes("spa"))) {
+        leadInterestsList.push({
+          id: `interest_${leadId}_spa`,
+          leadId,
+          direction: "spa",
+          isPrimary: false,
+          status: "active",
+          createdAt,
+          updatedAt: createdAt,
+        });
+      }
+      if (serviceLines.some((s) => s.name.toLowerCase().includes("ресторан") || s.name.toLowerCase().includes("завтрак"))) {
+        leadInterestsList.push({
+          id: `interest_${leadId}_rest`,
+          leadId,
+          direction: "restaurant",
+          isPrimary: false,
+          status: "active",
+          createdAt,
+          updatedAt: createdAt,
+        });
+      }
+    }
+
+    const leadItemsList: LeadItem[] = [];
+    if (roomType) {
+      leadItemsList.push({
+        id: `item_${leadId}_acc`,
+        leadId,
+        interestId: `interest_${leadId}_primary`,
+        type: "accommodation",
+        name: roomType,
+        status: stage === "confirmed" || stage === "completed" ? "confirmed" : stage === "offer" ? "quoted" : "selected",
+        quantity: 1,
+        roomType,
+        nights,
+        adults,
+        children,
+        startAt: checkIn.toISOString(),
+        endAt: checkOut.toISOString(),
+        totalAmount: roomAmount,
+        currency: "KZT",
+        createdAt,
+        updatedAt: createdAt,
+      });
+    }
+
+    serviceLines.forEach((sLine, sIdx) => {
+      const isSpa = sLine.name.toLowerCase().includes("spa");
+      const isRest = sLine.name.toLowerCase().includes("ресторан") || sLine.name.toLowerCase().includes("завтрак");
+      const isHorse = sLine.name.toLowerCase().includes("лошад");
+      const isBath = sLine.name.toLowerCase().includes("бан");
+      const isTransfer = sLine.name.toLowerCase().includes("трансфер");
+      const itemType = isSpa ? "spa" : isRest ? "restaurant" : isHorse ? "horse_riding" : isBath ? "bathhouse" : isTransfer ? "transfer" : "other";
+      leadItemsList.push({
+        id: `item_${leadId}_svc_${sIdx}`,
+        leadId,
+        type: itemType,
+        name: sLine.name,
+        status: stage === "confirmed" || stage === "completed" ? "confirmed" : "selected",
+        quantity: 1,
+        totalAmount: sLine.amount,
+        currency: "KZT",
+        createdAt,
+        updatedAt: createdAt,
+      });
+    });
+
     const lead: Lead = {
       id: leadId,
       code,
@@ -896,6 +987,7 @@ leadPlan.forEach(({ stage, count }) => {
       discount,
       totalAmount,
       deposit,
+      paidAmount: paymentStatus === "paid" ? totalAmount : paymentStatus === "partial" ? deposit : 0,
       paymentStatus,
       ownerId: owner.id,
       createdAt,
@@ -905,7 +997,7 @@ leadPlan.forEach(({ stage, count }) => {
           ? undefined
           : { label: pick(nextActionPool), dueAt: at(int(0, 4), pick([10, 12, 15, 18]), pick([0, 30])) },
       probability:
-        stage === "new" ? 15 : stage === "qualified" ? 35 : stage === "offer" ? 55 : stage === "payment_pending" ? 80 : stage === "confirmed" ? 100 : 0,
+        stage === "new" ? 15 : stage === "qualified" ? 35 : stage === "planning" ? 45 : stage === "offer" ? 60 : stage === "payment_pending" ? 80 : stage === "confirmed" || stage === "completed" ? 100 : 0,
       firstResponseMinutes,
       slaMinutes,
       lostReason: stage === "lost" ? pick(lostReasons) : undefined,
@@ -913,8 +1005,14 @@ leadPlan.forEach(({ stage, count }) => {
       specialRequest: chance(0.45) ? pick(specialRequests) : undefined,
       stageHistory,
       activity,
-      classification,
+      classification: {
+        ...classification,
+        primaryDirection: direction,
+        directions: leadInterestsList.map((i) => i.direction),
+      },
       specialRequests: leadSpecialRequests,
+      interests: leadInterestsList,
+      items: leadItemsList,
     };
 
     leads.push(lead);
@@ -1626,6 +1724,17 @@ for (let dayOffset = 30; dayOffset >= 0; dayOffset -= 1) {
   });
 }
 
+const mockServiceCatalog: ServiceCatalogEntry[] = [
+  { id: "svc_restaurant_sova", propertyId: "les_borovoe", code: "restaurant_sova", category: "restaurant", name: "Ресторан SOVA", pricingMode: "quote", currency: "KZT", active: true },
+  { id: "svc_spa_visit", propertyId: "les_borovoe", code: "spa_visit", category: "spa", name: "SPA визит", pricingMode: "per_person", defaultPrice: 12000, currency: "KZT", active: true },
+  { id: "svc_massage", propertyId: "les_borovoe", code: "massage", category: "massage", name: "Массаж", pricingMode: "per_person", defaultPrice: 15000, currency: "KZT", active: true },
+  { id: "svc_bathhouse", propertyId: "les_borovoe", code: "bathhouse", category: "bathhouse", name: "Баня", pricingMode: "per_hour", defaultPrice: 25000, currency: "KZT", active: true },
+  { id: "svc_karaoke", propertyId: "les_borovoe", code: "karaoke", category: "karaoke", name: "Караоке", pricingMode: "per_hour", defaultPrice: 15000, currency: "KZT", active: true },
+  { id: "svc_horse_riding", propertyId: "les_borovoe", code: "horse_riding", category: "activities", name: "Конная прогулка", pricingMode: "per_person", defaultPrice: 10000, currency: "KZT", active: true },
+  { id: "svc_atv", propertyId: "les_borovoe", code: "atv", category: "activities", name: "Квадроциклы", pricingMode: "per_person", defaultPrice: 15000, currency: "KZT", active: true },
+  { id: "svc_transfer", propertyId: "les_borovoe", code: "transfer", category: "transfer", name: "Трансфер", pricingMode: "fixed", defaultPrice: 35000, currency: "KZT", active: true },
+];
+
 export const crmDataset: CrmDataset = {
   organization,
   properties,
@@ -1649,6 +1758,7 @@ export const crmDataset: CrmDataset = {
   maintenanceTickets,
   operationalTasks,
   pmsSnapshots,
+  serviceCatalog: mockServiceCatalog,
 };
 
 export const findGuest = guestById;

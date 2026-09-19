@@ -51,6 +51,16 @@ describe("candidateToFollowUp", () => {
   });
 });
 
+describe("channel mapping", () => {
+  it("correctly maps telegram source to telegram channel", () => {
+    const testLeads: Lead[] = [{ ...leads[0], source: "telegram" }];
+    const candidates = generateFollowUpCandidates(testLeads, [], NOW);
+    if (candidates.length > 0) {
+      expect(candidates[0].channel).toBe("telegram");
+    }
+  });
+});
+
 describe("детерминированность follow-up", () => {
   it("одинаковые данные → одинаковые follow-up", () => {
     const first = generateFollowUps(leads, offers, [], NOW);

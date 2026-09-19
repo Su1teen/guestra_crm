@@ -102,6 +102,56 @@ export const bootstrapDatabase = async (db: Database, config: Pick<AppConfig,
   await db.insert(s.maintenanceTickets).values({ id: "mnt_live_1", code: "РЗ-LIVE-001", roomId: "room_live_a101", propertyId: "les_astana", zone: "Главный корпус", category: "air_conditioning", description: "Не работает кондиционер", priority: "high", status: "assigned", assigneeId: "emp_live_timur", discoveredAt: date("2026-09-19T09:00:00Z"), slaDueAt: date("2026-09-20T09:00:00Z"), blocksRoom: true }).onConflictDoNothing();
   await db.insert(s.operationalTasks).values({ id: "opt_live_1", leadId: "lead_live_1", guestId: "guest_live_1", propertyId: "les_borovoe", route: "housekeeping", title: "Подготовить детскую кроватку", status: "open", priority: "medium", dueAt: date("2026-10-09T14:00:00Z"), assigneeId: "emp_live_aigerim", source: "lead" }).onConflictDoNothing();
 
+  
+  await db.insert(s.serviceCatalog).values([
+    { id: "svc_restaurant_sova", propertyId: "les_borovoe", code: "restaurant_sova", category: "restaurant", name: "Ресторан SOVA", pricingMode: "quote", currency: "KZT" },
+    { id: "svc_spa_visit", propertyId: "les_borovoe", code: "spa_visit", category: "spa", name: "SPA визит", pricingMode: "per_person", defaultPrice: 12000, currency: "KZT" },
+    { id: "svc_massage", propertyId: "les_borovoe", code: "massage", category: "massage", name: "Массаж", pricingMode: "per_person", defaultPrice: 15000, currency: "KZT" },
+    { id: "svc_bathhouse", propertyId: "les_borovoe", code: "bathhouse", category: "bathhouse", name: "Баня", pricingMode: "per_hour", defaultPrice: 25000, currency: "KZT" },
+    { id: "svc_karaoke", propertyId: "les_borovoe", code: "karaoke", category: "karaoke", name: "Караоке", pricingMode: "per_hour", defaultPrice: 15000, currency: "KZT" },
+    { id: "svc_horse_riding", propertyId: "les_borovoe", code: "horse_riding", category: "activities", name: "Конная прогулка", pricingMode: "per_person", defaultPrice: 10000, currency: "KZT" },
+    { id: "svc_atv", propertyId: "les_borovoe", code: "atv", category: "activities", name: "Квадроциклы", pricingMode: "per_person", defaultPrice: 15000, currency: "KZT" },
+    { id: "svc_transfer", propertyId: "les_borovoe", code: "transfer", category: "transfer", name: "Трансфер", pricingMode: "fixed", defaultPrice: 35000, currency: "KZT" }
+  ]).onConflictDoNothing();
+
+  await db.insert(s.leadInterests).values([
+    { id: "interest_live_1_acc", leadId: "lead_live_1", direction: "accommodation", isPrimary: true, status: "active" },
+    { id: "interest_live_1_spa", leadId: "lead_live_1", direction: "spa", isPrimary: false, status: "active" },
+    { id: "interest_live_1_rest", leadId: "lead_live_1", direction: "restaurant", isPrimary: false, status: "active" }
+  ]).onConflictDoNothing();
+
+  await db.insert(s.leadItems).values([
+    { id: "item_live_1_sky", leadId: "lead_live_1", type: "accommodation", name: "Sky House", status: "quoted", quantity: 2, startAt: date("2026-10-10T12:00:00Z"), endAt: date("2026-10-12T12:00:00Z"), adults: 4, children: 0, roomType: "Sky House", nights: 2, totalAmount: 340000 },
+    { id: "item_live_1_spa", leadId: "lead_live_1", interestId: "interest_live_1_spa", type: "spa", name: "SPA визит", status: "quoted", quantity: 4, participants: 4, totalAmount: 48000 },
+    { id: "item_live_1_rest", leadId: "lead_live_1", interestId: "interest_live_1_rest", type: "restaurant", name: "SOVA", status: "interest", quantity: 1, participants: 4 }
+  ]).onConflictDoNothing();
+
+  await db.insert(s.guests).values({
+    id: "guest_live_3", organizationId: "org_les_live", firstName: "Айдана", lastName: "Муратова", fullName: "Айдана Муратова", phone: "+7 702 111 22 33", language: "Русский", preferredPropertyId: "les_borovoe"
+  }).onConflictDoNothing();
+  
+  await db.insert(s.guestProperties).values({ guestId: "guest_live_3", propertyId: "les_borovoe" }).onConflictDoNothing();
+
+  await db.insert(s.leads).values({
+    id: "lead_live_3", code: "G-LIVE-003", guestId: "guest_live_3", propertyId: "les_borovoe", source: "instagram", stage: "planning", intent: "warm", probability: 45, ownerId: "emp_live_aigerim", totalAmount: 0
+  }).onConflictDoNothing();
+
+  await db.insert(s.leadClassifications).values({
+    leadId: "lead_live_3", direction: "activities", quality: "target", temperature: "warm", probability: 45, recommendedAction: "Уточнить дату и количество участников"
+  }).onConflictDoNothing();
+
+  await db.insert(s.leadInterests).values({
+    id: "interest_live_3_act", leadId: "lead_live_3", direction: "activities", isPrimary: true, status: "active"
+  }).onConflictDoNothing();
+
+  await db.insert(s.leadItems).values([
+    { id: "item_live_3_horse", leadId: "lead_live_3", interestId: "interest_live_3_act", type: "horse_riding", name: "Конная прогулка", status: "selected", quantity: 4, participants: 4 },
+    { id: "item_live_3_atv", leadId: "lead_live_3", interestId: "interest_live_3_act", type: "atv", name: "Квадроциклы", status: "selected", quantity: 2, participants: 4 }
+  ]).onConflictDoNothing();
+
+  await db.insert(s.leadStageHistory).values({ id: "lsh_live_3_planning", leadId: "lead_live_3", stage: "planning", employeeId: "emp_live_aigerim", changedAt: date("2026-09-18T10:00:00Z") }).onConflictDoNothing();
+  await db.insert(s.leadActivities).values({ id: "la_live_3", leadId: "lead_live_3", employeeId: "emp_live_aigerim", type: "lead_created", title: "Лид создан", occurredAt: date("2026-09-18T10:00:00Z") }).onConflictDoNothing();
+
   await db.insert(s.salesMetricSnapshots).values([
     { id: "metric_live_b_1", date: date("2026-09-18T00:00:00Z"), propertyId: "les_borovoe", leads: 1, qualified: 1, offers: 1, confirmed: 0, revenue: 0, lost: 0 },
     { id: "metric_live_a_1", date: date("2026-09-18T00:00:00Z"), propertyId: "les_astana", leads: 1, qualified: 1, offers: 0, confirmed: 0, revenue: 0, lost: 0 },

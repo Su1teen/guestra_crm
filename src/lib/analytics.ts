@@ -49,7 +49,7 @@ export interface SalesSummary {
 
 export const summarizeSales = (leads: Lead[], offers: Offer[], tasks: Task[], now = new Date()): SalesSummary => {
   const openLeads = leads.filter(isOpen);
-  const confirmed = leads.filter((lead) => lead.stage === "confirmed");
+  const confirmed = leads.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed");
   const lost = leads.filter((lead) => lead.stage === "lost");
   const pendingPayment = leads.filter((lead) => lead.stage === "payment_pending");
   const closed = confirmed.length + lost.length + leads.filter((lead) => lead.stage === "cancelled").length;
@@ -116,7 +116,7 @@ export const groupBy = <T, K extends string>(items: T[], keyOf: (item: T) => K) 
 };
 
 const performanceOf = (key: string, leads: Lead[]): GroupPerformance => {
-  const confirmed = leads.filter((lead) => lead.stage === "confirmed");
+  const confirmed = leads.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed");
   return {
     key,
     leads: leads.length,
@@ -208,7 +208,7 @@ export const employeePerformance = (
   employees
     .map((employee) => {
       const ownLeads = leads.filter((lead) => lead.ownerId === employee.id);
-      const confirmed = ownLeads.filter((lead) => lead.stage === "confirmed");
+      const confirmed = ownLeads.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed");
       const ownTasks = tasks.filter((task) => task.ownerId === employee.id);
       const doneTasks = ownTasks.filter((task) => task.status === "done");
       return {
@@ -324,9 +324,9 @@ export const stageConversion = (leads: Lead[]): StageConversion[] => {
  * возможности (confirmed + lost, без cancelled и non_target).
  */
 export const overallConversion = (leads: Lead[]): number | null => {
-  const closed = leads.filter((lead) => lead.stage === "confirmed" || lead.stage === "lost");
+  const closed = leads.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed" || lead.stage === "lost");
   if (closed.length === 0) return null;
-  const confirmed = leads.filter((lead) => lead.stage === "confirmed").length;
+  const confirmed = leads.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed").length;
   return (confirmed / closed.length) * 100;
 };
 
@@ -346,7 +346,7 @@ export const breakdownByDirection = (leads: Lead[]): DirectionBreakdown[] => {
   const groups = groupBy(leads, (lead) => lead.classification.direction);
   return [...groups]
     .map(([direction, group]) => {
-      const confirmed = group.filter((lead) => lead.stage === "confirmed");
+      const confirmed = group.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed");
       const closed = group.filter((lead) => lead.stage === "confirmed" || lead.stage === "lost");
       return {
         direction,
@@ -402,7 +402,7 @@ export const breakdownByCategory = (leads: Lead[]): CategoryBreakdown[] => {
   const groups = groupBy(leads, (lead) => lead.roomType);
   return [...groups]
     .map(([category, group]) => {
-      const confirmed = group.filter((lead) => lead.stage === "confirmed");
+      const confirmed = group.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed");
       return {
         category,
         count: group.length,
@@ -420,7 +420,7 @@ export const revenueByEmployee = (
   employees
     .map((employee) => {
       const ownLeads = leads.filter((lead) => lead.ownerId === employee.id);
-      const confirmed = ownLeads.filter((lead) => lead.stage === "confirmed");
+      const confirmed = ownLeads.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed");
       return {
         employee,
         revenue: sum(confirmed.map((lead) => lead.totalAmount)),
@@ -442,7 +442,7 @@ export const missedRevenue = (leads: Lead[]): number =>
 // ---------------------------------------------------------------------------
 
 export const avgCloseDays = (leads: Lead[]): number | null => {
-  const confirmed = leads.filter((lead) => lead.stage === "confirmed");
+  const confirmed = leads.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed");
   if (confirmed.length === 0) return null;
   const durations = confirmed.map((lead) => {
     const lastStage = lead.stageHistory[lead.stageHistory.length - 1];
@@ -456,7 +456,7 @@ export const avgCloseDays = (leads: Lead[]): number | null => {
 // ---------------------------------------------------------------------------
 
 export const avgCheck = (leads: Lead[]): number | null => {
-  const confirmed = leads.filter((lead) => lead.stage === "confirmed");
+  const confirmed = leads.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed");
   if (confirmed.length === 0) return null;
   return Math.round(sum(confirmed.map((lead) => lead.totalAmount)) / confirmed.length);
 };
@@ -555,3 +555,39 @@ export const conversationSlaRate = (conversations: Conversation[]): number | nul
   }).length;
   return (inSla / withResponse.length) * 100;
 };
+
+/** Breakdown leads by item type, counting revenue from lead.items */
+export function breakdownByItemType(leads: Lead[]): Array<{ type: string; count: number; revenue: number }> {
+  const map = new Map<string, { count: number; revenue: number }>();
+  for (const lead of leads) {
+    for (const item of lead.items ?? []) {
+      const entry = map.get(item.type) ?? { count: 0, revenue: 0 };
+      entry.count += item.quantity || 1;
+      entry.revenue += item.totalAmount ?? 0;
+      map.set(item.type, entry);
+    }
+  }
+  return Array.from(map.entries()).map(([type, data]) => ({ type, ...data })).sort((a, b) => b.revenue - a.revenue);
+}
+
+/** Percentage of target leads with >1 commercial interest */
+export function crossSellRate(leads: Lead[]): number {
+  const target = leads.filter(l => (l.interests?.length ?? 0) > 0);
+  if (target.length === 0) return 0;
+  const multiInterest = target.filter(l => {
+    const commercial = (l.interests ?? []).filter(i => !['partnership', 'vacancy', 'supplier', 'spam', 'wrong_contact', 'other'].includes(i.direction));
+    return commercial.length > 1;
+  });
+  return (multiInterest.length / target.length) * 100;
+}
+
+/** Count of each item type across all leads */
+export function serviceMix(leads: Lead[]): Array<{ type: string; count: number }> {
+  const map = new Map<string, number>();
+  for (const lead of leads) {
+    for (const item of lead.items ?? []) {
+      map.set(item.type, (map.get(item.type) ?? 0) + (item.quantity || 1));
+    }
+  }
+  return Array.from(map.entries()).map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count);
+}

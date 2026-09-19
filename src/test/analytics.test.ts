@@ -85,10 +85,10 @@ describe("overallConversion", () => {
     }
   });
 
-  it("конверсия = confirmed / (confirmed + lost)", () => {
-    const confirmed = leads.filter((lead) => lead.stage === "confirmed").length;
+  it("конверсия = (confirmed + completed) / (confirmed + completed + lost)", () => {
+    const won = leads.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed").length;
     const lost = leads.filter((lead) => lead.stage === "lost").length;
-    const expected = confirmed + lost > 0 ? (confirmed / (confirmed + lost)) * 100 : null;
+    const expected = won + lost > 0 ? (won / (won + lost)) * 100 : null;
     expect(overallConversion(leads)).toBe(expected);
   });
 });
@@ -207,9 +207,10 @@ describe("comparePeriods", () => {
 });
 
 describe("OPEN_STAGES и isOpen", () => {
-  it("открытые стадии не включают lost/cancelled/confirmed", () => {
+  it("открытые стадии не включают lost/cancelled/confirmed/completed", () => {
     expect(OPEN_STAGES).not.toContain("lost");
     expect(OPEN_STAGES).not.toContain("cancelled");
     expect(OPEN_STAGES).not.toContain("confirmed");
+    expect(OPEN_STAGES).not.toContain("completed");
   });
 });

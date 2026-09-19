@@ -23,6 +23,8 @@ import type {
 
 export interface ClassificationSignals {
   direction: InterestDirection;
+  primaryDirection?: InterestDirection;
+  directions?: InterestDirection[];
   hasDates: boolean;
   hasGuests: boolean;
   hasCategory: boolean;
@@ -45,6 +47,7 @@ export interface ClassificationSignals {
   offerViewed: boolean;
   offerSent: boolean;
   stage: LeadStage;
+  intent?: LeadTemperature;
 }
 
 const SLA_BY_DIRECTION: Partial<Record<InterestDirection, number>> = {
@@ -62,7 +65,7 @@ const SLA_BY_DIRECTION: Partial<Record<InterestDirection, number>> = {
 export const slaMinutesFor = (direction: InterestDirection): number => SLA_BY_DIRECTION[direction] ?? 30;
 
 /** Направления, которые считаются нецелевыми по умолчанию. */
-const NON_TARGET_DIRECTIONS: InterestDirection[] = ["spam", "wrong_contact", "vacancy", "supplier"];
+const NON_TARGET_DIRECTIONS: InterestDirection[] = ["spam", "wrong_contact", "vacancy", "supplier", "partnership"];
 
 const isNonTargetDirection = (direction: InterestDirection) => NON_TARGET_DIRECTIONS.includes(direction);
 
@@ -104,19 +107,23 @@ export const classifyQuality = (signals: ClassificationSignals): LeadQuality => 
 export const classifyTemperature = (signals: ClassificationSignals): LeadTemperature => {
   if (signals.stage === "payment_pending" || signals.stage === "confirmed") return "hot";
   if (signals.readyForPrepayment || signals.askedAboutPayment) return "hot";
+  if (signals.intent === "hot") return "hot";
+  if (signals.hasDates && signals.stage === "offer") return "hot";
   if (signals.returnedToOffer && signals.offerViewed) return "hot";
+  if (signals.offerSent) return "warm";
+  if (signals.intent === "warm") return "warm";
   if (signals.hoursSinceLastInbound <= 2 && (signals.stage === "offer" || signals.stage === "qualified")) return "hot";
   if (signals.hoursSinceLastInbound <= 24) return "warm";
   if (signals.offerViewed && signals.hoursSinceLastInbound <= 48) return "warm";
   if (signals.daysUntilCheckIn <= 5 && signals.daysUntilCheckIn >= 0) return "warm";
-  return "cold";
+  return signals.intent || "cold";
 };
 
 const buildReasons = (signals: ClassificationSignals): ClassificationReason[] => {
   const reasons: ClassificationReason[] = [];
   if (signals.hasDates) reasons.push({ code: "has_dates", label: "Названы точные даты" });
   if (signals.hasGuests) reasons.push({ code: "has_guests", label: "Указано количество гостей" });
-  if (signals.hasCategory) reasons.push({ code: "has_category", label: "Выбрана категория размещения" });
+  if (signals.hasCategory) reasons.push({ code: "has_category", label: "Выбрана категория/услуга" });
   if (signals.requestedQuote) reasons.push({ code: "requested_quote", label: "Запрошен расчёт" });
   if (signals.readyForOffer) reasons.push({ code: "ready_for_offer", label: "Готов получить предложение" });
   if (signals.askedAboutPayment) reasons.push({ code: "asked_payment", label: "Спрашивает об оплате" });
@@ -134,15 +141,39 @@ const buildReasons = (signals: ClassificationSignals): ClassificationReason[] =>
   if (signals.hoursSinceLastInbound > 18 && signals.stage !== "confirmed")
     reasons.push({ code: "no_response_18h", label: `Нет ответа ${Math.round(signals.hoursSinceLastInbound)} ч` });
   if (signals.daysUntilCheckIn <= 5 && signals.daysUntilCheckIn >= 0)
-    reasons.push({ code: "soon_checkin", label: `До заезда ${signals.daysUntilCheckIn} дн.` });
+    reasons.push({ code: "soon_checkin", label: `До визита ${signals.daysUntilCheckIn} дн.` });
   return reasons;
 };
 
 const buildMissingData = (signals: ClassificationSignals): string[] => {
   const missing: string[] = [];
-  if (!signals.hasDates) missing.push("даты заезда");
-  if (!signals.hasGuests) missing.push("количество гостей");
-  if (!signals.hasCategory && signals.direction === "accommodation") missing.push("категория размещения");
+  if (signals.direction === "accommodation") {
+    if (!signals.hasDates) missing.push("даты заезда");
+    if (!signals.hasGuests) missing.push("количество гостей");
+    if (!signals.hasCategory) missing.push("категория размещения");
+  } else if (signals.direction === "restaurant") {
+    if (!signals.hasDates) missing.push("дата и время");
+    if (!signals.hasGuests) missing.push("размер компании");
+  } else if (["spa", "bathhouse", "karaoke"].includes(signals.direction)) {
+    if (!signals.hasDates) missing.push("дата и время");
+    if (!signals.hasGuests) missing.push("участники");
+  } else if (signals.direction === "activities") {
+    if (!signals.hasCategory) missing.push("тип активности");
+    if (!signals.hasDates) missing.push("дата и время");
+    if (!signals.hasGuests) missing.push("участники");
+  } else if (signals.direction === "transfer") {
+    if (!signals.hasCategory) missing.push("место подачи");
+    if (!signals.hasGuests) missing.push("пункт назначения");
+    if (!signals.hasDates) missing.push("дата и время");
+  } else if (["corporate_event", "wedding_or_banquet"].includes(signals.direction)) {
+    if (!signals.hasDates) missing.push("дата");
+    if (!signals.hasGuests) missing.push("количество гостей");
+    if (!signals.hasCategory) missing.push("формат мероприятия");
+  } else {
+    if (!signals.hasDates) missing.push("даты");
+    if (!signals.hasGuests) missing.push("детали");
+  }
+  
   if (!signals.contactCollected) missing.push("контактные данные");
   if (!signals.nextStepAgreed) missing.push("согласованный следующий шаг");
   return missing;
@@ -158,8 +189,8 @@ const recommendedActionFor = (
     return "Закрыть обращение как нецелевое";
   }
   if (quality === "needs_qualification") {
-    if (!signals.hasDates) return "Уточнить даты заезда";
-    if (!signals.hasGuests) return "Уточнить количество гостей";
+    if (!signals.hasDates) return "Уточнить даты/время";
+    if (!signals.hasGuests) return "Уточнить количество гостей/участников";
     if (!signals.contactCollected) return "Собрать контактные данные";
     return "Согласовать следующий шаг с гостем";
   }
@@ -184,9 +215,11 @@ const probabilityFor = (quality: LeadQuality, temperature: LeadTemperature, stag
     confirmed: 100,
     lost: 0,
     cancelled: 0,
-  };
+    completed: 100,
+    planning: 45,
+  } as Record<LeadStage, number>;
   const tempBoost = temperature === "hot" ? 15 : temperature === "warm" ? 5 : 0;
-  return Math.min(100, base[stage] + tempBoost);
+  return Math.min(100, (base[stage] ?? 10) + tempBoost);
 };
 
 /**
@@ -199,6 +232,8 @@ export const classify = (signals: ClassificationSignals): ClassificationSnapshot
   const probability = probabilityFor(quality, temperature, signals.stage);
   return {
     direction: signals.direction,
+    primaryDirection: signals.primaryDirection,
+    directions: signals.directions,
     quality,
     temperature,
     probability,
@@ -225,29 +260,50 @@ export const applyManualOverride = (
 });
 
 /** Извлекает сигналы из готового лида (для пересчёта и отображения). */
-export const signalsFromLead = (lead: Lead, hoursSinceLastInbound: number): ClassificationSignals => ({
-  direction: lead.classification.direction,
-  hasDates: Boolean(lead.checkIn) && Boolean(lead.checkOut),
-  hasGuests: lead.adults > 0,
-  hasCategory: Boolean(lead.roomType),
-  requestedQuote: lead.stageHistory.some((entry) => entry.stage === "offer") || lead.stage === "offer",
-  readyForOffer: lead.stage === "qualified" || lead.stage === "offer",
-  askedAboutPayment: lead.stage === "payment_pending",
-  readyForPrepayment: lead.stage === "payment_pending",
-  planningEvent:
-    lead.classification.direction === "corporate_event" || lead.classification.direction === "wedding_or_banquet",
-  bookedService: lead.services.length > 0,
-  returnedToOffer: lead.stage === "offer" && lead.lastActivityAt > lead.createdAt,
-  askedForDetails: lead.stage === "new" || lead.stage === "qualified",
-  nextStepAgreed: Boolean(lead.nextAction),
-  contactCollected: true,
-  isSpam: lead.classification.direction === "spam",
-  isWrongContact: lead.classification.direction === "wrong_contact",
-  isVacancy: lead.classification.direction === "vacancy",
-  isSupplier: lead.classification.direction === "supplier",
-  hoursSinceLastInbound,
-  daysUntilCheckIn: Math.round((new Date(lead.checkIn).getTime() - Date.now()) / 86_400_000),
-  offerViewed: lead.activity.some((entry) => entry.type === "offer_viewed"),
-  offerSent: lead.activity.some((entry) => entry.type === "offer_sent"),
-  stage: lead.stage,
-});
+export const signalsFromLead = (lead: Lead, hoursSinceLastInbound: number, guest?: any): ClassificationSignals => {
+  const primaryDirection = lead.interests?.length ? lead.interests[0].direction : lead.classification.direction;
+  const directions = lead.interests?.map(i => i.direction) ?? [lead.classification.direction];
+  const items = lead.items ?? [];
+  
+  const hasContact = Boolean(guest?.phone || guest?.email || (guest?.contactIdentities?.length ?? 0) > 0);
+  
+  let hasDates = Boolean(lead.checkIn && lead.checkOut);
+  let hasGuests = lead.adults > 0;
+  let hasCategory = Boolean(lead.roomType);
+  
+  if (items.length > 0) {
+    hasDates = items.some(i => i.startAt);
+    hasGuests = items.some(i => i.participants && i.participants > 0) || lead.adults > 0;
+    hasCategory = items.some(i => i.type);
+  }
+
+  return {
+    direction: primaryDirection,
+    primaryDirection,
+    directions,
+    hasDates,
+    hasGuests,
+    hasCategory,
+    requestedQuote: lead.stageHistory.some((entry) => entry.stage === "offer") || lead.stage === "offer",
+    readyForOffer: lead.stage === "qualified" || lead.stage === "offer",
+    askedAboutPayment: lead.stage === "payment_pending",
+    readyForPrepayment: lead.stage === "payment_pending",
+    planningEvent:
+      primaryDirection === "corporate_event" || primaryDirection === "wedding_or_banquet",
+    bookedService: lead.services.length > 0 || items.length > 0,
+    returnedToOffer: lead.stage === "offer" && lead.lastActivityAt > lead.createdAt,
+    askedForDetails: lead.stage === "new" || lead.stage === "qualified",
+    nextStepAgreed: Boolean(lead.nextAction),
+    contactCollected: hasContact,
+    isSpam: primaryDirection === "spam",
+    isWrongContact: primaryDirection === "wrong_contact",
+    isVacancy: primaryDirection === "vacancy",
+    isSupplier: primaryDirection === "supplier",
+    hoursSinceLastInbound,
+    daysUntilCheckIn: lead.checkIn ? Math.round((new Date(lead.checkIn).getTime() - Date.now()) / 86_400_000) : -1,
+    offerViewed: lead.activity.some((entry) => entry.type === "offer_viewed"),
+    offerSent: lead.activity.some((entry) => entry.type === "offer_sent"),
+    stage: lead.stage,
+    intent: lead.intent,
+  };
+};
