@@ -148,10 +148,10 @@ const Inbox = () => {
         ]}
       />
 
-      <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)_300px]">
-        <div className="flex flex-col gap-3">
+      <div className="grid items-start gap-4 lg:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_300px]">
+        <div className="flex h-[min(72vh,800px)] min-h-[560px] flex-col gap-3">
           <SearchInput value={search} onChange={setSearch} placeholder="Поиск по диалогам" />
-          <div className="max-h-[70vh] divide-y divide-border overflow-y-auto rounded-2xl border border-border bg-card shadow-card">
+          <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto rounded-2xl border border-border bg-card shadow-card">
             {filtered.map((conversation) => {
               const conversationGuest = guestById(conversation.guestId);
               const lastMessage = conversation.messages[conversation.messages.length - 1];
@@ -196,7 +196,7 @@ const Inbox = () => {
         </div>
 
         {selected && guest ? (
-          <div className="flex max-h-[70vh] flex-col rounded-2xl border border-border bg-card shadow-card">
+          <div className="flex h-[min(72vh,800px)] min-h-[560px] min-w-0 flex-col rounded-2xl border border-border bg-card shadow-card">
             <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3">
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold text-foreground">{guest.fullName}</p>
@@ -235,7 +235,7 @@ const Inbox = () => {
               </div>
             </header>
 
-            <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
               {selected.messages.map((message) => (
                 <div
                   key={message.id}
@@ -310,7 +310,7 @@ const Inbox = () => {
         )}
 
         {selected && guest && (
-          <aside className="space-y-4 rounded-2xl border border-border bg-card p-5 shadow-card">
+          <aside className="h-[min(72vh,800px)] min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-card">
             <div>
               <p className="text-sm font-semibold text-foreground">Что происходит сейчас</p>
               <Link to={`/guests/${guest.id}`} className="text-xs text-brand-600 hover:underline">

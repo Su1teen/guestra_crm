@@ -46,7 +46,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
   const primary = participants.find((item) => item.isPrimary);
   const primaryName = primary?.fullName ?? data.guests.find((item) => item.id === primary?.customerId)?.fullName ?? customer?.fullName;
   const stay = reservation ? data.stays.find((item) => item.reservationId === reservation.id) : null;
-  const allocation = reservation ? data.reservationUnits.find((item) => item.reservationId === reservation.id && item.status === "assigned") : null;
+  const allocation = reservation ? data.reservationUnits.find((item) => item.reservationId === reservation.id && ["assigned", "active"].includes(item.status)) : null;
   const room = data.rooms.find((item) => item.id === (allocation?.roomId ?? stay?.roomId));
   const folio = reservation ? data.folios.find((item) => item.reservationId === reservation.id || (reservation.requestId && item.leadId === reservation.requestId)) : null;
   const request = reservation?.requestId ? data.leads.find((item) => item.id === reservation.requestId) : null;

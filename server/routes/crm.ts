@@ -402,6 +402,108 @@ export const createCrmRouter = (db: Database) => {
     }
   });
 
+  router.post("/reservations", async (request, response) => {
+    const input = z.object({ guestId: z.string().min(1), propertyId: z.string().min(1),
+      arrivalAt: z.string().datetime(), departureAt: z.string().datetime(), roomType: z.string().trim().min(1),
+      roomId: z.string().optional(), adults: z.number().int().min(1), children: z.number().int().min(0),
+      totalAmount: z.number().int().min(0), depositRequired: z.number().int().min(0) }).refine((value) =>
+        new Date(value.departureAt) > new Date(value.arrivalAt) && value.depositRequired <= value.totalAmount,
+      { message: "Проверьте даты и сумму предоплаты" }).parse(request.body);
+    try {
+      const result = await db.transaction(async (tx) => {
+        const [property] = await tx.select().from(s.properties).where(eq(s.properties.id, input.propertyId)).limit(1);
+        const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, input.guestId)).limit(1);
+        if (!property || !guest || property.organizationId !== guest.organizationId) throw new AvailabilityConflict("Гость или объект не найдены");
+        if (input.roomId) {
+          const [room] = await tx.select().from(s.rooms).where(and(eq(s.rooms.id, input.roomId), eq(s.rooms.propertyId, property.id))).limit(1);
+          if (!room || room.category !== input.roomType) throw new AvailabilityConflict("Выберите домик из указанной категории");
+        }
+        const at = now();
+        const code = `GUE-${randomUUID().slice(0, 8).toUpperCase()}`;
+        const reservationId = id("reservation");
+        const [reservation] = await tx.insert(s.reservations).values({ id: reservationId, code, propertyId: property.id,
+          bookerCustomerId: guest.id, source: "manual", status: "confirmed", arrivalAt: input.arrivalAt,
+          departureAt: input.departureAt, roomTypeSnapshot: input.roomType, adults: input.adults, children: input.children,
+          currency: "KZT", confirmedAt: at }).returning();
+        const allocation = input.roomId ? await assignReservationUnit(tx, reservation, input.roomId) : null;
+        const nights = Math.max(1, Math.ceil((new Date(input.departureAt).getTime() - new Date(input.arrivalAt).getTime()) / 86_400_000));
+        const stayId = id("stay");
+        await tx.insert(s.guestStays).values({ id: stayId, guestId: guest.id, propertyId: property.id,
+          reservationId, reservationUnitId: allocation?.id, roomId: allocation?.roomId, roomType: input.roomType,
+          checkIn: input.arrivalAt, checkOut: input.departureAt, nights, adults: input.adults, children: input.children,
+          amount: input.totalAmount, bookingReference: code, status: "confirmed", operationalStatus: "upcoming" });
+        await tx.insert(s.reservationGuests).values({ id: id("reservation_guest"), reservationId, customerId: guest.id,
+          fullName: guest.fullName, role: "primary", isPrimary: true, isBooker: true, ageGroup: "adult" });
+        const [folio] = await tx.insert(s.folios).values({ id: id("folio"), code: `F-${code}`, reservationId, stayId,
+          guestId: guest.id, propertyId: property.id, currency: "KZT", subtotal: input.totalAmount,
+          totalAmount: input.totalAmount, depositRequired: input.depositRequired, balance: input.totalAmount }).returning();
+        if (input.totalAmount > 0) await tx.insert(s.folioLines).values({ id: id("folio_line"), folioId: folio.id,
+          category: "accommodation", description: "Проживание", quantity: 1, unit: "за проживание",
+          unitPrice: input.totalAmount, lineTotal: input.totalAmount });
+        await recalcFolio(tx, folio.id);
+        await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: guest.id, propertyId: property.id,
+          employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "booking",
+          title: "Бронирование создано", description: code, amount: input.totalAmount, occurredAt: at });
+        return { reservationId, stayId };
+      });
+      response.status(201).json(result);
+    } catch (error) {
+      if (error instanceof AvailabilityConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.post("/reservations", async (request, response) => {
+    const input = z.object({ guestId: z.string().min(1), propertyId: z.string().min(1),
+      arrivalAt: z.string().datetime(), departureAt: z.string().datetime(), roomType: z.string().trim().min(1),
+      roomId: z.string().optional(), adults: z.number().int().min(1), children: z.number().int().min(0),
+      totalAmount: z.number().int().min(0), depositRequired: z.number().int().min(0) }).refine((value) =>
+        new Date(value.departureAt) > new Date(value.arrivalAt) && value.depositRequired <= value.totalAmount,
+      { message: "Проверьте даты и сумму предоплаты" }).parse(request.body);
+    try {
+      const result = await db.transaction(async (tx) => {
+        const [property] = await tx.select().from(s.properties).where(eq(s.properties.id, input.propertyId)).limit(1);
+        const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, input.guestId)).limit(1);
+        if (!property || !guest || property.organizationId !== guest.organizationId) throw new AvailabilityConflict("Гость или объект не найдены");
+        if (input.roomId) {
+          const [room] = await tx.select().from(s.rooms).where(and(eq(s.rooms.id, input.roomId), eq(s.rooms.propertyId, property.id))).limit(1);
+          if (!room || room.category !== input.roomType) throw new AvailabilityConflict("Выберите домик из указанной категории");
+        }
+        const at = now();
+        const code = `LES-${randomUUID().slice(0, 8).toUpperCase()}`;
+        const reservationId = id("reservation");
+        const [reservation] = await tx.insert(s.reservations).values({ id: reservationId, code, propertyId: property.id,
+          bookerCustomerId: guest.id, source: "phone", status: "confirmed", arrivalAt: input.arrivalAt,
+          departureAt: input.departureAt, roomTypeSnapshot: input.roomType, adults: input.adults, children: input.children,
+          currency: "KZT", confirmedAt: at }).returning();
+        const allocation = input.roomId ? await assignReservationUnit(tx, reservation, input.roomId) : null;
+        const nights = Math.max(1, Math.ceil((new Date(input.departureAt).getTime() - new Date(input.arrivalAt).getTime()) / 86_400_000));
+        const stayId = id("stay");
+        await tx.insert(s.guestStays).values({ id: stayId, guestId: guest.id, propertyId: property.id,
+          reservationId, reservationUnitId: allocation?.id, roomId: allocation?.roomId, roomType: input.roomType,
+          checkIn: input.arrivalAt, checkOut: input.departureAt, nights, adults: input.adults, children: input.children,
+          amount: input.totalAmount, bookingReference: code, status: "confirmed", operationalStatus: "upcoming" });
+        await tx.insert(s.reservationGuests).values({ id: id("reservation_guest"), reservationId, customerId: guest.id,
+          fullName: guest.fullName, role: "primary", isPrimary: true, isBooker: true, ageGroup: "adult" });
+        const [folio] = await tx.insert(s.folios).values({ id: id("folio"), code: `F-${code}`, reservationId, stayId,
+          guestId: guest.id, propertyId: property.id, currency: "KZT", subtotal: input.totalAmount,
+          totalAmount: input.totalAmount, depositRequired: input.depositRequired, balance: input.totalAmount }).returning();
+        if (input.totalAmount > 0) await tx.insert(s.folioLines).values({ id: id("folio_line"), folioId: folio.id,
+          category: "accommodation", description: "Проживание", quantity: 1, unit: "за проживание",
+          unitPrice: input.totalAmount, lineTotal: input.totalAmount });
+        await recalcFolio(tx, folio.id);
+        await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: guest.id, propertyId: property.id,
+          employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "booking",
+          title: "Бронирование создано", description: code, amount: input.totalAmount, occurredAt: at });
+        return { reservationId, stayId };
+      });
+      response.status(201).json(result);
+    } catch (error) {
+      if (error instanceof AvailabilityConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
   router.post("/reservations/:id/units", async (request, response) => {
     const { roomId } = z.object({ roomId: z.string().min(1) }).parse(request.body);
     try {

@@ -148,6 +148,7 @@ interface CrmContextValue {
   leadsForGuest: (guestId: string) => Lead[];
   reservationsForCustomer: (customerId: string) => CrmDataset["reservations"];
   createReservationFromRequest: (requestId: string, input: { arrivalAt: string; departureAt: string; roomType: string; roomId?: string; adults: number; children: number; totalAmount?: number; depositRequired?: number }) => Promise<string>;
+  createQuickReservation: (input: { guestId: string; propertyId: string; arrivalAt: string; departureAt: string; roomType: string; roomId?: string; adults: number; children: number; totalAmount: number; depositRequired: number }) => Promise<string>;
   updateRequestStatus: (requestId: string, status: Extract<RequestStatus, "new" | "active" | "waiting_customer">) => Promise<void>;
   assignReservationRoom: (reservationId: string, roomId: string) => Promise<void>;
   updateReservation: (reservationId: string, patch: Partial<Pick<Reservation, "arrivalAt" | "departureAt" | "status">>) => Promise<void>;
@@ -427,6 +428,49 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     }));
     return reservationId;
   }, [data.leads, data.reservations, data.reservationUnits, dataMode, persist]);
+
+  const createQuickReservation = useCallback(async (input: { guestId: string; propertyId: string; arrivalAt: string; departureAt: string; roomType: string; roomId?: string; adults: number; children: number; totalAmount: number; depositRequired: number }) => {
+    if (dataMode === "database") {
+      const result = await persist<{ reservationId: string }>("/api/crm/reservations", { method: "POST", body: JSON.stringify(input) });
+      return result.reservationId;
+    }
+    if (new Date(input.departureAt) <= new Date(input.arrivalAt)) throw new Error("Дата выезда должна быть позже даты заезда");
+    if (input.depositRequired > input.totalAmount) throw new Error("Предоплата не может быть больше стоимости");
+    if (input.roomId && data.reservationUnits.some((unit) => unit.roomId === input.roomId && ["active", "assigned"].includes(unit.status) &&
+      data.reservations.some((reservation) => reservation.id === unit.reservationId && !["cancelled", "no_show", "completed"].includes(reservation.status)) &&
+      new Date(unit.arrivalAt) < new Date(input.departureAt) && new Date(input.arrivalAt) < new Date(unit.departureAt))) throw new Error("Домик занят на выбранные даты");
+    const guest = data.guests.find((item) => item.id === input.guestId);
+    const property = data.properties.find((item) => item.id === input.propertyId);
+    const room = input.roomId ? data.rooms.find((item) => item.id === input.roomId) : undefined;
+    if (!guest || !property || input.roomId && !room) throw new Error("Проверьте гостя, объект и домик");
+    if (room && room.category !== input.roomType) throw new Error("Категория домика не совпадает с бронью");
+    const stamp = nowIso();
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const reservationId = `reservation_quick_${suffix}`;
+    const stayId = `stay_quick_${suffix}`;
+    const folioId = `folio_quick_${suffix}`;
+    const code = `GUE-${Date.now().toString().slice(-6)}`;
+    const nights = Math.max(1, Math.ceil((new Date(input.departureAt).getTime() - new Date(input.arrivalAt).getTime()) / 86_400_000));
+    const reservation: Reservation = { id: reservationId, code, propertyId: input.propertyId as PropertyId, bookerCustomerId: guest.id,
+      roomTypeSnapshot: input.roomType, source: "phone", status: "confirmed", arrivalAt: input.arrivalAt, departureAt: input.departureAt,
+      adults: input.adults, children: input.children, currency: "KZT", confirmedAt: stamp, createdAt: stamp, updatedAt: stamp };
+    const lineTotal = input.totalAmount;
+    const folio: Folio = { id: folioId, code: `F-${code}`, reservationId, stayId, guestId: guest.id, propertyId: input.propertyId,
+      status: "open", currency: "KZT", subtotal: lineTotal, discountAmount: 0, totalAmount: lineTotal,
+      depositRequired: input.depositRequired, paidAmount: 0, balance: lineTotal, createdAt: stamp, updatedAt: stamp,
+      lines: lineTotal ? [{ id: `line_${folioId}`, folioId, category: "accommodation", description: "Проживание", quantity: 1,
+        unit: "за проживание", unitPrice: lineTotal, lineTotal, status: "active", createdAt: stamp, updatedAt: stamp }] : [] };
+    setData((previous) => ({ ...previous, reservations: [reservation, ...previous.reservations],
+      reservationGuests: [...previous.reservationGuests, { id: `rg_${suffix}`, reservationId, customerId: guest.id, fullName: guest.fullName,
+        role: "primary", isPrimary: true, isBooker: true, ageGroup: "adult" }],
+      reservationUnits: room ? [...previous.reservationUnits, { id: `ru_${suffix}`, reservationId, roomId: room.id,
+        arrivalAt: input.arrivalAt, departureAt: input.departureAt, status: "active", assignedAt: stamp }] : previous.reservationUnits,
+      stays: [...previous.stays, { id: stayId, guestId: guest.id, propertyId: input.propertyId as PropertyId, reservationId,
+        roomId: room?.id, roomType: input.roomType, checkIn: input.arrivalAt, checkOut: input.departureAt, nights,
+        adults: input.adults, children: input.children, amount: lineTotal, bookingReference: code, status: "confirmed",
+        operationalStatus: "upcoming", serviceNames: [] }], folios: [folio, ...previous.folios] }));
+    return reservationId;
+  }, [data.guests, data.properties, data.reservations, data.reservationUnits, data.rooms, dataMode, persist]);
 
   const updateRequestStatus = useCallback(async (requestId: string, requestStatus: "new" | "active" | "waiting_customer") => {
     if (dataMode === "database") {
@@ -2134,6 +2178,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       reservationsForCustomer: (customerId: string) => data.reservations.filter((reservation) => reservation.bookerCustomerId === customerId ||
         data.reservationGuests.some((participant) => participant.customerId === customerId && participant.reservationId === reservation.id)),
       createReservationFromRequest,
+      createQuickReservation,
       updateRequestStatus,
       assignReservationRoom,
       updateReservation,
@@ -2225,6 +2270,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       createHousekeepingTask,
       createLead,
       createReservationFromRequest,
+      createQuickReservation,
       updateRequestStatus,
       createMaintenanceTicket,
       createOfferFromLead,

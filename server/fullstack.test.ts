@@ -294,6 +294,23 @@ describe("manual resort leads", () => {
     const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, leadId));
     expect(lead).toMatchObject({ stage: "new", paidAmount: 20000, paymentStatus: "partial" });
   });
+
+  it("creates a quick standalone reservation with a stay and folio for database users", async () => {
+    const agent = await admin();
+    const arrivalAt = new Date(Date.now() + 20 * 86_400_000).toISOString();
+    const departureAt = new Date(Date.now() + 22 * 86_400_000).toISOString();
+    const response = await agent.post("/api/crm/reservations").send({ guestId: "guest_live_1",
+      propertyId: "les_borovoe", arrivalAt, departureAt, roomType: "Sky House", adults: 2, children: 1,
+      totalAmount: 170000, depositRequired: 50000 }).expect(201);
+    const [reservation] = await db.select().from(s.reservations).where(eq(s.reservations.id, response.body.reservationId));
+    const [stay] = await db.select().from(s.guestStays).where(eq(s.guestStays.id, response.body.stayId));
+    const [folio] = await db.select().from(s.folios).where(eq(s.folios.reservationId, reservation.id));
+    const lines = await db.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
+    expect(reservation).toMatchObject({ status: "confirmed", bookerCustomerId: "guest_live_1", roomTypeSnapshot: "Sky House" });
+    expect(stay).toMatchObject({ reservationId: reservation.id, operationalStatus: "upcoming", roomId: null });
+    expect(folio).toMatchObject({ reservationId: reservation.id, stayId: stay.id, totalAmount: 170000, depositRequired: 50000 });
+    expect(lines).toHaveLength(1);
+  });
 });
 
 describe("AI integration", () => {

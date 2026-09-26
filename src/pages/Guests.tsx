@@ -14,6 +14,7 @@ import type { Guest, SegmentKey } from "@/types/crm";
 import { formatDateNumeric, formatTenge, formatTengeCompact } from "@/lib/format";
 import { segmentLabels } from "@/lib/labels";
 import { customerContext } from "@/lib/hospitality";
+import { CreateGuestDialog } from "@/components/crm/CreateGuestDialog";
 
 const segmentOptions = [
   { value: "all", label: "Все сегменты" },
@@ -156,6 +157,7 @@ const Guests = () => {
       <PageHeader
         title="Гости и контакты"
         description="Один профиль человека для обращений, услуг и проживания"
+        actions={<CreateGuestDialog onCreated={(guestId) => navigate(`/guests/${guestId}`)} />}
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
