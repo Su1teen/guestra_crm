@@ -144,7 +144,7 @@ const Dashboard = () => {
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          label="Новые лиды"
+          label="Новые обращения"
           value={formatNumber(summary.newLeads)}
           hint="в стадии «Новый»"
           icon={Sparkles}
@@ -188,7 +188,7 @@ const Dashboard = () => {
         <StatCard
           label="Конверсия"
           value={formatPercent(summary.conversion)}
-          hint="лид → подтверждение"
+          hint="обращение → подтверждение"
           icon={Percent}
         />
         <StatCard
@@ -201,21 +201,21 @@ const Dashboard = () => {
 
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard
-          label="Follow-up сегодня и ранее"
+          label="Контакты с гостями сегодня и ранее"
           value={formatNumber(summary.followUpsDue)}
           hint="задачи к выполнению"
           icon={CheckSquare}
           onClick={() => navigate("/tasks")}
         />
         <StatCard
-          label="Лиды без активности 2+ дня"
+          label="Обращения без активности 2+ дня"
           value={formatNumber(summary.overdueLeads)}
           hint="требуют внимания"
           icon={AlertTriangle}
           onClick={() => navigate("/leads?activity=stale")}
         />
         <StatCard
-          label="Проигранные лиды"
+          label="Потерянные обращения"
           value={formatNumber(summary.lostCount)}
           hint={`упущено ${formatTengeCompact(summary.lostValue)}`}
           icon={XCircle}
@@ -224,7 +224,7 @@ const Dashboard = () => {
       </div>
 
       <div className="grid gap-5 xl:grid-cols-3">
-        <SectionCard title="Воронка продаж" description="Лиды, дошедшие до каждой стадии" className="xl:col-span-2">
+        <SectionCard title="Воронка продаж" description="Обращения, дошедшие до каждой стадии" className="xl:col-span-2">
           <div className="space-y-3">
             {funnel.map((step) => {
               const max = Math.max(...funnel.map((item) => item.count), 1);
@@ -327,7 +327,7 @@ const Dashboard = () => {
           </div>
         </SectionCard>
 
-        <SectionCard title="Источники лидов" description="Распределение по каналам">
+        <SectionCard title="Источники обращений" description="Распределение по каналам">
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>

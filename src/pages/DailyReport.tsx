@@ -142,8 +142,8 @@ const DailyReport = ({ embedded = false }: { embedded?: boolean }) => {
         owner: lead.ownerId,
       })),
       methodology: [
-        { metric: "Новые обращения", formula: "Лиды с createdAt = дата отчёта" },
-        { metric: "Целевые", formula: "Лиды с classification.quality = target" },
+        { metric: "Новые обращения", formula: "Обращения, созданные в дату отчёта" },
+        { metric: "Целевые", formula: "Обращения с целевой оценкой качества" },
         { metric: "SLA", formula: "firstResponseMinutes ≤ slaMinutes" },
         { metric: "Выручка", formula: "Σ totalAmount подтверждённых броней за день" },
         { metric: "Средний чек", formula: "Выручка / количество подтверждённых броней" },
@@ -153,7 +153,7 @@ const DailyReport = ({ embedded = false }: { embedded?: boolean }) => {
           name: "По сотрудникам",
           columns: [
             { key: "name", header: "Сотрудник" },
-            { key: "leads", header: "Лиды", format: "number" },
+            { key: "leads", header: "Обращения", format: "number" },
             { key: "offers", header: "Предложения", format: "number" },
             { key: "confirmed", header: "Брони", format: "number" },
             { key: "revenue", header: "Выручка", format: "currency" },
@@ -213,7 +213,7 @@ const DailyReport = ({ embedded = false }: { embedded?: boolean }) => {
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Средний чек" value={check === null ? "Нет данных" : formatTenge(check)} />
-        <StatCard label="Просроч. follow-up" value={String(todayOverdueFollowUps)} />
+        <StatCard label="Просроченные контакты" value={String(todayOverdueFollowUps)} />
         <StatCard label="Упущенные сделки" value={String(todayLost.length)} />
         <StatCard label="Упущенная выручка" value={formatTenge(todayMissedRevenue)} />
       </div>
@@ -238,7 +238,7 @@ const DailyReport = ({ embedded = false }: { embedded?: boolean }) => {
           </div>
         </SectionCard>
 
-        <SectionCard title="Лиды по стадиям">
+        <SectionCard title="Обращения по стадиям">
           <div className="flex flex-wrap gap-2">
             {[...stageCountMap.entries()].map(([stage, count]) => (
               <StatusPill key={stage} tone="neutral">
@@ -255,7 +255,7 @@ const DailyReport = ({ embedded = false }: { embedded?: boolean }) => {
             <thead>
               <tr className="border-b border-border text-left text-xs uppercase text-muted-foreground">
                 <th className="px-3 py-2">Сотрудник</th>
-                <th className="px-3 py-2 text-right">Лиды</th>
+                <th className="px-3 py-2 text-right">Обращения</th>
                 <th className="px-3 py-2 text-right">Предложения</th>
                 <th className="px-3 py-2 text-right">Брони</th>
                 <th className="px-3 py-2 text-right">Выручка</th>

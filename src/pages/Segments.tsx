@@ -28,7 +28,7 @@ interface BuilderRule {
 
 const fieldLabels: Record<RuleField, string> = {
   stays: "Проживания",
-  ltv: "LTV, ₸",
+  ltv: "Покупки за всё время, ₸",
   last_stay_days: "Дней с последнего визита",
   company: "Компания заполнена",
 };
@@ -147,7 +147,7 @@ const Segments = () => {
                   ))}
                 </div>
                 <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
-                  <span>Средний LTV: {formatTengeCompact(segment.avgLifetimeValue)}</span>
+                  <span>Средние покупки: {formatTengeCompact(segment.avgLifetimeValue)}</span>
                   <span>Проживаний: {segment.avgStays.toFixed(1).replace(".", ",")}</span>
                 </div>
               </button>
@@ -247,7 +247,7 @@ const Segments = () => {
               Добавить условие
             </Button>
             <div className="rounded-xl bg-brand-50 px-3 py-3 text-sm text-brand-700">
-              Под условия подходит <span className="font-semibold">{builderMatches.length}</span> гостей · суммарный LTV{" "}
+              Под условия подходит <span className="font-semibold">{builderMatches.length}</span> гостей · покупки за всё время{" "}
               {formatTengeCompact(builderMatches.reduce((total, guest) => total + guest.lifetimeValue, 0))}
             </div>
           </div>

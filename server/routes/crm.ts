@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
@@ -17,6 +17,11 @@ import {
 } from "../services/lead-journey.js";
 import { serviceGroupByCode, serviceGroupForDirection, serviceGroupForItemType } from "../../shared/service-groups.js";
 import type { JourneyStage } from "../../shared/journey.js";
+import { findCustomerCandidates, normalizeEmail, normalizePhone } from "../services/customer-service.js";
+import { assignReservationUnit, assertRoomAvailable, AvailabilityConflict } from "../services/availability-service.js";
+import { ensureReservationForRequest } from "../services/reservation-service.js";
+import { checkInStay, checkOutStay, StayConflict } from "../services/stay-service.js";
+import { bookService, changeServiceStatus, ServiceConflict } from "../services/service-reservation-service.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
@@ -100,6 +105,394 @@ export const createCrmRouter = (db: Database) => {
   router.use(requireDatabaseMode);
 
   router.get("/bootstrap", async (_request, response) => response.json(await loadCrmDataset(db)));
+
+  router.post("/reservations/:id/check-in", async (request, response) => {
+    const body = z.object({ readinessOverride: z.boolean().optional(), overrideReason: z.string().optional() }).parse(request.body ?? {});
+    try {
+      const result = await db.transaction((tx) => checkInStay(tx, request.params.id, {
+        ...body, employeeId: (request as AuthenticatedRequest).authUser?.employeeId ?? undefined,
+      }));
+      if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+      response.json(result);
+    } catch (error) {
+      if (error instanceof StayConflict || error instanceof AvailabilityConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.post("/reservations/:id/check-out", async (request, response) => {
+    const body = z.object({ acknowledgeBalance: z.boolean().optional(), acknowledgeOpenServices: z.boolean().optional() }).parse(request.body ?? {});
+    try {
+      const result = await db.transaction((tx) => checkOutStay(tx, request.params.id, {
+        ...body, employeeId: (request as AuthenticatedRequest).authUser?.employeeId ?? undefined,
+      }));
+      if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+      response.json(result);
+    } catch (error) {
+      if (error instanceof StayConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.post("/service-reservations", async (request, response) => {
+    const body = z.object({ customerId: z.string().min(1), propertyId: z.string().min(1),
+      reservationId: z.string().optional(), catalogItemId: z.string().min(1),
+      startAt: z.string().datetime(), endAt: z.string().datetime().optional(),
+      participants: z.number().int().positive().default(1), quantity: z.number().int().positive().default(1),
+      unitPrice: z.number().int().min(0).optional(), priceOverrideReason: z.string().optional(),
+      useEntitlement: z.boolean().optional(), notes: z.string().optional(),
+      idempotencyKey: z.string().min(8),
+    }).parse(request.body);
+    if (body.endAt && new Date(body.endAt) <= new Date(body.startAt)) return response.status(400).json({ error: "Время окончания должно быть позже начала" });
+    try {
+      const result = await db.transaction((tx) => bookService(tx, {
+        ...body, employeeId: (request as AuthenticatedRequest).authUser?.employeeId ?? undefined,
+      }));
+      response.status(result.duplicate ? 200 : 201).json(result);
+    } catch (error) {
+      if (error instanceof ServiceConflict) return response.status(409).json({ error: error.message });
+      if ((error as { code?: string }).code === "23505") {
+        const [existing] = await db.select().from(s.serviceReservations)
+          .where(eq(s.serviceReservations.idempotencyKey, body.idempotencyKey)).limit(1);
+        if (existing && existing.customerId === body.customerId && existing.catalogItemId === body.catalogItemId &&
+            existing.reservationId === (body.reservationId ?? null)) return response.json({ service: existing, duplicate: true });
+      }
+      throw error;
+    }
+  });
+
+  router.post("/reservations/:id/package", async (request, response) => {
+    const { packageId } = z.object({ packageId: z.string().min(1) }).parse(request.body);
+    try {
+      const result = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT id FROM reservations WHERE id = ${request.params.id} FOR UPDATE`);
+        const [reservation] = await tx.select().from(s.reservations).where(eq(s.reservations.id, request.params.id)).limit(1);
+        if (!reservation) return null;
+        if (reservation.packageId === packageId) return { reservation, duplicate: true };
+        if (reservation.packageId || ["cancelled", "no_show", "completed"].includes(reservation.status)) {
+          throw new ServiceConflict("Пакет этой брони нельзя изменить");
+        }
+        const [selected] = await tx.select().from(s.packages).where(and(eq(s.packages.id, packageId),
+          eq(s.packages.propertyId, reservation.propertyId), eq(s.packages.active, true))).limit(1);
+        if (!selected) throw new ServiceConflict("Пакет не найден для объекта");
+        const [folio] = await tx.select().from(s.folios).where(eq(s.folios.reservationId, reservation.id)).limit(1);
+        if (selected.billingMode === "separate" && selected.price > 0 && !folio) throw new ServiceConflict("У брони нет счёта для пакета");
+        if (folio && selected.billingMode === "separate" && selected.price > 0) {
+          await tx.insert(s.folioLines).values({ id: id("fline"), folioId: folio.id,
+            category: "package", description: selected.name, quantity: 1, unit: "пакет",
+            unitPrice: selected.price, lineTotal: selected.price, status: "active",
+            metadata: { packageId: selected.id } });
+          await recalcFolio(tx, folio.id);
+        }
+        const [updated] = await tx.update(s.reservations).set({ packageId, updatedAt: now() })
+          .where(eq(s.reservations.id, reservation.id)).returning();
+        await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: reservation.bookerCustomerId,
+          propertyId: reservation.propertyId, employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
+          type: "package", title: "Пакет добавлен к брони", description: selected.name,
+          amount: selected.billingMode === "separate" ? selected.price : 0, occurredAt: now() });
+        return { reservation: updated, duplicate: false };
+      });
+      if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+      response.status(result.duplicate ? 200 : 201).json(result);
+    } catch (error) {
+      if (error instanceof ServiceConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.patch("/service-reservations/:id", async (request, response) => {
+    const { status } = z.object({ status: z.enum(["completed", "cancelled"]) }).parse(request.body);
+    try {
+      const result = await db.transaction((tx) => changeServiceStatus(tx, request.params.id, status,
+        (request as AuthenticatedRequest).authUser?.employeeId ?? undefined));
+      if (!result) return response.status(404).json({ error: "Услуга не найдена" });
+      response.json(result);
+    } catch (error) {
+      if (error instanceof ServiceConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.post("/reservations/:id/requests", async (request, response) => {
+    const body = z.object({ title: z.string().trim().min(2), description: z.string().optional(),
+      priority: z.enum(["low", "medium", "high"]).default("medium"),
+      department: z.enum(["reception", "housekeeping", "maintenance", "restaurant", "spa", "transport", "other"]).default("reception"),
+      dueAt: z.string().datetime(), ownerId: z.string().optional() }).parse(request.body);
+    const result = await db.transaction(async (tx) => {
+      const [reservation] = await tx.select().from(s.reservations).where(eq(s.reservations.id, request.params.id)).limit(1);
+      if (!reservation) return null;
+      if (["cancelled", "no_show", "completed"].includes(reservation.status)) throw new StayConflict("Бронь закрыта");
+      const [stay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservation.id)).limit(1);
+      const ownerId = body.ownerId ?? (request as AuthenticatedRequest).authUser?.employeeId;
+      if (!ownerId) throw new StayConflict("Не указан ответственный сотрудник");
+      const [owner] = await tx.select({ id: s.employees.id }).from(s.employees).where(eq(s.employees.id, ownerId)).limit(1);
+      if (!owner) throw new StayConflict("Ответственный сотрудник не найден");
+      const [task] = await tx.insert(s.tasks).values({ id: id("task"), title: body.title,
+        description: body.description, type: "guest_request", source: "guest_request", department: body.department, status: "todo",
+        priority: body.priority, dueAt: body.dueAt, ownerId, guestId: stay?.guestId ?? reservation.bookerCustomerId,
+        leadId: reservation.requestId, reservationId: reservation.id, stayId: stay?.id,
+        propertyId: reservation.propertyId }).returning();
+      await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: stay?.guestId ?? reservation.bookerCustomerId,
+        propertyId: reservation.propertyId, employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
+        type: "guest_request", title: body.title, description: body.description, occurredAt: now() });
+      return task;
+    }).catch((error: unknown) => { if (error instanceof StayConflict) return error; throw error; });
+    if (result instanceof StayConflict) return response.status(409).json({ error: result.message });
+    if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+    response.status(201).json(result);
+  });
+
+  router.patch("/reservations/:id/context", async (request, response) => {
+    const patch = z.object({ etaAt: z.string().datetime().nullable().optional(),
+      specialRequest: z.string().trim().nullable().optional() }).parse(request.body);
+    const [reservation] = await db.select().from(s.reservations).where(eq(s.reservations.id, request.params.id)).limit(1);
+    if (!reservation) return response.status(404).json({ error: "Бронь не найдена" });
+    if (patch.etaAt && (new Date(patch.etaAt).getTime() < new Date(reservation.arrivalAt).getTime() - 43_200_000 ||
+        new Date(patch.etaAt).getTime() >= new Date(reservation.departureAt).getTime())) {
+      return response.status(400).json({ error: "Время приезда должно быть рядом с датой заезда" });
+    }
+    const [updated] = await db.update(s.reservations).set({ ...patch, updatedAt: now() })
+      .where(eq(s.reservations.id, reservation.id)).returning();
+    await db.insert(s.guestActivity).values({ id: id("activity"), guestId: reservation.bookerCustomerId,
+      propertyId: reservation.propertyId, employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
+      type: "reservation_context", title: "Детали заезда обновлены", occurredAt: now() });
+    response.json(updated);
+  });
+
+  router.post("/reservations/:id/notes", async (request, response) => {
+    const { text } = z.object({ text: z.string().trim().min(2) }).parse(request.body);
+    const [reservation] = await db.select().from(s.reservations).where(eq(s.reservations.id, request.params.id)).limit(1);
+    if (!reservation) return response.status(404).json({ error: "Бронь не найдена" });
+    const at = now();
+    const [note] = await db.insert(s.reservationNotes).values({ id: id("reservation_note"),
+      reservationId: reservation.id, authorId: (request as AuthenticatedRequest).authUser?.employeeId,
+      text, createdAt: at }).returning();
+    response.status(201).json(note);
+  });
+
+  router.post("/reviews", async (request, response) => {
+    const body = z.object({ propertyId: z.string().min(1), guestId: z.string().optional(),
+      stayId: z.string().optional(), guestName: z.string().trim().min(1),
+      channel: z.enum(["2gis", "google", "yandex", "booking", "tripadvisor", "direct"]),
+      rating: z.number().int().min(0), maxRating: z.number().int().positive(),
+      reviewAt: z.string().datetime(), text: z.string().trim().min(2),
+      topic: z.string().trim().min(1).default("Общее впечатление"), externalUrl: z.string().url().optional(),
+    }).parse(request.body);
+    if (body.rating > body.maxRating) return response.status(400).json({ error: "Оценка превышает шкалу" });
+    const result = await db.transaction(async (tx) => {
+      if (body.guestId) {
+        const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, body.guestId)).limit(1);
+        if (!guest) return null;
+      }
+      if (body.stayId) {
+        const [stay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.id, body.stayId)).limit(1);
+        if (!stay || stay.propertyId !== body.propertyId || body.guestId && stay.guestId !== body.guestId) return null;
+      }
+      const [review] = await tx.insert(s.guestReviews).values({ id: id("review"), ...body }).returning();
+      if (body.guestId) await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: body.guestId,
+        propertyId: body.propertyId, employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
+        type: "review", title: "Получен отзыв", description: body.text, occurredAt: body.reviewAt });
+      return review;
+    });
+    if (!result) return response.status(404).json({ error: "Гость или проживание не найдено" });
+    response.status(201).json(result);
+  });
+
+  router.patch("/reviews/:id", async (request, response) => {
+    const { status, reply } = z.object({ status: z.enum(["draft", "answered"]), reply: z.string().trim().min(1) }).parse(request.body);
+    const [review] = await db.update(s.guestReviews).set({ status, reply,
+      respondedAt: status === "answered" ? now() : null, updatedAt: now() })
+      .where(eq(s.guestReviews.id, request.params.id)).returning();
+    if (!review) return response.status(404).json({ error: "Отзыв не найден" });
+    response.json(review);
+  });
+
+  router.patch("/requests/:id/status", async (request, response) => {
+    const { status } = z.object({ status: z.enum(["new", "active", "waiting_customer"]) }).parse(request.body);
+    const result = await db.transaction(async (tx) => {
+      const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+      if (!lead) return null;
+      if (["confirmed", "completed", "lost", "cancelled"].includes(lead.stage) || ["won", "lost", "closed"].includes(lead.requestStatus)) {
+        return { conflict: true as const };
+      }
+      const changedAt = now();
+      const [updated] = await tx.update(s.leads).set({ requestStatus: status, lastActivityAt: changedAt,
+        updatedAt: changedAt }).where(eq(s.leads.id, lead.id)).returning();
+      if (lead.requestStatus !== status) await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id,
+        type: "status_change", title: `Статус обращения: ${status === "new" ? "Новое" : status === "active" ? "В работе" : "Ждём гостя"}`,
+        occurredAt: changedAt });
+      return { lead: updated };
+    });
+    if (!result) return response.status(404).json({ error: "Обращение не найдено" });
+    if ("conflict" in result) return response.status(409).json({ error: "Закрытое обращение нельзя вернуть в работу из воронки" });
+    response.json(result.lead);
+  });
+
+  // Direct booking from an accommodation request; the legacy journey remains a compatibility view.
+  router.post("/requests/:id/reservation", async (request, response) => {
+    const input = z.object({ arrivalAt: z.string().datetime(), departureAt: z.string().datetime(),
+      roomType: z.string().min(1), roomId: z.string().optional(), adults: z.number().int().min(1),
+      children: z.number().int().min(0).default(0), totalAmount: z.number().int().min(0).optional(),
+      depositRequired: z.number().int().min(0).optional() }).parse(request.body);
+    if (new Date(input.departureAt).getTime() <= new Date(input.arrivalAt).getTime()) {
+      return response.status(400).json({ error: "Дата выезда должна быть позже даты заезда" });
+    }
+    if (input.totalAmount !== undefined && input.depositRequired !== undefined && input.depositRequired > input.totalAmount) {
+      return response.status(400).json({ error: "Предоплата не может превышать стоимость" });
+    }
+    try {
+      const result = await db.transaction(async (tx) => {
+        const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
+        if (!lead) return null;
+        const [existing] = await tx.select().from(s.reservations).where(eq(s.reservations.requestId, lead.id)).limit(1);
+        if (existing) return { reservationId: existing.id, duplicate: true };
+        if (["lost", "cancelled", "completed"].includes(lead.stage)) throw new AvailabilityConflict("Обращение уже закрыто");
+        const updatedAt = now();
+        const nights = Math.max(1, Math.ceil((new Date(input.departureAt).getTime() - new Date(input.arrivalAt).getTime()) / 86_400_000));
+        const [updatedLead] = await tx.update(s.leads).set({ roomType: input.roomType, checkIn: input.arrivalAt,
+          checkOut: input.departureAt, nights, adults: input.adults, children: input.children,
+          lastActivityAt: updatedAt, updatedAt }).where(eq(s.leads.id, lead.id)).returning();
+        let folio = await ensureFolio(tx, updatedLead);
+        if (input.totalAmount !== undefined && input.totalAmount !== folio.totalAmount) {
+          const adjustment = input.totalAmount - folio.totalAmount;
+          await tx.insert(s.folioLines).values({ id: id("fline"), folioId: folio.id,
+            category: "accommodation", description: "Стоимость проживания при создании брони",
+            quantity: 1, unit: "item", unitPrice: adjustment, lineTotal: adjustment, status: "active",
+            metadata: { source: "direct_booking", previousTotal: folio.totalAmount,
+              confirmedTotal: input.totalAmount, employeeId: (request as AuthenticatedRequest).authUser?.employeeId } });
+          await recalcFolio(tx, folio.id);
+          [folio] = await tx.select().from(s.folios).where(eq(s.folios.id, folio.id)).limit(1);
+        }
+        if (input.depositRequired !== undefined) {
+          [folio] = await tx.update(s.folios).set({ depositRequired: input.depositRequired, updatedAt }).where(eq(s.folios.id, folio.id)).returning();
+          // recalcFolio also keeps the legacy lead fields used by existing analytics in sync.
+          folio = await recalcFolio(tx, folio.id);
+        }
+        const bookingReference = `GUE-${randomUUID().slice(0, 10).toUpperCase()}`;
+        const reservation = await ensureReservationForRequest(tx, updatedLead, folio, bookingReference);
+        if (input.roomId) {
+          const allocation = await assignReservationUnit(tx, reservation, input.roomId);
+          await tx.update(s.guestStays).set({ roomId: input.roomId, reservationUnitId: allocation.id, updatedAt })
+            .where(eq(s.guestStays.reservationId, reservation.id));
+        }
+        await tx.update(s.leads).set({ stage: "confirmed", requestStatus: "won", bookingReference,
+          probability: 100, updatedAt }).where(eq(s.leads.id, lead.id));
+        await tx.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: "confirmed", changedAt: updatedAt });
+        await tx.update(s.followUps).set({ status: "done", queue: "done", completedAt: updatedAt, updatedAt })
+          .where(and(eq(s.followUps.leadId, lead.id), eq(s.followUps.status, "open")));
+        await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: lead.guestId,
+          propertyId: lead.propertyId, employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
+          type: "booking", title: "Бронирование создано", description: bookingReference,
+          amount: folio.totalAmount, occurredAt: updatedAt });
+        const [stay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservation.id)).limit(1);
+        return { reservationId: reservation.id, stayId: stay?.id ?? null, duplicate: false };
+      });
+      if (!result) return response.status(404).json({ error: "Обращение не найдено" });
+      response.status(result.duplicate ? 200 : 201).json(result);
+    } catch (error) {
+      if (error instanceof AvailabilityConflict) return response.status(409).json({ error: error.message });
+      if ((error as { code?: string }).code === "23505") {
+        const [existing] = await db.select().from(s.reservations).where(eq(s.reservations.requestId, request.params.id)).limit(1);
+        if (existing) {
+          const [stay] = await db.select().from(s.guestStays).where(eq(s.guestStays.reservationId, existing.id)).limit(1);
+          return response.json({ reservationId: existing.id, stayId: stay?.id ?? null, duplicate: true });
+        }
+      }
+      throw error;
+    }
+  });
+
+  router.post("/reservations/:id/units", async (request, response) => {
+    const { roomId } = z.object({ roomId: z.string().min(1) }).parse(request.body);
+    try {
+      const result = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT id FROM reservations WHERE id = ${request.params.id} FOR UPDATE`);
+        const [reservation] = await tx.select().from(s.reservations).where(eq(s.reservations.id, request.params.id)).limit(1);
+        if (!reservation) return null;
+        if (["cancelled", "no_show", "completed"].includes(reservation.status)) throw new AvailabilityConflict("Для этой брони нельзя назначить домик");
+        const [stay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservation.id)).limit(1);
+        if (stay && ["in_house", "due_out", "checked_out"].includes(stay.operationalStatus)) {
+          throw new AvailabilityConflict("После заселения смена домика требует отдельного переселения");
+        }
+        const allocation = await assignReservationUnit(tx, reservation, roomId);
+        await tx.update(s.reservationUnits).set({ status: "released", updatedAt: now() }).where(and(
+          eq(s.reservationUnits.reservationId, reservation.id),
+          inArray(s.reservationUnits.status, ["assigned", "active"]),
+          // Keep the allocation just created; old allocations must not occupy inventory.
+          ne(s.reservationUnits.id, allocation.id),
+        ));
+        await tx.update(s.guestStays).set({ roomId, reservationUnitId: allocation.id, updatedAt: now() })
+          .where(eq(s.guestStays.reservationId, reservation.id));
+        await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: stay?.guestId ?? reservation.bookerCustomerId,
+          propertyId: reservation.propertyId, employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
+          type: "room_assignment", title: "Домик назначен", description: roomId, occurredAt: now() });
+        return allocation;
+      });
+      if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+      response.status(201).json(result);
+    } catch (error) {
+      if (error instanceof AvailabilityConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.patch("/reservations/:id", async (request, response) => {
+    const patch = z.object({ arrivalAt: z.string().datetime().optional(), departureAt: z.string().datetime().optional(),
+      status: z.enum(["pending", "tentative", "pending_payment", "confirmed", "cancelled", "no_show", "completed"]).optional() }).parse(request.body);
+    try {
+      const result = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT id FROM reservations WHERE id = ${request.params.id} FOR UPDATE`);
+        const [reservation] = await tx.select().from(s.reservations).where(eq(s.reservations.id, request.params.id)).limit(1);
+        if (!reservation) return null;
+        if (["cancelled", "no_show"].includes(reservation.status) && patch.status !== reservation.status) {
+          throw new AvailabilityConflict("Закрытую бронь нельзя возобновить через изменение статуса");
+        }
+        const [stay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservation.id)).limit(1);
+        if (reservation.status === "completed" || stay && ["in_house", "due_out", "checked_out"].includes(stay.operationalStatus)) {
+          throw new AvailabilityConflict("Даты и статус проживающего гостя меняются через операции заезда и выезда");
+        }
+        if (patch.status === "completed") throw new AvailabilityConflict("Завершите проживание действием «Выселить»");
+        const arrivalAt = patch.arrivalAt ?? reservation.arrivalAt;
+        const departureAt = patch.departureAt ?? reservation.departureAt;
+        const status = patch.status ?? reservation.status;
+        if (new Date(departureAt).getTime() <= new Date(arrivalAt).getTime()) throw new AvailabilityConflict("Дата выезда должна быть позже даты заезда");
+        const units = await tx.select().from(s.reservationUnits).where(and(
+          eq(s.reservationUnits.reservationId, reservation.id),
+          inArray(s.reservationUnits.status, ["assigned", "active"]),
+        ));
+        if (!["cancelled", "no_show"].includes(status)) {
+          for (const unit of units) await assertRoomAvailable(tx, { roomId: unit.roomId, propertyId: reservation.propertyId,
+            arrivalAt, departureAt, excludeReservationId: reservation.id });
+        }
+        const [updated] = await tx.update(s.reservations).set({ arrivalAt, departureAt, status,
+          cancelledAt: status === "cancelled" ? now() : null, updatedAt: now() })
+          .where(eq(s.reservations.id, reservation.id)).returning();
+        for (const unit of units) await tx.update(s.reservationUnits).set({ arrivalAt, departureAt,
+          status: ["cancelled", "no_show"].includes(status) ? "released" : "assigned", updatedAt: now() })
+          .where(eq(s.reservationUnits.id, unit.id));
+        await tx.update(s.guestStays).set({ checkIn: arrivalAt, checkOut: departureAt,
+          nights: Math.max(1, Math.ceil((new Date(departureAt).getTime() - new Date(arrivalAt).getTime()) / 86_400_000)), updatedAt: now() })
+          .where(eq(s.guestStays.reservationId, reservation.id));
+        if (["cancelled", "no_show"].includes(status)) await tx.update(s.guestStays).set({ status: status === "no_show" ? "no_show" : "cancelled", operationalStatus: status })
+          .where(and(eq(s.guestStays.reservationId, reservation.id), inArray(s.guestStays.operationalStatus, ["upcoming", "pre_arrival", "due_in"])));
+        if (["pending", "tentative", "pending_payment", "confirmed"].includes(status)) await tx.update(s.guestStays)
+          .set({ status: "confirmed", operationalStatus: "upcoming" })
+          .where(and(eq(s.guestStays.reservationId, reservation.id), eq(s.guestStays.operationalStatus, "cancelled")));
+        if (status !== reservation.status || arrivalAt !== reservation.arrivalAt || departureAt !== reservation.departureAt) {
+          await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: stay?.guestId ?? reservation.bookerCustomerId,
+            propertyId: reservation.propertyId, employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
+            type: "reservation_update", title: status === "cancelled" ? "Бронь отменена" : "Бронь изменена",
+            description: `${reservation.code}: ${arrivalAt} — ${departureAt}; ${status}`, occurredAt: now() });
+        }
+        return updated;
+      });
+      if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+      response.json(result);
+    } catch (error) {
+      if (error instanceof AvailabilityConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
 
   router.patch("/leads/:id", async (request, response) => {
     const patch = leadPatchSchema.parse(request.body);
@@ -362,11 +755,36 @@ export const createCrmRouter = (db: Database) => {
   });
   router.patch("/housekeeping/:id", async (request, response) => {
     const body = z.object({ action: z.enum(["assign", "start", "complete", "inspect", "reopen", "skip"]), employeeId: z.string().optional(), reason: z.string().optional() }).parse(request.body);
-    const timestamp = now();
-    const values = body.action === "assign" ? { status: "assigned", assigneeId: body.employeeId, assignedAt: timestamp } : body.action === "start" ? { status: "in_progress", startedAt: timestamp } : body.action === "complete" ? { status: "completed", completedAt: timestamp } : body.action === "inspect" ? { status: "inspected", inspectedAt: timestamp } : body.action === "reopen" ? { status: "in_progress", notes: body.reason } : { status: "skipped", skippedReason: body.reason };
-    const [task] = await db.update(s.housekeepingTasks).set({ ...values, updatedAt: timestamp }).where(eq(s.housekeepingTasks.id, request.params.id)).returning();
-    if (body.action === "inspect" && task) await db.update(s.rooms).set({ status: "inspected", updatedAt: timestamp }).where(eq(s.rooms.id, task.roomId));
-    response.json(task);
+    try {
+      const task = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(s.housekeepingTasks).where(eq(s.housekeepingTasks.id, request.params.id)).limit(1);
+        if (!current) return null;
+        if (body.action === "inspect") {
+          if (current.status !== "completed") throw new StayConflict("Сначала завершите уборку");
+          const checklist = await tx.select().from(s.housekeepingChecklistItems).where(eq(s.housekeepingChecklistItems.taskId, current.id));
+          if (checklist.some((item) => !item.checked)) throw new StayConflict("В чек-листе остались незавершённые пункты");
+        }
+        const timestamp = now();
+        const values = body.action === "assign" ? { status: "assigned", assigneeId: body.employeeId, assignedAt: timestamp } : body.action === "start" ? { status: "in_progress", startedAt: timestamp } : body.action === "complete" ? { status: "completed", completedAt: timestamp } : body.action === "inspect" ? { status: "inspected", inspectedAt: timestamp } : body.action === "reopen" ? { status: "in_progress", notes: body.reason } : { status: "skipped", skippedReason: body.reason };
+        const [updated] = await tx.update(s.housekeepingTasks).set({ ...values, updatedAt: timestamp }).where(eq(s.housekeepingTasks.id, current.id)).returning();
+        if (body.action === "inspect") {
+          const [blocked] = await tx.select({ id: s.maintenanceTickets.id }).from(s.maintenanceTickets).where(and(
+            eq(s.maintenanceTickets.roomId, current.roomId), eq(s.maintenanceTickets.blocksRoom, true),
+            inArray(s.maintenanceTickets.status, ["open", "assigned", "in_progress", "waiting_parts", "resolved"]),
+          )).limit(1);
+          const [active] = await tx.select({ id: s.guestStays.id }).from(s.guestStays).where(and(
+            eq(s.guestStays.roomId, current.roomId), inArray(s.guestStays.operationalStatus, ["in_house", "due_out"]),
+          )).limit(1);
+          if (!blocked && !active) await tx.update(s.rooms).set({ status: "inspected", updatedAt: timestamp }).where(eq(s.rooms.id, current.roomId));
+        }
+        return updated;
+      });
+      if (!task) return response.status(404).json({ error: "Уборка не найдена" });
+      response.json(task);
+    } catch (error) {
+      if (error instanceof StayConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
   });
   router.patch("/housekeeping/:taskId/checklist/:position", async (request, response) => {
     const position = Number(request.params.position);
@@ -378,17 +796,38 @@ export const createCrmRouter = (db: Database) => {
 
   router.post("/maintenance", async (request, response) => {
     const body = z.object({ roomId: z.string().optional(), zone: z.string(), category: z.string(), description: z.string(), priority: z.string(), blocksRoom: z.boolean().optional(), propertyId: z.string(), housekeepingTaskId: z.string().optional() }).parse(request.body);
+    if (body.roomId) {
+      const [room] = await db.select({ id: s.rooms.id }).from(s.rooms).where(and(
+        eq(s.rooms.id, body.roomId), eq(s.rooms.propertyId, body.propertyId))).limit(1);
+      if (!room) return response.status(404).json({ error: "Домик не найден в выбранном объекте" });
+    }
     const ticketId = id("maintenance");
     const [ticket] = await db.insert(s.maintenanceTickets).values({ id: ticketId, code: `РЗ-${Date.now().toString().slice(-6)}`, status: "open", discoveredAt: now(), slaDueAt: new Date(Date.now() + (body.priority === "high" ? 1 : 3) * 86_400_000).toISOString(), ...body }).returning();
     if (body.blocksRoom && body.roomId) await db.update(s.rooms).set({ status: "out_of_order", updatedAt: now() }).where(eq(s.rooms.id, body.roomId));
     response.status(201).json(ticket);
   });
   router.patch("/maintenance/:id", async (request, response) => {
-    const body = z.object({ status: z.string().optional(), employeeId: z.string().optional(), result: z.string().optional(), verify: z.boolean().optional() }).parse(request.body);
+    const body = z.object({ status: z.enum(["open", "assigned", "in_progress", "waiting_parts", "resolved", "verified", "cancelled"]).optional(), employeeId: z.string().optional(), result: z.string().optional(), verify: z.boolean().optional() }).parse(request.body);
     const timestamp = now();
     const status = body.verify ? "verified" : body.status ?? (body.employeeId ? "assigned" : undefined);
-    const [ticket] = await db.update(s.maintenanceTickets).set({ status, assigneeId: body.employeeId, result: body.result, resolvedAt: status === "resolved" ? timestamp : undefined, verifiedAt: status === "verified" ? timestamp : undefined, updatedAt: timestamp }).where(eq(s.maintenanceTickets.id, request.params.id)).returning();
-    if (body.verify && ticket?.roomId) await db.update(s.rooms).set({ status: "vacant_dirty", updatedAt: timestamp }).where(eq(s.rooms.id, ticket.roomId));
+    const ticket = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(s.maintenanceTickets).set({ status, assigneeId: body.employeeId,
+        result: body.result, resolvedAt: status === "resolved" ? timestamp : undefined,
+        verifiedAt: status === "verified" ? timestamp : undefined, updatedAt: timestamp })
+        .where(eq(s.maintenanceTickets.id, request.params.id)).returning();
+      if (updated?.roomId && ["verified", "cancelled"].includes(status ?? "")) {
+        const [otherBlocker] = await tx.select({ id: s.maintenanceTickets.id }).from(s.maintenanceTickets).where(and(
+          eq(s.maintenanceTickets.roomId, updated.roomId), eq(s.maintenanceTickets.blocksRoom, true),
+          inArray(s.maintenanceTickets.status, ["open", "assigned", "in_progress", "waiting_parts", "resolved"]),
+        )).limit(1);
+        const [active] = await tx.select({ id: s.guestStays.id }).from(s.guestStays).where(and(
+          eq(s.guestStays.roomId, updated.roomId), inArray(s.guestStays.operationalStatus, ["in_house", "due_out"]),
+        )).limit(1);
+        if (!otherBlocker) await tx.update(s.rooms).set({ status: active ? "occupied" : "vacant_dirty", updatedAt: timestamp }).where(eq(s.rooms.id, updated.roomId));
+      }
+      return updated;
+    });
+    if (!ticket) return response.status(404).json({ error: "Заявка не найдена" });
     response.json(ticket);
   });
 
@@ -403,9 +842,20 @@ export const createCrmRouter = (db: Database) => {
     response.json(task);
   });
   router.patch("/rooms/:id/status", async (request, response) => {
-    const { status } = z.object({ status: z.string() }).parse(request.body);
-    const [room] = await db.update(s.rooms).set({ status, updatedAt: now() }).where(eq(s.rooms.id, request.params.id)).returning();
-    response.json(room);
+    const { status } = z.object({ status: z.enum(["vacant_clean", "vacant_dirty", "inspected", "out_of_service"]) }).parse(request.body);
+    const [room] = await db.select().from(s.rooms).where(eq(s.rooms.id, request.params.id)).limit(1);
+    if (!room) return response.status(404).json({ error: "Домик не найден" });
+    const [active] = await db.select({ id: s.guestStays.id }).from(s.guestStays).where(and(
+      eq(s.guestStays.roomId, room.id), inArray(s.guestStays.operationalStatus, ["in_house", "due_out"]),
+    )).limit(1);
+    if (active) return response.status(409).json({ error: "Статус занятого домика меняется через проживание" });
+    const [blocked] = await db.select({ id: s.maintenanceTickets.id }).from(s.maintenanceTickets).where(and(
+      eq(s.maintenanceTickets.roomId, room.id), eq(s.maintenanceTickets.blocksRoom, true),
+      inArray(s.maintenanceTickets.status, ["open", "assigned", "in_progress", "waiting_parts", "resolved"]),
+    )).limit(1);
+    if (blocked) return response.status(409).json({ error: "Сначала закройте блокирующий ремонт" });
+    const [updated] = await db.update(s.rooms).set({ status, updatedAt: now() }).where(eq(s.rooms.id, room.id)).returning();
+    response.json(updated);
   });
 
 
@@ -413,23 +863,26 @@ export const createCrmRouter = (db: Database) => {
 
   router.post("/guests", async (request, response) => {
     const body = z.object({ fullName: z.string().min(1), firstName: z.string().optional(), lastName: z.string().optional(), phone: z.string().optional(), email: z.string().optional(), company: z.string().optional(), language: z.string().optional(), preferredPropertyId: z.string().optional() }).parse(request.body);
+    const [property] = body.preferredPropertyId ? await db.select().from(s.properties).where(eq(s.properties.id, body.preferredPropertyId)).limit(1) : [];
+    const [organization] = property ? [] : await db.select().from(s.organizations).limit(1);
+    const organizationId = property?.organizationId ?? organization?.id;
+    if (!organizationId) return response.status(400).json({ error: "Организация не найдена" });
     if (body.phone || body.email) {
-      const orConditions = [];
-      if (body.phone) orConditions.push(eq(s.guests.phone, body.phone));
-      if (body.email) orConditions.push(eq(s.guests.email, body.email));
-      if (orConditions.length > 0) {
-        const [existing] = await db.select().from(s.guests).where(or(...orConditions)).limit(1);
-        if (existing) return response.status(409).json({ error: "Гость с таким контактом уже существует", existingGuestId: existing.id });
-      }
+      const matches = await findCustomerCandidates(db, organizationId, body);
+      if (matches.candidates.length) return response.status(409).json({ error: "Возможный повторный контакт", existingGuestId: matches.candidates[0], candidateIds: matches.candidates });
     }
     const guestId = id("guest");
-    const [guest] = await db.insert(s.guests).values({ id: guestId, organizationId: "org_les_live", ...body }).returning();
+    const [guest] = await db.insert(s.guests).values({ id: guestId, organizationId,
+      ...body, normalizedPhone: normalizePhone(body.phone), normalizedEmail: normalizeEmail(body.email) }).returning();
     response.status(201).json(guest);
   });
 
   router.patch("/guests/:id", async (request, response) => {
     const body = z.object({ fullName: z.string().optional(), firstName: z.string().optional(), lastName: z.string().optional(), phone: z.string().optional(), email: z.string().optional(), company: z.string().optional(), language: z.string().optional() }).parse(request.body);
-    const [guest] = await db.update(s.guests).set({ ...body, updatedAt: now() }).where(eq(s.guests.id, request.params.id)).returning();
+    const [guest] = await db.update(s.guests).set({ ...body,
+      ...(body.phone !== undefined ? { normalizedPhone: normalizePhone(body.phone) } : {}),
+      ...(body.email !== undefined ? { normalizedEmail: normalizeEmail(body.email) } : {}),
+      updatedAt: now() }).where(eq(s.guests.id, request.params.id)).returning();
     response.json(guest);
   });
 
@@ -458,14 +911,11 @@ export const createCrmRouter = (db: Database) => {
       nextActionLabel: z.string().optional(), nextActionDueAt: z.string().datetime().optional(), note: z.string().optional(),
     }).refine((value) => Boolean(value.guestId) !== Boolean(value.guest), { message: "Provide either guestId or guest" }).parse(request.body);
 
-    const normalizePhone = (value?: string) => value?.replace(/\D/g, "") || undefined;
-    const normalizeEmail = (value?: string) => value?.trim().toLowerCase() || undefined;
+    const [property] = await db.select().from(s.properties).where(eq(s.properties.id, body.propertyId)).limit(1);
+    if (!property) return response.status(404).json({ error: "Объект не найден" });
     if (body.guest?.phone || body.guest?.email) {
-      const phone = normalizePhone(body.guest.phone);
-      const email = normalizeEmail(body.guest.email);
-      const existing = (await db.select().from(s.guests)).find((guest) =>
-        (phone && normalizePhone(guest.phone ?? undefined) === phone) || (email && normalizeEmail(guest.email ?? undefined) === email));
-      if (existing) return response.status(409).json({ error: "Гость с таким контактом уже существует", existingGuestId: existing.id });
+      const matches = await findCustomerCandidates(db, property.organizationId, body.guest);
+      if (matches.candidates.length) return response.status(409).json({ error: "Возможный повторный контакт", existingGuestId: matches.candidates[0], candidateIds: matches.candidates });
     }
 
     const [mapping] = body.ownerId ? [] : await db.select().from(s.employeeProperties).where(eq(s.employeeProperties.propertyId, body.propertyId)).limit(1);
@@ -500,8 +950,8 @@ export const createCrmRouter = (db: Database) => {
       let guest;
       if (body.guest) {
         [guest] = await tx.insert(s.guests).values({
-          id: guestId, organizationId: "org_les_live", fullName: body.guest.fullName, firstName: body.guest.firstName,
-          lastName: body.guest.lastName, phone: body.guest.phone || null, email: normalizeEmail(body.guest.email) ?? null,
+          id: guestId, organizationId: property.organizationId, fullName: body.guest.fullName, firstName: body.guest.firstName,
+          lastName: body.guest.lastName, phone: body.guest.phone || null, normalizedPhone: normalizePhone(body.guest.phone), email: normalizeEmail(body.guest.email), normalizedEmail: normalizeEmail(body.guest.email),
           company: body.guest.company || null, language: body.guest.language ?? "Русский", preferredPropertyId: body.propertyId,
         }).returning();
       } else {

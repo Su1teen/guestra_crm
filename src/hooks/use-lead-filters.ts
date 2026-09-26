@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import type { Lead, LeadStage } from "@/types/crm";
 import { useCrm } from "@/store/crm-store";
 import { daysBetween } from "@/lib/format";
@@ -65,12 +66,28 @@ export const activityOptions: FilterOption[] = [
 
 export const useLeadFilters = (leads: Lead[], initial?: Partial<LeadFilters>) => {
   const { guestById } = useCrm();
-  const [filters, setFilters] = useState<LeadFilters>({ ...defaultLeadFilters, ...initial });
+  const [params, setParams] = useSearchParams();
+  const filters = useMemo(() => {
+    const next = { ...defaultLeadFilters, ...initial };
+    (Object.keys(defaultLeadFilters) as (keyof LeadFilters)[]).forEach((key) => {
+      const value = params.get(key);
+      if (value !== null) (next as Record<string, string>)[key] = value;
+    });
+    return next;
+  }, [initial, params]);
 
-  const setFilter = <K extends keyof LeadFilters>(key: K, value: LeadFilters[K]) =>
-    setFilters((previous) => ({ ...previous, [key]: value }));
+  const setFilter = <K extends keyof LeadFilters>(key: K, value: LeadFilters[K]) => {
+    const next = new URLSearchParams(params);
+    if (value === defaultLeadFilters[key] || value === "") next.delete(key);
+    else next.set(key, value);
+    setParams(next, { replace: true });
+  };
 
-  const reset = () => setFilters(defaultLeadFilters);
+  const reset = () => {
+    const next = new URLSearchParams(params);
+    Object.keys(defaultLeadFilters).forEach((key) => next.delete(key));
+    setParams(next, { replace: true });
+  };
 
   const isDirty = useMemo(
     () => Object.entries(filters).some(([key, value]) => value !== defaultLeadFilters[key as keyof LeadFilters]),

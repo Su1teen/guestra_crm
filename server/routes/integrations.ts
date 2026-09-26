@@ -1,10 +1,13 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
-import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 import { ensureFolio, recalcFolio, resolveItemPricing, syncFolioLineForItem, setFolioStatus } from "../services/folio.js";
+import { AvailabilityConflict } from "../services/availability-service.js";
+import { confirmBooking, ReservationConflict } from "../services/reservation-service.js";
+import { resolveOrCreateExternalCustomer } from "../services/customer-service.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
@@ -73,7 +76,10 @@ const offerUpsertSchema = z.object({
 const bookingSchema = z.object({
   channel: z.literal("telegram"), externalUserId: z.string().min(1), propertyId: z.string().min(1),
   confirmationNumber: z.string().min(1), reservationId: z.string().min(1), roomType: z.string().min(1),
-  checkIn: z.string().min(1), checkOut: z.string().min(1), adults: z.number().int().min(0), children: z.number().int().min(0),
+  roomId: z.string().min(1).optional(),
+  checkIn: z.string().refine((value) => Number.isFinite(Date.parse(value))),
+  checkOut: z.string().refine((value) => Number.isFinite(Date.parse(value))),
+  adults: z.number().int().min(0), children: z.number().int().min(0),
   grandTotal: z.number().int().min(0), currency: z.literal("KZT"),
 });
 
@@ -110,21 +116,13 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
       return response.json({ guestId: duplicate.guestId, leadId: duplicate.leadId, leadCode: lead?.code, created: false, updated: false, stage: lead?.stage, classification, duplicate: true });
     }
 
-    let identity = await resolveIdentity(db, input.channel, input.externalUserId);
-    let guestId = identity?.guestId;
-    let createdGuest = false;
-    if (!guestId) {
-      guestId = id("guest");
-      createdGuest = true;
-      const displayName = input.firstName?.trim() || `Гость Telegram ${input.externalUserId}`;
-      await db.insert(s.guests).values({ id: guestId, organizationId: "org_les_live", firstName: input.firstName ?? null, lastName: null, fullName: displayName, phone: null, email: null, preferredPropertyId: input.propertyId, preferences: { language: "Русский", roomPreference: "", bedPreference: "", foodPreference: "", specialRequests: [] }, identityMetadata: {} });
-      [identity] = await db.insert(s.guestContactIdentities).values({ id: id("identity"), guestId, channel: input.channel, externalUserId: input.externalUserId, externalChatId: input.externalChatId ?? null, username: input.username ?? null }).returning();
-      await db.insert(s.guestProperties).values({ guestId, propertyId: input.propertyId }).onConflictDoNothing();
-    } else {
-      await db.update(s.guestContactIdentities).set({ externalChatId: input.externalChatId ?? identity?.externalChatId, username: input.username ?? identity?.username, updatedAt: now() }).where(eq(s.guestContactIdentities.id, identity!.id));
-      await db.insert(s.guestProperties).values({ guestId, propertyId: input.propertyId }).onConflictDoNothing();
-      if (input.firstName) await db.update(s.guests).set({ firstName: input.firstName, fullName: input.firstName, updatedAt: now() }).where(eq(s.guests.id, guestId));
-    }
+    const customer = await resolveOrCreateExternalCustomer(db, {
+      channel: input.channel, externalUserId: input.externalUserId, propertyId: input.propertyId,
+      firstName: input.firstName, externalChatId: input.externalChatId, username: input.username,
+    });
+    const guestId = customer.customerId;
+    const createdGuest = customer.created;
+    if (input.firstName && !createdGuest) await db.update(s.guests).set({ firstName: input.firstName, fullName: input.firstName, profileStatus: "active", updatedAt: now() }).where(eq(s.guests.id, guestId));
 
     let lead = await activeLead(db, guestId, input.propertyId);
     const timestamp = now();
@@ -134,7 +132,7 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
     if (!lead) {
       const ownerId = await ownerForProperty(db, input.propertyId);
       const leadId = id("lead");
-      [lead] = await db.insert(s.leads).values({ id: leadId, code: `G-AI-${Date.now().toString().slice(-7)}`, guestId, propertyId: input.propertyId, source: "telegram", stage: requestedStage, intent: input.temperature, roomType: input.roomType ?? null, checkIn: input.checkIn ? new Date(input.checkIn).toISOString() : null, checkOut: input.checkOut ? new Date(input.checkOut).toISOString() : null, nights: input.checkIn && input.checkOut ? Math.max(1, Math.round((new Date(input.checkOut).getTime() - new Date(input.checkIn).getTime()) / 86_400_000)) : 0, adults: input.adults ?? 0, children: input.children ?? 0, totalAmount: input.totalAmount ?? 0, ownerId, lastActivityAt: timestamp, nextActionLabel: input.nextActionLabel ?? null, nextActionDueAt: input.nextActionDueAt ?? null, probability: input.probability, slaMinutes: input.direction === "accommodation" ? 15 : 30 }).returning();
+      [lead] = await db.insert(s.leads).values({ id: leadId, code: `G-AI-${Date.now().toString().slice(-7)}`, guestId, propertyId: input.propertyId, source: "telegram", stage: requestedStage, requestStatus: requestedStage === "new" ? "new" : "active", intent: input.temperature, roomType: input.roomType ?? null, checkIn: input.checkIn ? new Date(input.checkIn).toISOString() : null, checkOut: input.checkOut ? new Date(input.checkOut).toISOString() : null, nights: input.checkIn && input.checkOut ? Math.max(1, Math.round((new Date(input.checkOut).getTime() - new Date(input.checkIn).getTime()) / 86_400_000)) : 0, adults: input.adults ?? 0, children: input.children ?? 0, totalAmount: input.totalAmount ?? 0, ownerId, lastActivityAt: timestamp, nextActionLabel: input.nextActionLabel ?? null, nextActionDueAt: input.nextActionDueAt ?? null, probability: input.probability, slaMinutes: input.direction === "accommodation" ? 15 : 30 }).returning();
       await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: requestedStage, employeeId: null, changedAt: timestamp });
       await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "lead_created", title: "AI: лид создан из Telegram", occurredAt: timestamp });
       await ensureFolio(db, lead);
@@ -149,6 +147,7 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
       for (const [field, value, fact] of fields) if (value !== undefined && value !== null && value !== "" && (lead as Record<string, unknown>)[field] !== value) { patch[field] = value; changedFacts.push(fact); }
       if (requestedStage !== lead.stage && ["new", "qualified", "planning"].includes(lead.stage)) {
         patch.stage = requestedStage;
+        patch.requestStatus = requestedStage === "new" ? "new" : "active";
         await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: requestedStage, employeeId: null, changedAt: timestamp });
       }
       if ((patch.checkIn ?? lead.checkIn) && (patch.checkOut ?? lead.checkOut)) patch.nights = Math.max(1, Math.round((new Date(String(patch.checkOut ?? lead.checkOut)).getTime() - new Date(String(patch.checkIn ?? lead.checkIn)).getTime()) / 86_400_000));
@@ -219,7 +218,7 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
       [offer] = await db.insert(s.offers).values({ id: id("offer"), code: `КП-AI-${Date.now().toString().slice(-6)}`, leadId: lead.id, guestId: lead.guestId, propertyId: lead.propertyId, folioId: folio.id, externalQuoteId, roomType: input.roomType ?? null, checkIn, checkOut, nights, adults: input.adults, children: input.children, status: "draft", ownerId: lead.ownerId, expiresAt: input.expiresAt ?? new Date(Date.now() + 4 * 86_400_000).toISOString(), total: input.total, deposit: input.deposit, currency: input.currency, terms: input.terms ?? null }).returning();
       await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "offer_created", title: "Предложение подготовлено", amount: input.total, occurredAt: timestamp });
       if (["new", "qualified", "planning"].includes(lead.stage)) {
-        await db.update(s.leads).set({ stage: "offer", lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
+        await db.update(s.leads).set({ stage: "offer", requestStatus: "active", lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
         await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: "offer", employeeId: null, changedAt: timestamp });
         await setFolioStatus(db, folio.id, "quoted");
       }
@@ -234,35 +233,16 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
 
   router.post("/bookings/confirm", async (request, response) => {
     const input = bookingSchema.parse(request.body);
-    const [alreadyConfirmed] = await db.select().from(s.leads).where(eq(s.leads.bookingReference, input.confirmationNumber)).limit(1);
-    if (alreadyConfirmed) return response.json({ guestId: alreadyConfirmed.guestId, leadId: alreadyConfirmed.id, leadCode: alreadyConfirmed.code, confirmationNumber: input.confirmationNumber, duplicate: true });
-    const identity = await resolveIdentity(db, input.channel, input.externalUserId);
-    if (!identity) return response.status(404).json({ error: "Guest identity not found" });
-    const lead = await activeLead(db, identity.guestId, input.propertyId);
-    if (!lead) return response.status(404).json({ error: "Active lead not found" });
-    const timestamp = now();
-    const checkIn = new Date(input.checkIn).toISOString();
-    const checkOut = new Date(input.checkOut).toISOString();
-    const folio = await ensureFolio(db, lead);
-    const [updated] = await db.update(s.leads).set({ stage: "confirmed", probability: 100, bookingReference: input.confirmationNumber, reservationId: input.reservationId, roomType: input.roomType, checkIn, checkOut, nights: Math.max(1, Math.round((new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 86_400_000)), adults: input.adults, children: input.children, lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id)).returning();
-    if (lead.stage !== "confirmed") await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: "confirmed", employeeId: null, changedAt: timestamp });
-    // Внешняя сумма бронирования сверяется с фолио: при расхождении добавляется
-    // корректировочная строка, чтобы фолио оставалось источником истины.
-    if (input.grandTotal > 0 && folio.totalAmount !== input.grandTotal) {
-      await db.insert(s.folioLines).values({
-        id: id("fline"), folioId: folio.id, category: "other",
-        description: `Корректировка по бронированию ${input.confirmationNumber}`,
-        quantity: 1, unit: "item", unitPrice: input.grandTotal - folio.totalAmount,
-        lineTotal: input.grandTotal - folio.totalAmount, status: "active",
-        metadata: { bookingReference: input.confirmationNumber },
-      });
+    try {
+      const result = await confirmBooking(db, input);
+      response.json({ guestId: result.customerId, leadId: result.requestId, leadCode: result.requestCode,
+        reservationId: result.reservationId, stayId: result.stayId,
+        confirmationNumber: result.confirmationNumber, stage: result.stage,
+        bookingReference: result.bookingReference, duplicate: result.duplicate });
+    } catch (error) {
+      if (error instanceof ReservationConflict || error instanceof AvailabilityConflict) return response.status(409).json({ error: error.message });
+      throw error;
     }
-    await recalcFolio(db, folio.id);
-    await db.update(s.leadItems).set({ status: "confirmed", updatedAt: timestamp })
-      .where(and(eq(s.leadItems.leadId, lead.id), inArray(s.leadItems.status, ["interest", "selected", "quoted"])));
-    await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "booking", title: "Бронирование подтверждено", description: input.confirmationNumber, amount: input.grandTotal, occurredAt: timestamp });
-    await db.update(s.followUps).set({ status: "done", queue: "done", completedAt: timestamp, updatedAt: timestamp }).where(and(eq(s.followUps.leadId, lead.id), eq(s.followUps.status, "open")));
-    response.json({ guestId: identity.guestId, leadId: updated.id, leadCode: updated.code, confirmationNumber: input.confirmationNumber, stage: updated.stage, bookingReference: updated.bookingReference });
   });
 
   return router;

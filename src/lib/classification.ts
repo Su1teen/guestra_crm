@@ -198,7 +198,7 @@ const recommendedActionFor = (
   if (signals.readyForPrepayment) return "Отправить реквизиты и принять предоплату";
   if (signals.askedAboutPayment) return "Ответить по условиям оплаты";
   if (signals.returnedToOffer && signals.offerViewed) return "Позвонить и обсудить предложение";
-  if (signals.offerViewed) return "Follow-up по предложению";
+  if (signals.offerViewed) return "Связаться по предложению";
   if (signals.offerSent) return "Дождаться просмотра предложения";
   if (signals.readyForOffer) return "Подготовить и отправить предложение";
   if (signals.requestedQuote) return "Подготовить расчёт";

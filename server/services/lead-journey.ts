@@ -10,6 +10,7 @@ import {
   type JourneyStage,
 } from "../../shared/journey.js";
 import type { InterestDetails } from "../../shared/service-groups.js";
+import { ensureReservationForRequest } from "./reservation-service.js";
 import {
   createOfferFromFolio,
   ensureFolio,
@@ -100,6 +101,7 @@ export const applyStageTransition = async (
   const { lead, folio } = ctx;
   const patch: Record<string, unknown> = {
     stage: target,
+    requestStatus: target === "new" ? "new" : target === "confirmed" ? "won" : target === "completed" ? "closed" : target === "lost" || target === "cancelled" ? "lost" : "active",
     probability: probabilityFor(target),
     lastActivityAt: timestamp,
     updatedAt: timestamp,
@@ -138,6 +140,9 @@ export const applyStageTransition = async (
       await setFolioStatus(db, folio.id, "payment_pending");
       break;
     case "confirmed": {
+      if (ctx.input.items.some((item) => item.type === "accommodation") || lead.roomType) {
+        await ensureReservationForRequest(db, lead, folio, String(patch.bookingReference ?? lead.bookingReference));
+      }
       await db.update(s.leadItems).set({ status: "confirmed", updatedAt: timestamp })
         .where(and(eq(s.leadItems.leadId, lead.id), inArray(s.leadItems.status, [...OPEN_ITEM_STATUSES])));
       await setFolioStatus(
@@ -168,6 +173,14 @@ export const applyStageTransition = async (
     }
     case "lost":
     case "cancelled": {
+      if (target === "cancelled") {
+        const reservations = await db.select().from(s.reservations).where(eq(s.reservations.requestId, lead.id));
+        for (const reservation of reservations) {
+          await db.update(s.reservations).set({ status: "cancelled", cancelledAt: timestamp, updatedAt: timestamp }).where(eq(s.reservations.id, reservation.id));
+          await db.update(s.guestStays).set({ status: "cancelled", operationalStatus: "cancelled", updatedAt: timestamp })
+            .where(and(eq(s.guestStays.reservationId, reservation.id), eq(s.guestStays.operationalStatus, "upcoming")));
+        }
+      }
       await db.update(s.leadItems).set({ status: "cancelled", updatedAt: timestamp })
         .where(and(eq(s.leadItems.leadId, lead.id), inArray(s.leadItems.status, [...OPEN_ITEM_STATUSES, "confirmed"])));
       // Фолио закрывается, но суммы сохраняются — это «упущенная выручка»
@@ -285,9 +298,11 @@ export const rollbackLead = async (
   const distinct = [...new Map(history.sort((a, b) => a.changedAt.localeCompare(b.changedAt)).map((entry) => [entry.stage, entry])).values()];
   const previous = [...distinct].reverse().find((entry) => entry.stage !== stage)?.stage as JourneyStage | undefined;
   if (!previous) return { ok: false, status: 409, error: "Нет предыдущего этапа", journey: ctx.evaluation };
+  const [reservation] = await db.select().from(s.reservations).where(eq(s.reservations.requestId, leadId)).limit(1);
+  if (reservation) return { ok: false, status: 409, error: "Бронирование уже создано; измените его отдельно", journey: ctx.evaluation };
   const timestamp = now();
   await db.transaction(async (tx) => {
-    await tx.update(s.leads).set({ stage: previous, probability: probabilityFor(previous), lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, leadId));
+    await tx.update(s.leads).set({ stage: previous, requestStatus: previous === "new" ? "new" : "active", probability: probabilityFor(previous), lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, leadId));
     await tx.insert(s.leadStageHistory).values({ id: newId("stage"), leadId, stage: previous, employeeId, changedAt: timestamp });
     await tx.insert(s.leadActivities).values({ id: newId("activity"), leadId, employeeId, type: "stage_change", title: `Возврат на этап «${journeyStageLabels[previous]}»`, description: reason, occurredAt: timestamp });
     if (previous === "planning" || previous === "qualified" || previous === "new") {

@@ -51,6 +51,9 @@ import type {
   PropertyId,
   Room,
   RoomStatus,
+  Reservation,
+  ReservationUnit,
+  ReservationGuest,
   SalesMetricPoint,
   Segment,
   SegmentKey,
@@ -1747,13 +1750,53 @@ const mockServiceCatalog: ServiceCatalogEntry[] = [
   { id: "svc_transfer", propertyId: "les_borovoe", code: "transfer", category: "transfer", name: "Трансфер", pricingMode: "fixed", defaultPrice: 35000, pricingUnit: "unit", currency: "KZT", active: false },
 ];
 
+// Demo mode uses the same Customer → Request → Reservation → Stay links as PostgreSQL.
+const demoReservations: Reservation[] = [];
+const demoReservationUnits: ReservationUnit[] = [];
+const demoReservationGuests: ReservationGuest[] = [];
+stays.filter((stay) => stay.status === "upcoming" && stay.id.startsWith("stay_lead_")).forEach((stay) => {
+  const request = leads.find((lead) => `stay_${lead.id}` === stay.id);
+  if (!request) return;
+  const reservationId = `reservation_${request.id}`;
+  stay.reservationId = reservationId;
+  stay.operationalStatus = "upcoming";
+  payments.filter((payment) => payment.leadId === request.id).forEach((payment) => { payment.reservationId = reservationId; payment.stayId = stay.id; });
+  demoReservations.push({ id: reservationId, code: stay.bookingReference, propertyId: stay.propertyId,
+    bookerCustomerId: stay.guestId, requestId: request.id, roomTypeSnapshot: stay.roomType,
+    source: request.source, status: "confirmed", arrivalAt: stay.checkIn, departureAt: stay.checkOut,
+    adults: stay.adults, children: stay.children, currency: "KZT", confirmedAt: request.lastActivityAt,
+    createdAt: request.createdAt, updatedAt: request.lastActivityAt });
+  demoReservationGuests.push({ id: `rg_${reservationId}`, reservationId, customerId: stay.guestId,
+    fullName: guests.find((guest) => guest.id === stay.guestId)?.fullName,
+    role: "primary", isPrimary: true, isBooker: true, ageGroup: "adult" });
+  const room = rooms.find((item) => item.propertyId === stay.propertyId && item.category === stay.roomType &&
+    !["out_of_order", "out_of_service"].includes(item.status) &&
+    !demoReservationUnits.some((allocation) => allocation.roomId === item.id &&
+      new Date(allocation.arrivalAt) < new Date(stay.checkOut) && new Date(stay.checkIn) < new Date(allocation.departureAt)));
+  if (room) {
+    stay.roomId = room.id;
+    stay.reservationUnitId = `allocation_${reservationId}`;
+    demoReservationUnits.push({ id: stay.reservationUnitId, reservationId, roomId: room.id,
+      arrivalAt: stay.checkIn, departureAt: stay.checkOut, status: "active", assignedAt: request.lastActivityAt });
+  }
+});
+
 export const crmDataset: CrmDataset = {
   organization,
   properties,
   employees,
   guests,
   stays,
+  reservations: demoReservations,
+  reservationUnits: demoReservationUnits,
+  reservationGuests: demoReservationGuests,
+  reservationNotes: [],
+  unitTypes: [],
   services,
+  serviceReservations: [],
+  packages: [],
+  packageEntitlements: [],
+  reviews: [],
   payments,
   notes,
   guestActivity,

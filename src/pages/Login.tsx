@@ -29,7 +29,7 @@ const Login = () => {
           <div><h1 className="text-xl font-semibold">GUESTRA CRM</h1><p className="text-sm text-muted-foreground">Вход в систему управления продажами</p></div>
         </div>
         <form className="space-y-5" onSubmit={submit}>
-          <div className="space-y-2"><Label htmlFor="email">Email</Label><div className="relative"><Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input id="email" type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} className="pl-9" required /></div></div>
+          <div className="space-y-2"><Label htmlFor="email">Эл. почта</Label><div className="relative"><Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input id="email" type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} className="pl-9" required /></div></div>
           <div className="space-y-2"><Label htmlFor="password">Пароль</Label><div className="relative"><LockKeyhole className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" /><Input id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} className="pl-9" required /></div></div>
           {error && <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700" role="alert">{error}</p>}
           <Button className="w-full" type="submit" disabled={submitting}>{submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Войти</Button>

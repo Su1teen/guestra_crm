@@ -173,7 +173,7 @@ const Offers = () => {
         emptyState={
           <EmptyState
             title="Предложений не найдено"
-            description="Измените фильтры или создайте предложение из карточки лида."
+            description="Измените фильтры или создайте предложение из карточки обращения."
             icon={FileText}
             action={{ label: "Сбросить фильтры", onClick: reset }}
           />

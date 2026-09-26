@@ -69,7 +69,7 @@ export type OfferStatus = "draft" | "sent" | "viewed" | "accepted" | "expired" |
 
 export type TaskStatus = "todo" | "in_progress" | "done" | "overdue";
 
-export type TaskType = "follow_up" | "call" | "message" | "offer" | "payment_reminder" | "internal" | "meeting";
+export type TaskType = "follow_up" | "call" | "message" | "offer" | "payment_reminder" | "internal" | "meeting" | "pre_arrival" | "guest_request";
 
 export type TaskPriority = "low" | "medium" | "high";
 
@@ -198,6 +198,12 @@ export interface GuestStay {
   id: string;
   guestId: string;
   propertyId: PropertyId;
+  reservationId?: string;
+  reservationUnitId?: string;
+  roomId?: string;
+  actualCheckIn?: string;
+  actualCheckOut?: string;
+  operationalStatus?: StayStatus;
   roomType: string;
   checkIn: string;
   checkOut: string;
@@ -206,7 +212,7 @@ export interface GuestStay {
   children: number;
   amount: number;
   bookingReference: string;
-  status: "completed" | "upcoming" | "in_house";
+  status: "completed" | "confirmed" | "upcoming" | "in_house" | "cancelled" | "no_show";
   serviceNames: string[];
 }
 
@@ -214,6 +220,7 @@ export interface GuestPayment {
   id: string;
   guestId: string;
   stayId?: string;
+  reservationId?: string;
   leadId?: string;
   /** Связанный фолио (оплата уменьшает его баланс). */
   folioId?: string;
@@ -251,6 +258,11 @@ export interface GuestContactIdentity {
 
 export interface Guest {
   id: string;
+  normalizedPhone?: string | null;
+  normalizedEmail?: string | null;
+  profileStatus?: "active" | "stub" | "merged";
+  preferredChannel?: Channel;
+  mergedIntoGuestId?: string;
   firstName: string;
   lastName: string;
   fullName: string;
@@ -268,6 +280,133 @@ export interface Guest {
   identity: GuestIdentity;
   preferences: GuestPreference;
   contactIdentities?: GuestContactIdentity[];
+}
+
+export interface ServiceReservation {
+  id: string;
+  propertyId: string;
+  customerId: string;
+  reservationId?: string;
+  stayId?: string;
+  catalogItemId: string;
+  folioId?: string;
+  folioLineId?: string;
+  entitlementId?: string;
+  status: "scheduled" | "completed" | "cancelled";
+  startAt: string;
+  endAt?: string;
+  participants: number;
+  quantity: number;
+  unitPrice: number;
+  totalAmount: number;
+  currency: string;
+  notes?: string;
+  completedAt?: string;
+  cancelledAt?: string;
+}
+
+export interface ServicePackage {
+  id: string;
+  propertyId: string;
+  name: string;
+  description?: string;
+  billingMode: "included" | "separate";
+  price: number;
+  active: boolean;
+}
+
+export interface PackageEntitlement {
+  id: string;
+  packageId: string;
+  catalogItemId: string;
+  includedQuantity: number;
+}
+
+export interface GuestReview {
+  id: string;
+  propertyId: string;
+  guestId?: string;
+  stayId?: string;
+  guestName: string;
+  channel: "2gis" | "google" | "yandex" | "booking" | "tripadvisor" | "direct";
+  rating: number;
+  maxRating: number;
+  reviewAt: string;
+  text: string;
+  topic: string;
+  status: "new" | "draft" | "answered";
+  reply?: string;
+  respondedAt?: string;
+  externalUrl?: string;
+}
+
+/** Physical table remains `guests` until all legacy FKs can migrate safely. */
+export type Customer = Guest;
+export type RequestStatus = "new" | "active" | "waiting_customer" | "won" | "lost" | "closed";
+export type ReservationStatus = "pending" | "tentative" | "pending_payment" | "confirmed" | "cancelled" | "no_show" | "completed";
+export type StayStatus = "upcoming" | "pre_arrival" | "due_in" | "in_house" | "due_out" | "checked_out" | "no_show" | "cancelled";
+
+export interface Reservation {
+  id: string;
+  code: string;
+  propertyId: PropertyId;
+  bookerCustomerId: string;
+  requestId?: string;
+  unitTypeId?: string;
+  ratePlanId?: string;
+  packageId?: string;
+  roomTypeSnapshot?: string;
+  source: string;
+  status: ReservationStatus;
+  arrivalAt: string;
+  departureAt: string;
+  adults: number;
+  children: number;
+  currency: string;
+  specialRequest?: string;
+  etaAt?: string;
+  externalReservationId?: string;
+  externalConfirmationNumber?: string;
+  confirmedAt?: string;
+  cancelledAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReservationNote {
+  id: string;
+  reservationId: string;
+  authorId?: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface ReservationUnit {
+  id: string;
+  reservationId: string;
+  roomId: string;
+  arrivalAt: string;
+  departureAt: string;
+  status: string;
+  assignedAt: string;
+}
+
+export interface ReservationGuest {
+  id: string;
+  reservationId: string;
+  customerId?: string;
+  fullName?: string;
+  role: string;
+  isPrimary: boolean;
+  isBooker: boolean;
+  ageGroup?: string;
+}
+
+export interface UnitType {
+  id: string;
+  propertyId: PropertyId;
+  name: string;
+  active: boolean;
 }
 
 export interface LeadStageHistory {
@@ -439,7 +578,9 @@ export interface FolioLine {
 export interface Folio {
   id: string;
   code: string;
-  leadId: string;
+  leadId?: string;
+  reservationId?: string;
+  stayId?: string;
   guestId: string;
   propertyId: string;
   status: FolioStatus;
@@ -490,6 +631,7 @@ export interface Lead {
   propertyId: PropertyId;
   source: LeadSource;
   stage: LeadStage;
+  requestStatus?: RequestStatus;
   intent: LeadIntent;
   roomType: string | null;
   checkIn: string | null;
@@ -544,6 +686,8 @@ export interface Lead {
   journey?: LeadJourney;
 }
 
+export type Request = Lead;
+
 export interface OfferLine {
   label: string;
   quantity?: string;
@@ -591,6 +735,10 @@ export interface Task {
   ownerId: string;
   guestId?: string;
   leadId?: string;
+  reservationId?: string;
+  stayId?: string;
+  source?: string;
+  department?: string;
   propertyId: PropertyId;
   description?: string;
   completedAt?: string;
@@ -611,6 +759,8 @@ export interface Conversation {
   guestId: string;
   leadId?: string;
   offerId?: string;
+  reservationId?: string;
+  stayId?: string;
   channel: Channel;
   propertyId: PropertyId;
   assigneeId?: string;
@@ -836,6 +986,7 @@ export interface ChecklistItem {
 
 export interface HousekeepingTask {
   id: string;
+  stayId?: string;
   roomId: string;
   roomNumber: string;
   propertyId: PropertyId;
@@ -938,6 +1089,8 @@ export type OperationalTaskStatus = "open" | "in_progress" | "done" | "cancelled
 
 export interface OperationalTask {
   id: string;
+  reservationId?: string;
+  stayId?: string;
   leadId?: string;
   guestId?: string;
   propertyId: PropertyId;
@@ -977,7 +1130,16 @@ export interface CrmDataset {
   employees: Employee[];
   guests: Guest[];
   stays: GuestStay[];
+  reservations: Reservation[];
+  reservationUnits: ReservationUnit[];
+  reservationGuests: ReservationGuest[];
+  reservationNotes: ReservationNote[];
+  unitTypes: UnitType[];
   services: GuestService[];
+  serviceReservations: ServiceReservation[];
+  packages: ServicePackage[];
+  packageEntitlements: PackageEntitlement[];
+  reviews: GuestReview[];
   payments: GuestPayment[];
   notes: GuestNote[];
   guestActivity: GuestActivityEvent[];

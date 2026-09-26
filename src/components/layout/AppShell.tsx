@@ -5,16 +5,11 @@ import {
   CalendarDays,
   CheckSquare,
   ClipboardList,
-  FileText,
-  Gauge,
   Inbox,
   LayoutDashboard,
   Layers,
-  ListChecks,
   Megaphone,
   Menu,
-  PhoneCall,
-  Target,
   Star,
   Users,
   Wrench,
@@ -34,6 +29,7 @@ import { InitialsAvatar } from "@/components/common/Identity";
 import { formatDueDate } from "@/lib/format";
 import { taskTypeLabels } from "@/lib/labels";
 import { useAuth } from "@/contexts/AuthContext";
+import { displayTaskTitle } from "@/lib/hospitality";
 
 interface NavItem {
   to: string;
@@ -64,43 +60,32 @@ export const AppShell = () => {
 
   const groups: NavGroup[] = useMemo(
     () => [
-      { items: [{ to: "/", label: "Обзор", icon: LayoutDashboard, end: true }] },
+      { items: [{ to: "/", label: "Сегодня", icon: LayoutDashboard, end: true }] },
       {
-        title: "Продажи",
+        title: "Работа",
         items: [
           { to: "/inbox", label: "Входящие", icon: Inbox, badge: unread },
-          { to: "/pipeline", label: "Воронка", icon: Layers },
-          { to: "/leads", label: "Лиды", icon: Target },
-          { to: "/offers", label: "Предложения", icon: FileText },
-          { to: "/follow-up", label: "Follow-up", icon: PhoneCall, badge: overdueFollowUps.length },
-          { to: "/tasks", label: "Задачи", icon: CheckSquare, badge: overdueTasks.length },
-          { to: "/calendar", label: "Календарь", icon: CalendarDays },
-        ],
-      },
-      {
-        title: "Клиенты",
-        items: [
-          { to: "/guests", label: "Гости", icon: Users },
-          { to: "/reputation", label: "Репутация", icon: Star },
-          { to: "/classification", label: "Классификация", icon: ListChecks },
-          { to: "/segments", label: "Сегменты", icon: Gauge },
-        ],
-      },
-      { title: "Маркетинг", items: [{ to: "/campaigns", label: "Кампании", icon: Megaphone }] },
-      {
-        title: "Аналитика",
-        items: [
-          { to: "/analytics/sales", label: "Продажи", icon: BarChart3 },
-          { to: "/management-report", label: "Доходы и расходы", icon: BarChart3 },
-          { to: "/reports", label: "Выгрузки Excel", icon: ClipboardList },
+          { to: "/requests", label: "Обращения", icon: Layers },
+          { to: "/reservations", label: "Бронирования", icon: CalendarDays },
+          { to: "/guests", label: "Гости и контакты", icon: Users },
+          { to: "/tasks", label: "Задачи", icon: CheckSquare, badge: overdueTasks.length + overdueFollowUps.length },
         ],
       },
       {
         title: "Операции",
         items: [
-          { to: "/housekeeping", label: "Housekeeping", icon: CheckSquare },
-          { to: "/maintenance", label: "Ремонт", icon: Wrench },
+          { to: "/housekeeping", label: "Уборка", icon: CheckSquare },
+          { to: "/maintenance", label: "Техобслуживание", icon: Wrench },
         ],
+      },
+      { title: "Рост", items: [
+        { to: "/reputation", label: "Репутация", icon: Star },
+        { to: "/campaigns", label: "Маркетинг · кампании", icon: Megaphone },
+        { to: "/segments", label: "Маркетинг · сегменты", icon: ClipboardList },
+      ] },
+      {
+        title: "Управление",
+        items: [{ to: "/analytics", label: "Аналитика", icon: BarChart3 }],
       },
     ],
     [overdueFollowUps.length, overdueTasks.length, unread],
@@ -113,7 +98,7 @@ export const AppShell = () => {
           G
         </span>
         <div className="leading-tight">
-          <p className="text-sm font-semibold tracking-tight text-foreground">GUESTRA CRM</p>
+          <p className="text-sm font-semibold tracking-tight text-foreground">GUESTRA</p>
           <p className="text-xs text-muted-foreground">для сети отелей ЛЕС</p>
         </div>
       </div>
@@ -203,12 +188,12 @@ export const AppShell = () => {
               <PopoverContent align="end" className="w-80 p-0">
                 <div className="border-b border-border px-4 py-3">
                   <p className="text-sm font-semibold text-foreground">Уведомления</p>
-                  <p className="text-xs text-muted-foreground">Мои задачи и просроченные follow-up</p>
+                  <p className="text-xs text-muted-foreground">Мои задачи и просроченные обращения</p>
                 </div>
                 <div className="max-h-80 overflow-y-auto">
                   {openTasks.slice(0, 6).map((task) => (
                     <div key={task.id} className="border-b border-border/70 px-4 py-3 last:border-0">
-                      <p className="text-sm font-medium text-foreground">{task.title}</p>
+                      <p className="text-sm font-medium text-foreground">{displayTaskTitle(task.title)}</p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         {taskTypeLabels[task.type]} · {formatDueDate(task.dueAt)}
                       </p>

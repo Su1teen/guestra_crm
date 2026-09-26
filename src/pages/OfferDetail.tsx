@@ -74,7 +74,7 @@ const OfferDetail = () => {
         }
         actions={
           <>
-            <Button variant="outline" className="gap-2" onClick={() => toast({ title: "Редактирование в mockup недоступно", description: "Измените условия в карточке лида." })}>
+            <Button variant="outline" className="gap-2" onClick={() => toast({ title: "Редактирование в демо недоступно", description: "Измените условия в карточке обращения." })}>
               <Pencil className="h-4 w-4" />
               Изменить
             </Button>
@@ -140,7 +140,7 @@ const OfferDetail = () => {
           <div className="grid gap-4 border-b border-border px-6 py-5 sm:grid-cols-3">
             <Field label="Гость">{guest.fullName}</Field>
             <Field label="Телефон">{guest.phone || "—"}</Field>
-            <Field label="Email">{guest.email || "—"}</Field>
+            <Field label="Эл. почта">{guest.email || "—"}</Field>
             {offer.roomType && <Field label="Категория">{offer.roomType}</Field>}
             {offer.checkIn && (
               <Field label="Проживание">
@@ -212,7 +212,7 @@ const OfferDetail = () => {
             </div>
             <div className="mt-4 grid grid-cols-2 gap-3">
               <Field label="Проживаний">{guest.staysCount}</Field>
-              <Field label="LTV">{formatTenge(guest.lifetimeValue)}</Field>
+              <Field label="Покупки за всё время">{formatTenge(guest.lifetimeValue)}</Field>
             </div>
           </SectionCard>
 

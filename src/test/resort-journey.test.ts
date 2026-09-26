@@ -79,7 +79,7 @@ describe('Pipeline stages', () => {
 // SOURCE LABELS
 describe('Source labels', () => {
   it('includes email and walk_in sources', () => {
-    expect(sourceLabels.email).toBe('Email');
+    expect(sourceLabels.email).toBe('Эл. почта');
     expect(sourceLabels.walk_in).toBe('Визит');
   });
 });

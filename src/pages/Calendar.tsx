@@ -89,7 +89,7 @@ const kindAccent = (kind: ActivityKind) =>
 const kindLabel = (kind: ActivityKind) =>
   kind === "offer_deadline" ? "Дедлайн предложения" : taskTypeLabels[kind];
 
-const Calendar = () => {
+const Calendar = ({ embedded = false }: { embedded?: boolean }) => {
   const { status, reload, property, guestById, toggleTaskDone, employeeById, propertyName } = useCrm();
   const scoped = useScopedData();
   const navigate = useNavigate();
@@ -326,8 +326,8 @@ const Calendar = () => {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Календарь"
-        description="Месячная сетка активностей отдела продаж: задачи, дедлайны предложений, заезды и выезды гостей"
+        title={embedded ? "Календарь задач" : "Календарь"}
+        description="Задачи, сроки предложений, заезды и выезды гостей"
         actions={
           <div className="flex items-center gap-2">
             <Button variant="outline" size="icon" onClick={() => shiftMonth(-1)} aria-label="Предыдущий месяц">
@@ -347,9 +347,6 @@ const Calendar = () => {
         <div className="flex flex-wrap items-center gap-2">
           <h2 className="text-lg font-semibold tracking-tight text-foreground">{formatMonthYear(anchor)}</h2>
           <StatusPill tone="neutral">Объект: {propertyName(property)}</StatusPill>
-          <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
-            демо-данные
-          </span>
         </div>
         <p className="text-xs text-muted-foreground">
           Стрелки и PageUp / PageDown — навигация с клавиатуры · Enter — подробности дня

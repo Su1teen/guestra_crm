@@ -24,7 +24,8 @@ describe("sales demo mode", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Обзор продаж" }, { timeout: 3000 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Сегодня" }, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Бронирования" })).toBeInTheDocument();
     expect(screen.getAllByText(/· Демо/).length).toBeGreaterThan(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

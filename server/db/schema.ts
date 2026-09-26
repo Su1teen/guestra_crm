@@ -71,6 +71,11 @@ export const guests = pgTable("guests", {
   fullName: text("full_name").notNull(),
   phone: text("phone"),
   email: text("email"),
+  normalizedPhone: text("normalized_phone"),
+  normalizedEmail: text("normalized_email"),
+  profileStatus: text("profile_status").notNull().default("active"),
+  preferredChannel: text("preferred_channel"),
+  mergedIntoGuestId: text("merged_into_guest_id"),
   company: text("company"),
   language: text("language").notNull().default("Русский"),
   preferredPropertyId: text("preferred_property_id").references(() => properties.id, { onDelete: "set null" }),
@@ -83,6 +88,8 @@ export const guests = pgTable("guests", {
 }, (table) => [
   index("guests_phone_idx").on(table.phone),
   index("guests_email_idx").on(table.email),
+  index("guests_normalized_phone_idx").on(table.organizationId, table.normalizedPhone),
+  index("guests_normalized_email_idx").on(table.organizationId, table.normalizedEmail),
 ]);
 
 export const guestContactIdentities = pgTable("guest_contact_identities", {
@@ -108,6 +115,11 @@ export const guestStays = pgTable("guest_stays", {
   id: text("id").primaryKey(),
   guestId: text("guest_id").notNull().references(() => guests.id, { onDelete: "cascade" }),
   propertyId: text("property_id").notNull().references(() => properties.id),
+  reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
+  reservationUnitId: text("reservation_unit_id").references(() => reservationUnits.id, { onDelete: "set null" }),
+  roomId: text("room_id").references(() => rooms.id, { onDelete: "set null" }),
+  actualCheckIn: timestamp("actual_check_in", { withTimezone: true, mode: "string" }),
+  actualCheckOut: timestamp("actual_check_out", { withTimezone: true, mode: "string" }),
   roomType: text("room_type").notNull(),
   checkIn: timestamp("check_in", { withTimezone: true, mode: "string" }).notNull(),
   checkOut: timestamp("check_out", { withTimezone: true, mode: "string" }).notNull(),
@@ -117,6 +129,7 @@ export const guestStays = pgTable("guest_stays", {
   amount: integer("amount").notNull().default(0),
   bookingReference: text("booking_reference").notNull(),
   status: text("status").notNull(),
+  operationalStatus: text("operational_status").notNull().default("upcoming"),
   serviceNames: jsonb("service_names").$type<string[]>().notNull().default([]),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -146,6 +159,7 @@ export const guestPayments = pgTable("guest_payments", {
   id: text("id").primaryKey(),
   guestId: text("guest_id").notNull().references(() => guests.id, { onDelete: "cascade" }),
   stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
+  reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
   leadId: text("lead_id").references(() => leads.id, { onDelete: "set null" }),
   folioId: text("folio_id").references(() => folios.id, { onDelete: "set null" }),
   date: timestamp("date", { withTimezone: true, mode: "string" }).notNull(),
@@ -186,6 +200,7 @@ export const leads = pgTable("leads", {
   propertyId: text("property_id").notNull().references(() => properties.id),
   source: text("source").notNull(),
   stage: text("stage").notNull(),
+  requestStatus: text("request_status").notNull().default("new"),
   intent: text("intent").notNull().default("warm"),
   roomType: text("room_type"),
   checkIn: timestamp("check_in", { withTimezone: true, mode: "string" }),
@@ -219,6 +234,7 @@ export const leads = pgTable("leads", {
   uniqueIndex("leads_booking_reference_uidx").on(table.bookingReference),
   index("leads_property_idx").on(table.propertyId),
   index("leads_stage_idx").on(table.stage),
+  index("leads_request_status_idx").on(table.requestStatus),
   index("leads_owner_idx").on(table.ownerId),
   index("leads_created_at_idx").on(table.createdAt),
   index("leads_last_activity_at_idx").on(table.lastActivityAt),
@@ -337,6 +353,10 @@ export const tasks = pgTable("tasks", {
   ownerId: text("owner_id").notNull().references(() => employees.id),
   guestId: text("guest_id").references(() => guests.id, { onDelete: "set null" }),
   leadId: text("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
+  stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
+  source: text("source"),
+  department: text("department"),
   propertyId: text("property_id").notNull().references(() => properties.id),
   description: text("description"),
   completedAt: timestamp("completed_at", { withTimezone: true, mode: "string" }),
@@ -373,6 +393,8 @@ export const conversations = pgTable("conversations", {
   guestId: text("guest_id").notNull().references(() => guests.id, { onDelete: "cascade" }),
   leadId: text("lead_id").references(() => leads.id, { onDelete: "set null" }),
   offerId: text("offer_id").references(() => offers.id, { onDelete: "set null" }),
+  reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
+  stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
   channel: text("channel").notNull(),
   propertyId: text("property_id").notNull().references(() => properties.id),
   assigneeId: text("assignee_id").references(() => employees.id, { onDelete: "set null" }),
@@ -446,6 +468,7 @@ export const rooms = pgTable("rooms", {
   number: text("number").notNull(),
   propertyId: text("property_id").notNull().references(() => properties.id, { onDelete: "cascade" }),
   category: text("category").notNull(),
+  unitTypeId: text("unit_type_id").references(() => unitTypes.id, { onDelete: "set null" }),
   floor: integer("floor").notNull(),
   zone: text("zone").notNull(),
   status: text("status").notNull(),
@@ -455,8 +478,90 @@ export const rooms = pgTable("rooms", {
   updatedAt: updatedAt(),
 }, (table) => [uniqueIndex("rooms_property_number_uidx").on(table.propertyId, table.number)]);
 
+/** A category of inventory. `rooms` remain the concrete sellable units. */
+export const unitTypes = pgTable("unit_types", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id").notNull().references(() => properties.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  active: boolean("active").notNull().default(true),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [uniqueIndex("unit_types_property_name_uidx").on(table.propertyId, table.name)]);
+
+/** A reservation is a commercial commitment, independent of the stay state. */
+export const reservations = pgTable("reservations", {
+  id: text("id").primaryKey(),
+  code: text("code").notNull(),
+  propertyId: text("property_id").notNull().references(() => properties.id),
+  bookerCustomerId: text("booker_customer_id").notNull().references(() => guests.id),
+  requestId: text("request_id").references(() => leads.id, { onDelete: "set null" }),
+  unitTypeId: text("unit_type_id").references(() => unitTypes.id, { onDelete: "set null" }),
+  ratePlanId: text("rate_plan_id"),
+  packageId: text("package_id"),
+  roomTypeSnapshot: text("room_type_snapshot"),
+  source: text("source").notNull(),
+  status: text("status").notNull().default("pending"),
+  arrivalAt: timestamp("arrival_at", { withTimezone: true, mode: "string" }).notNull(),
+  departureAt: timestamp("departure_at", { withTimezone: true, mode: "string" }).notNull(),
+  adults: integer("adults").notNull().default(0),
+  children: integer("children").notNull().default(0),
+  currency: text("currency").notNull().default("KZT"),
+  specialRequest: text("special_request"),
+  etaAt: timestamp("eta_at", { withTimezone: true, mode: "string" }),
+  externalReservationId: text("external_reservation_id"),
+  externalConfirmationNumber: text("external_confirmation_number"),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true, mode: "string" }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true, mode: "string" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [
+  uniqueIndex("reservations_code_uidx").on(table.code),
+  uniqueIndex("reservations_property_external_id_uidx").on(table.propertyId, table.externalReservationId),
+  uniqueIndex("reservations_property_confirmation_uidx").on(table.propertyId, table.externalConfirmationNumber),
+  index("reservations_property_arrival_idx").on(table.propertyId, table.arrivalAt),
+  index("reservations_property_status_idx").on(table.propertyId, table.status),
+  index("reservations_request_idx").on(table.requestId),
+]);
+
+export const reservationUnits = pgTable("reservation_units", {
+  id: text("id").primaryKey(),
+  reservationId: text("reservation_id").notNull().references(() => reservations.id, { onDelete: "cascade" }),
+  roomId: text("room_id").notNull().references(() => rooms.id),
+  arrivalAt: timestamp("arrival_at", { withTimezone: true, mode: "string" }).notNull(),
+  departureAt: timestamp("departure_at", { withTimezone: true, mode: "string" }).notNull(),
+  status: text("status").notNull().default("assigned"),
+  assignedAt: timestamp("assigned_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [
+  uniqueIndex("reservation_units_reservation_room_uidx").on(table.reservationId, table.roomId),
+  index("reservation_units_room_dates_idx").on(table.roomId, table.arrivalAt, table.departureAt),
+]);
+
+export const reservationGuests = pgTable("reservation_guests", {
+  id: text("id").primaryKey(),
+  reservationId: text("reservation_id").notNull().references(() => reservations.id, { onDelete: "cascade" }),
+  customerId: text("customer_id").references(() => guests.id, { onDelete: "set null" }),
+  fullName: text("full_name"),
+  role: text("role").notNull().default("guest"),
+  isPrimary: boolean("is_primary").notNull().default(false),
+  isBooker: boolean("is_booker").notNull().default(false),
+  ageGroup: text("age_group").notNull().default("adult"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [index("reservation_guests_reservation_idx").on(table.reservationId)]);
+
+export const reservationNotes = pgTable("reservation_notes", {
+  id: text("id").primaryKey(),
+  reservationId: text("reservation_id").notNull().references(() => reservations.id, { onDelete: "cascade" }),
+  authorId: text("author_id").references(() => employees.id, { onDelete: "set null" }),
+  text: text("text").notNull(),
+  createdAt: createdAt(),
+}, (table) => [index("reservation_notes_reservation_idx").on(table.reservationId)]);
+
 export const housekeepingTasks = pgTable("housekeeping_tasks", {
   id: text("id").primaryKey(),
+  stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
   roomId: text("room_id").notNull().references(() => rooms.id, { onDelete: "cascade" }),
   propertyId: text("property_id").notNull().references(() => properties.id),
   type: text("type").notNull(),
@@ -518,6 +623,8 @@ export const maintenanceTickets = pgTable("maintenance_tickets", {
 
 export const operationalTasks = pgTable("operational_tasks", {
   id: text("id").primaryKey(),
+  reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
+  stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
   leadId: text("lead_id").references(() => leads.id, { onDelete: "set null" }),
   guestId: text("guest_id").references(() => guests.id, { onDelete: "set null" }),
   propertyId: text("property_id").notNull().references(() => properties.id),
@@ -647,16 +754,90 @@ export const serviceCatalog = pgTable("service_catalog", {
   uniqueIndex("service_catalog_property_code_uidx").on(table.propertyId, table.code),
 ]);
 
+export const packages = pgTable("packages", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id").notNull().references(() => properties.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  billingMode: text("billing_mode").notNull().default("included"),
+  price: integer("price").notNull().default(0),
+  active: boolean("active").notNull().default(true),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const packageEntitlements = pgTable("package_entitlements", {
+  id: text("id").primaryKey(),
+  packageId: text("package_id").notNull().references(() => packages.id, { onDelete: "cascade" }),
+  catalogItemId: text("catalog_item_id").notNull().references(() => serviceCatalog.id),
+  includedQuantity: integer("included_quantity").notNull().default(1),
+  createdAt: createdAt(),
+}, (table) => [uniqueIndex("package_entitlements_package_catalog_uidx").on(table.packageId, table.catalogItemId)]);
+
+/** A scheduled service is distinct from interest in a request and completed history. */
+export const serviceReservations = pgTable("service_reservations", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id").notNull().references(() => properties.id),
+  customerId: text("customer_id").notNull().references(() => guests.id),
+  reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
+  stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
+  catalogItemId: text("catalog_item_id").notNull().references(() => serviceCatalog.id),
+  folioId: text("folio_id").references(() => folios.id, { onDelete: "set null" }),
+  folioLineId: text("folio_line_id").references(() => folioLines.id, { onDelete: "set null" }),
+  entitlementId: text("entitlement_id").references(() => packageEntitlements.id, { onDelete: "set null" }),
+  idempotencyKey: text("idempotency_key"),
+  status: text("status").notNull().default("scheduled"),
+  startAt: timestamp("start_at", { withTimezone: true, mode: "string" }).notNull(),
+  endAt: timestamp("end_at", { withTimezone: true, mode: "string" }),
+  participants: integer("participants").notNull().default(1),
+  quantity: integer("quantity").notNull().default(1),
+  unitPrice: integer("unit_price").notNull().default(0),
+  totalAmount: integer("total_amount").notNull().default(0),
+  currency: text("currency").notNull().default("KZT"),
+  notes: text("notes"),
+  completedAt: timestamp("completed_at", { withTimezone: true, mode: "string" }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true, mode: "string" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [
+  uniqueIndex("service_reservations_idempotency_uidx").on(table.idempotencyKey),
+  uniqueIndex("service_reservations_folio_line_uidx").on(table.folioLineId),
+  index("service_reservations_stay_idx").on(table.stayId),
+  index("service_reservations_customer_idx").on(table.customerId),
+]);
+
+/** Internal review journal; publishing to third-party platforms is separate. */
+export const guestReviews = pgTable("guest_reviews", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id").notNull().references(() => properties.id),
+  guestId: text("guest_id").references(() => guests.id, { onDelete: "set null" }),
+  stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
+  guestName: text("guest_name").notNull(),
+  channel: text("channel").notNull(),
+  rating: integer("rating").notNull(),
+  maxRating: integer("max_rating").notNull().default(5),
+  reviewAt: timestamp("review_at", { withTimezone: true, mode: "string" }).notNull(),
+  text: text("text").notNull(),
+  topic: text("topic").notNull().default("Общее впечатление"),
+  status: text("status").notNull().default("new"),
+  reply: text("reply"),
+  respondedAt: timestamp("responded_at", { withTimezone: true, mode: "string" }),
+  externalUrl: text("external_url"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [index("guest_reviews_property_date_idx").on(table.propertyId, table.reviewAt)]);
+
 // ---------------------------------------------------------------------------
-// Folio — счёт заказа. Создаётся вместе с lead в одной транзакции и является
-// источником истины по коммерческой сумме (lead.total_amount дублируется для
-// backward compatibility).
+// Folio follows the commercial request into a reservation/stay. Legacy lead
+// linkage remains for historical clients; lead.total_amount is compatibility only.
 // ---------------------------------------------------------------------------
 
 export const folios = pgTable("folios", {
   id: text("id").primaryKey(),
   code: text("code").notNull(),
-  leadId: text("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  leadId: text("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
+  stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
   guestId: text("guest_id").notNull().references(() => guests.id, { onDelete: "cascade" }),
   propertyId: text("property_id").notNull().references(() => properties.id),
   status: text("status").notNull().default("open"),
@@ -675,6 +856,7 @@ export const folios = pgTable("folios", {
   uniqueIndex("folios_code_uidx").on(table.code),
   index("folios_guest_idx").on(table.guestId),
   index("folios_property_idx").on(table.propertyId),
+  index("folios_reservation_idx").on(table.reservationId),
 ]);
 
 export const folioLines = pgTable("folio_lines", {

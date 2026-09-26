@@ -1,20 +1,20 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CrmProvider } from "@/store/crm-store";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { AppShell } from "@/components/layout/AppShell";
-import Dashboard from "@/pages/Dashboard";
+import Today from "@/pages/Today";
+import RequestsWorkspace from "@/pages/RequestsWorkspace";
+import Reservations from "@/pages/Reservations";
+import AnalyticsHub from "@/pages/AnalyticsHub";
 import Inbox from "@/pages/Inbox";
-import Pipeline from "@/pages/Pipeline";
-import Leads from "@/pages/Leads";
 import LeadDetail from "@/pages/LeadDetail";
 import Offers from "@/pages/Offers";
 import OfferDetail from "@/pages/OfferDetail";
 import Tasks from "@/pages/Tasks";
-import Calendar from "@/pages/Calendar";
 import Guests from "@/pages/Guests";
 import GuestDetail from "@/pages/GuestDetail";
 import Segments from "@/pages/Segments";
@@ -22,7 +22,6 @@ import Campaigns from "@/pages/Campaigns";
 import SalesAnalytics from "@/pages/SalesAnalytics";
 import SalesWorkspace from "@/pages/SalesWorkspace";
 import Performance from "@/pages/Performance";
-import FollowUp from "@/pages/FollowUp";
 import Classification from "@/pages/Classification";
 import DailyReport from "@/pages/DailyReport";
 import Reports from "@/pages/Reports";
@@ -36,6 +35,13 @@ import { LoadingScreen } from "@/components/common/States";
 
 const queryClient = new QueryClient();
 
+const LegacyRedirect = ({ to, view }: { to: string; view?: string }) => {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  if (view) params.set("view", view);
+  return <Navigate to={`${to}${params.size ? `?${params}` : ""}`} replace />;
+};
+
 const AppRoutes = () => {
   const { status, user } = useAuth();
   if (status === "loading") return <LoadingScreen />;
@@ -44,21 +50,25 @@ const AppRoutes = () => {
     <CrmProvider>
       <Routes>
         <Route element={<AppShell />}>
-        <Route index element={<Dashboard />} />
+        <Route index element={<Today />} />
         <Route path="inbox" element={<Inbox />} />
-        <Route path="pipeline" element={<Pipeline />} />
-        <Route path="leads" element={<Leads />} />
+        <Route path="requests" element={<RequestsWorkspace />} />
+        <Route path="requests/:leadId" element={<LeadDetail />} />
+        <Route path="pipeline" element={<LegacyRedirect to="/requests" view="board" />} />
+        <Route path="leads" element={<LegacyRedirect to="/requests" />} />
         <Route path="leads/:leadId" element={<LeadDetail />} />
         <Route path="offers" element={<Offers />} />
         <Route path="offers/:offerId" element={<OfferDetail />} />
-        <Route path="follow-up" element={<FollowUp />} />
+        <Route path="follow-up" element={<LegacyRedirect to="/tasks" view="followups" />} />
         <Route path="tasks" element={<Tasks />} />
-        <Route path="calendar" element={<Calendar />} />
+        <Route path="calendar" element={<LegacyRedirect to="/tasks" view="calendar" />} />
+        <Route path="reservations" element={<Reservations />} />
         <Route path="guests" element={<Guests />} />
         <Route path="guests/:guestId" element={<GuestDetail />} />
         <Route path="classification" element={<Classification />} />
         <Route path="segments" element={<Segments />} />
         <Route path="campaigns" element={<Campaigns />} />
+        <Route path="analytics" element={<AnalyticsHub />} />
         <Route path="analytics/sales" element={<SalesWorkspace />} />
         <Route path="analytics/sales/legacy" element={<SalesAnalytics />} />
         <Route path="daily-report" element={<DailyReport />} />

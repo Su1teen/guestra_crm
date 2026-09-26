@@ -36,13 +36,14 @@ import {
 import { isOpen } from "@/lib/analytics";
 import CashbackWallet from "@/components/common/CashbackWallet";
 import { buildReputationReviews, CHANNELS } from "@/lib/reputation-demo";
+import { customerContext, reservationStatusLabels, operationalStatusLabels } from "@/lib/hospitality";
 
-type TabKey = "overview" | "stays" | "conversations" | "services" | "payments" | "loyalty" | "reviews" | "notes";
+type TabKey = "overview" | "bookings" | "spending" | "conversations" | "profile";
 
 const GuestDetail = () => {
   const { guestId = "" } = useParams();
   const navigate = useNavigate();
-  const { status, reload, data, guestById, leadsForGuest, addGuestNote, employeeById, propertyById } = useCrm();
+  const { status, reload, data, dataMode, guestById, leadsForGuest, reservationsForCustomer, addGuestNote, employeeById, propertyById } = useCrm();
 
   const [tab, setTab] = useState<TabKey>("overview");
   const [note, setNote] = useState("");
@@ -53,8 +54,10 @@ const GuestDetail = () => {
     if (!guest) {
       return {
         leads: [],
+        reservations: [],
         stays: [],
         services: [],
+        serviceReservations: [],
         payments: [],
         notes: [],
         conversations: [],
@@ -64,8 +67,10 @@ const GuestDetail = () => {
     }
     return {
       leads: leadsForGuest(guest.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      reservations: reservationsForCustomer(guest.id).sort((a, b) => b.arrivalAt.localeCompare(a.arrivalAt)),
       stays: data.stays.filter((stay) => stay.guestId === guest.id).sort((a, b) => b.checkIn.localeCompare(a.checkIn)),
       services: data.services.filter((service) => service.guestId === guest.id),
+      serviceReservations: data.serviceReservations.filter((service) => service.customerId === guest.id),
       payments: data.payments.filter((payment) => payment.guestId === guest.id).sort((a, b) => b.date.localeCompare(a.date)),
       notes: data.notes.filter((item) => item.guestId === guest.id),
       conversations: data.conversations.filter((conversation) => conversation.guestId === guest.id),
@@ -74,7 +79,7 @@ const GuestDetail = () => {
         .filter((event) => event.guestId === guest.id)
         .sort((a, b) => b.at.localeCompare(a.at)),
     };
-  }, [data, guest, leadsForGuest]);
+  }, [data, guest, leadsForGuest, reservationsForCustomer]);
 
   if (status === "error") return <ErrorState onRetry={reload} />;
   if (status === "loading") return <LoadingScreen />;
@@ -89,19 +94,20 @@ const GuestDetail = () => {
     );
   }
 
-  const guestReviews = buildReputationReviews(data.guests).filter((review) => review.guestId === guest.id);
+  const guestReviews = dataMode === "database" ? data.reviews.filter((review) => review.guestId === guest.id)
+    .map((review) => ({ ...review, date: review.reviewAt })) :
+    [...data.reviews.filter((review) => review.guestId === guest.id).map((review) => ({ ...review, date: review.reviewAt })),
+      ...buildReputationReviews(data.guests).filter((review) => review.guestId === guest.id)];
   const activeLead = related.leads.find(isOpen);
   const lastStay = related.stays.find((stay) => stay.status === "completed");
+  const context = customerContext(data, guest.id);
 
   const tabs: { value: TabKey; label: string; count?: number }[] = [
     { value: "overview", label: "Обзор" },
-    { value: "stays", label: "Проживания", count: related.stays.length },
+    { value: "bookings", label: "Бронирования", count: related.reservations.length },
+    { value: "spending", label: "Услуги и расходы", count: related.services.length + related.serviceReservations.length },
     { value: "conversations", label: "Переписка", count: related.conversations.length },
-    { value: "services", label: "Услуги", count: related.services.length },
-    { value: "payments", label: "Платежи", count: related.payments.length },
-    { value: "loyalty", label: "Кэшбек" },
-    { value: "reviews", label: "Отзывы", count: guestReviews.length },
-    { value: "notes", label: "Заметки", count: related.notes.length },
+    { value: "profile", label: "Профиль" },
   ];
 
   return (
@@ -117,7 +123,7 @@ const GuestDetail = () => {
           <div>
             <PageHeader
               title={guest.fullName}
-              description={`${guest.company ?? "Частный гость"} · ${guest.phone} · ${guest.email}`}
+              description={`${guest.company ?? "Частный гость"} · ${guest.phone ?? "Телефон не указан"} · ${guest.email ?? "Эл. почта не указана"}`}
               meta={
                 <>
                   {guest.segments.map((key) => (
@@ -150,9 +156,26 @@ const GuestDetail = () => {
         </div>
       </div>
 
+      <SectionCard title="Что происходит сейчас" description="Контекст гостя и ближайшее действие">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="space-y-2">
+            <StatusPill tone={context.state === "in_house" ? "success" : context.state === "reserved" ? "info" : "neutral"}>{context.state === "in_house" ? "Сейчас проживает" : context.state === "reserved" ? "Будущий гость" : context.state === "request" ? "Есть обращение" : context.state === "post_stay" ? "Проживал" : "Контакт"}</StatusPill>
+            {context.reservation ? <><p className="text-sm font-semibold">{propertyById(context.reservation.propertyId)?.name ?? context.reservation.propertyId} · {context.room ? `домик ${context.room.number}` : context.reservation.roomTypeSnapshot ?? "Домик не назначен"}</p>
+              <p className="text-sm text-muted-foreground">{formatStayRange(context.reservation.arrivalAt, context.reservation.departureAt)} · {context.reservation.adults} взрослых</p>
+              {context.folio && <p className="text-sm">Остаток: <strong>{formatTenge(context.folio.balance)}</strong></p>}</>
+              : context.request ? <p className="text-sm">Обращение {context.request.code} · {context.request.roomType ?? "запрос уточняется"}</p>
+                : <p className="text-sm text-muted-foreground">Активных обращений и бронирований нет.</p>}
+            {context.task && <p className="text-xs text-muted-foreground">Следующее действие: {context.task.title} · {formatDateNumeric(context.task.dueAt)}</p>}
+            {context.state === "in_house" && <p className="text-xs text-muted-foreground">Запланированные услуги: {related.serviceReservations.filter((item) => item.stayId === context.stay?.id && item.status === "scheduled").length} · открытые запросы: {data.tasks.filter((item) => item.stayId === context.stay?.id && item.type === "guest_request" && item.status !== "done").length}</p>}
+          </div>
+          <div className="flex gap-2">{context.reservation && <Button variant="outline" onClick={() => navigate(`/reservations?reservation=${context.reservation?.id}`)}>Открыть бронь</Button>}
+            {context.request && <Button variant="outline" onClick={() => navigate(`/requests/${context.request?.id}`)}>Открыть обращение</Button>}</div>
+        </div>
+      </SectionCard>
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <SectionCard>
-          <Field label="Lifetime value">
+          <Field label="Сумма покупок">
             <span className="text-lg font-semibold">{formatTenge(guest.lifetimeValue)}</span>
           </Field>
         </SectionCard>
@@ -171,10 +194,26 @@ const GuestDetail = () => {
 
       <SegmentedTabs value={tab} onChange={setTab} options={tabs} />
 
+      {tab === "bookings" && related.reservations.length > 0 && (
+        <SectionCard title="Бронирования" description="Бронь и проживание ведутся отдельно">
+          <div className="space-y-3">
+            {related.reservations.map((reservation) => {
+              const stay = related.stays.find((item) => item.reservationId === reservation.id);
+              return <button type="button" key={reservation.id} onClick={() => navigate(`/reservations?reservation=${reservation.id}`)} className="flex w-full flex-wrap items-center justify-between gap-2 border-b border-border pb-3 text-left last:border-0 last:pb-0 hover:text-brand-700">
+                <span><span className="block font-medium">{reservation.code} · {reservation.roomTypeSnapshot ?? "Размещение"}</span>
+                  <span className="text-sm text-muted-foreground">{formatDateNumeric(reservation.arrivalAt)} — {formatDateNumeric(reservation.departureAt)}</span></span>
+                <span className="text-right text-sm"><span className="block">{reservationStatusLabels[reservation.status]}</span>
+                  <span className="text-muted-foreground">{stay ? `Проживание: ${operationalStatusLabels[stay.operationalStatus ?? "upcoming"]}` : "Проживание не создано"}</span></span>
+              </button>;
+            })}
+          </div>
+        </SectionCard>
+      )}
+
       {tab === "overview" && (
         <div className="grid gap-5 xl:grid-cols-3">
           <div className="space-y-5 xl:col-span-2">
-            <SectionCard title="Текущая сделка">
+            <SectionCard title="Активное обращение">
               {activeLead ? (
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
@@ -194,7 +233,7 @@ const GuestDetail = () => {
                   </div>
                 </div>
               ) : (
-                <p className="text-sm text-muted-foreground">Открытых сделок нет.</p>
+                <p className="text-sm text-muted-foreground">Открытых обращений нет.</p>
               )}
             </SectionCard>
 
@@ -223,30 +262,6 @@ const GuestDetail = () => {
           </div>
 
           <div className="space-y-5">
-            <SectionCard title="Идентификация">
-              <div className="space-y-3">
-                <Field label="Телефон">{guest.identity.primaryPhone}</Field>
-                <Field label="Email">{guest.identity.emails.join(", ")}</Field>
-                <Field label="Документ">
-                  {guest.identity.documentType === "passport" ? "Паспорт" : "Удостоверение личности"} ·{" "}
-                  {guest.identity.documentNumber}
-                </Field>
-                <Field label="Гражданство">{guest.identity.citizenship}</Field>
-                <Field label="Дата рождения">{formatDateLong(guest.identity.birthDate)}</Field>
-                <Field label="В базе с">{formatDateLong(guest.createdAt)}</Field>
-              </div>
-            </SectionCard>
-
-            <SectionCard title="Предпочтения">
-              <div className="space-y-3">
-                <Field label="Язык общения">{guest.preferences.language}</Field>
-                <Field label="Размещение">{guest.preferences.roomPreference}</Field>
-                <Field label="Кровать">{guest.preferences.bedPreference}</Field>
-                <Field label="Питание">{guest.preferences.foodPreference}</Field>
-                <Field label="Особые пожелания">{guest.preferences.specialRequests.join(", ") || "—"}</Field>
-              </div>
-            </SectionCard>
-
             <SectionCard title="Предложения">
               {related.offers.length === 0 ? (
                 <p className="text-sm text-muted-foreground">Предложений нет.</p>
@@ -267,7 +282,7 @@ const GuestDetail = () => {
         </div>
       )}
 
-      {tab === "stays" && (
+      {tab === "bookings" && (
         <SectionCard padded={false} bodyClassName="p-0">
           <ul className="divide-y divide-border">
             {related.stays.map((stay) => (
@@ -327,9 +342,10 @@ const GuestDetail = () => {
         </SectionCard>
       )}
 
-      {tab === "services" && (
+      {tab === "spending" && (
         <SectionCard padded={false} bodyClassName="p-0">
           <ul className="divide-y divide-border">
+            {related.serviceReservations.map((service) => <li key={service.id} className="flex items-center justify-between gap-3 px-5 py-3"><div><p className="text-sm font-medium">{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"}</p><p className="text-xs text-muted-foreground">{formatDateNumeric(service.startAt)} · {service.status === "scheduled" ? "Запланирована" : service.status === "completed" ? "Оказана" : "Отменена"}{service.entitlementId ? " · включена в пакет" : ""}</p></div><span className="text-sm font-medium">{formatTenge(service.totalAmount)}</span></li>)}
             {related.services.map((service) => {
               const stay = service.stayId ? data.stays.find((s) => s.id === service.stayId) : undefined;
               return (
@@ -357,14 +373,14 @@ const GuestDetail = () => {
                 </li>
               );
             })}
-            {related.services.length === 0 && (
+            {related.services.length === 0 && related.serviceReservations.length === 0 && (
               <li className="px-5 py-8 text-center text-sm text-muted-foreground">Дополнительных услуг нет</li>
             )}
           </ul>
         </SectionCard>
       )}
 
-      {tab === "payments" && (
+      {tab === "spending" && (
         <SectionCard padded={false} bodyClassName="p-0">
           <ul className="divide-y divide-border">
             {related.payments.map((payment) => (
@@ -390,9 +406,28 @@ const GuestDetail = () => {
         </SectionCard>
       )}
 
-      {tab === "loyalty" && <CashbackWallet guestId={guest.id} guestName={guest.fullName} eligibleSpend={related.stays.filter((stay) => stay.status === "completed").reduce((sum, stay) => sum + stay.amount, 0)} lastStayDate={guest.lastStayDate} />}
+      {tab === "spending" && dataMode === "mock" && <CashbackWallet guestId={guest.id} guestName={guest.fullName} eligibleSpend={related.stays.filter((stay) => stay.status === "completed").reduce((sum, stay) => sum + stay.amount, 0)} lastStayDate={guest.lastStayDate} />}
 
-      {tab === "reviews" && (
+      {tab === "profile" && <div className="grid gap-5 lg:grid-cols-2">
+        <SectionCard title="Контакты и документы"><div className="space-y-3">
+          <Field label="Телефон">{guest.identity.primaryPhone ?? guest.phone ?? "—"}</Field>
+          <Field label="Эл. почта">{guest.identity.emails.join(", ") || guest.email || "—"}</Field>
+          <Field label="Документ">{guest.identity.documentType === "passport" ? "Паспорт" : guest.identity.documentType === "id_card" ? "Удостоверение личности" : "Не указан"} {guest.identity.documentNumber ?? ""}</Field>
+          <Field label="Гражданство">{guest.identity.citizenship ?? "—"}</Field>
+          <Field label="Дата рождения">{guest.identity.birthDate ? formatDateLong(guest.identity.birthDate) : "—"}</Field>
+          <Field label="В базе с">{formatDateLong(guest.createdAt)}</Field>
+        </div></SectionCard>
+        <SectionCard title="Предпочтения и отметки"><div className="space-y-3">
+          <Field label="Язык общения">{guest.preferences.language}</Field>
+          <Field label="Размещение">{guest.preferences.roomPreference}</Field>
+          <Field label="Кровать">{guest.preferences.bedPreference}</Field>
+          <Field label="Питание">{guest.preferences.foodPreference}</Field>
+          <Field label="Особые пожелания">{guest.preferences.specialRequests.join(", ") || "—"}</Field>
+          <Field label="Отметки"><span className="flex flex-wrap gap-1">{guest.segments.map((key) => <StatusPill key={key} tone="neutral">{segmentLabels[key]}</StatusPill>)}</span></Field>
+        </div></SectionCard>
+      </div>}
+
+      {tab === "profile" && (
         <SectionCard title="Отзывы гостя" description="Оценки и обратная связь по каналам присутствия">
           {guestReviews.length === 0 ? <p className="text-sm text-muted-foreground">Отзывов пока нет.</p> : (
             <div className="space-y-3">{guestReviews.map((review) => (
@@ -410,7 +445,7 @@ const GuestDetail = () => {
         </SectionCard>
       )}
 
-      {tab === "notes" && (
+      {tab === "profile" && (
         <div className="grid gap-5 lg:grid-cols-3">
           <SectionCard title="Новая заметка" className="lg:col-span-1">
             <Textarea

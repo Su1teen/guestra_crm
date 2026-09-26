@@ -22,6 +22,7 @@ import { EmptyState, ErrorState, LoadingScreen } from "@/components/common/State
 import { Field, InitialsAvatar } from "@/components/common/Identity";
 import { Timeline } from "@/components/common/Timeline";
 import { CreateTaskDialog } from "@/components/crm/CreateTaskDialog";
+import { CreateReservationDialog } from "@/components/crm/CreateReservationDialog";
 import { JourneyCard } from "@/components/crm/JourneyCard";
 import { FolioCard } from "@/components/crm/FolioCard";
 import { ServicePicker } from "@/components/crm/ServicePicker";
@@ -52,6 +53,7 @@ import {
 } from "@/lib/format";
 import {
   directionLabels,
+  qualityLabels,
   intentLabels,
   intentTone,
   itemStatusLabels,
@@ -181,6 +183,7 @@ const LeadDetail = () => {
   const conversation = data.conversations.find((item) => item.leadId === lead.id);
   const journey = journeyFor(lead.id);
   const folio = folioByLeadId(lead.id);
+  const reservation = data.reservations.find((item) => item.requestId === lead.id);
   const terminal = lead.stage === "completed" || lead.stage === "lost" || lead.stage === "cancelled";
   const accommodationInterest = lead.interests.find((interest) => interest.direction === "accommodation");
   const accommodationItem = lead.items.find((item) => item.type === "accommodation");
@@ -388,6 +391,8 @@ const LeadDetail = () => {
         }
         actions={
           <>
+            {reservation ? <Button onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
+              : !terminal && (accommodationInterest || accommodationItem || lead.roomType) ? <CreateReservationDialog request={lead} /> : null}
             <Button variant="outline" className="gap-2" onClick={openEdit}>
               <Pencil className="h-4 w-4" />
               Изменить
@@ -396,7 +401,7 @@ const LeadDetail = () => {
               propertyId={lead.propertyId}
               leadId={lead.id}
               guestId={lead.guestId}
-              defaultTitle={`Follow-up: ${guest.fullName}`}
+              defaultTitle={`Связаться с ${guest.fullName}`}
               trigger={
                 <Button variant="outline" className="gap-2">
                   <CheckSquare className="h-4 w-4" />
@@ -414,16 +419,28 @@ const LeadDetail = () => {
         }
       />
 
+      <SectionCard title="Следующее действие" description="Краткий контекст обращения">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><p className="text-sm font-semibold">{lead.nextAction?.label ?? lead.classification.recommendedAction ?? "Уточнить запрос гостя"}</p>
+            {lead.classification.missingData.length > 0 && <p className="mt-1 text-xs text-muted-foreground">Нужно уточнить: {lead.classification.missingData.join(", ")}</p>}</div>
+          <div className="flex flex-wrap gap-2"><StatusPill tone="info">{directionLabels[lead.classification.direction]}</StatusPill>
+            <StatusPill tone="neutral">{qualityLabels[lead.classification.quality]}</StatusPill></div>
+        </div>
+      </SectionCard>
+
       {journey && (
-        <JourneyCard
-          lead={lead}
-          journey={journey}
-          advancing={advancing}
-          onAdvance={handleAdvance}
-          onLose={() => setLoseOpen(true)}
-          onCancel={() => setCancelOpen(true)}
-          onRollback={() => setRollbackOpen(true)}
-        />
+        <details className="rounded-xl border border-border bg-card p-3">
+          <summary className="cursor-pointer text-sm font-medium text-muted-foreground">Этапы продажи и проверки</summary>
+          <div className="mt-3"><JourneyCard
+            lead={lead}
+            journey={journey}
+            advancing={advancing}
+            onAdvance={handleAdvance}
+            onLose={() => setLoseOpen(true)}
+            onCancel={() => setCancelOpen(true)}
+            onRollback={() => setRollbackOpen(true)}
+          /></div>
+        </details>
       )}
 
       <div className="mt-1 grid gap-3 sm:grid-cols-4">
@@ -767,7 +784,7 @@ const LeadDetail = () => {
             </div>
             <div className="mt-4 grid grid-cols-2 gap-3">
               <Field label="Проживаний">{guest.staysCount}</Field>
-              <Field label="LTV">{formatTenge(guest.lifetimeValue)}</Field>
+              <Field label="Покупки за всё время">{formatTenge(guest.lifetimeValue)}</Field>
               <Field label="Язык">{guest.language}</Field>
               <Field label="Последний визит">
                 {guest.lastStayDate ? formatDateLong(guest.lastStayDate) : "Ещё не проживал"}

@@ -23,6 +23,9 @@ import {
 import type { Conversation } from "@/types/crm";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { customerContext, effectiveStayStatus, operationalStatusLabels, reservationReadiness, reservationStatusLabels } from "@/lib/hospitality";
+import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
+import { GuestRequestDialog } from "@/components/crm/GuestRequestDialog";
 
 type InboxTab = "all" | "unread" | "mine" | "unassigned" | "pending" | "closed";
 
@@ -39,12 +42,14 @@ const Inbox = () => {
   const { toast } = useToast();
   const [params, setParams] = useSearchParams();
 
-  const [tab, setTab] = useState<InboxTab>("all");
+  const [tab, setTab] = useState<InboxTab>(() => params.get("tab") === "unread" ? "unread" : "all");
   const [channel, setChannel] = useState("all");
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState("");
   const [asNote, setAsNote] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(params.get("conversation"));
+  const [serviceOpen, setServiceOpen] = useState(false);
+  const [requestOpen, setRequestOpen] = useState(false);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -81,7 +86,9 @@ const Inbox = () => {
 
   useEffect(() => {
     if (selected && params.get("conversation") !== selected.id) {
-      setParams({ conversation: selected.id }, { replace: true });
+      const next = new URLSearchParams(params);
+      next.set("conversation", selected.id);
+      setParams(next, { replace: true });
     }
   }, [params, selected, setParams]);
 
@@ -100,6 +107,16 @@ const Inbox = () => {
   const guest = selected ? guestById(selected.guestId) : undefined;
   const lead = selected?.leadId ? leadById(selected.leadId) : undefined;
   const offer = selected?.offerId ? offerById(selected.offerId) : undefined;
+  const context = guest ? customerContext(data, guest.id) : null;
+  const reservation = selected?.reservationId ? data.reservations.find((item) => item.id === selected.reservationId) : context?.reservation;
+  const stay = selected?.stayId ? data.stays.find((item) => item.id === selected.stayId) : context?.stay;
+  const room = data.rooms.find((item) => item.id === stay?.roomId) ??
+    data.rooms.find((item) => item.id === data.reservationUnits.find((unit) => unit.reservationId === reservation?.id)?.roomId);
+  const folio = data.folios.find((item) => item.reservationId === reservation?.id || (reservation?.requestId && item.leadId === reservation.requestId));
+  const readiness = reservation ? reservationReadiness(data, reservation) : null;
+  const bookedServices = reservation ? data.serviceReservations.filter((item) => item.reservationId === reservation.id && item.status === "scheduled") : [];
+  const guestRequests = reservation ? data.tasks.filter((item) => item.reservationId === reservation.id && item.type === "guest_request" && item.status !== "done") : [];
+  const lastStay = !reservation && guest ? data.stays.filter((item) => item.guestId === guest.id && item.operationalStatus === "checked_out").sort((a, b) => b.checkOut.localeCompare(a.checkOut))[0] : null;
 
   const submit = () => {
     if (!selected || !draft.trim()) return;
@@ -120,7 +137,7 @@ const Inbox = () => {
 
       <SegmentedTabs
         value={tab}
-        onChange={setTab}
+        onChange={(value) => { setTab(value); const next = new URLSearchParams(params); if (value === "all") next.delete("tab"); else next.set("tab", value); setParams(next, { replace: true }); }}
         options={[
           { value: "all", label: "Все", count: counts.all },
           { value: "unread", label: "Непрочитанные", count: counts.unread },
@@ -295,16 +312,33 @@ const Inbox = () => {
         {selected && guest && (
           <aside className="space-y-4 rounded-2xl border border-border bg-card p-5 shadow-card">
             <div>
-              <p className="text-sm font-semibold text-foreground">Контекст гостя</p>
+              <p className="text-sm font-semibold text-foreground">Что происходит сейчас</p>
               <Link to={`/guests/${guest.id}`} className="text-xs text-brand-600 hover:underline">
-                Открыть профиль 360
+                Открыть профиль
               </Link>
             </div>
+            {reservation ? <div className="space-y-2 rounded-xl border border-brand-200 bg-brand-50/60 p-3">
+              <StatusPill tone={stay && ["in_house", "due_out"].includes(effectiveStayStatus(stay)) ? "success" : "info"}>{stay ? operationalStatusLabels[effectiveStayStatus(stay)] : reservationStatusLabels[reservation.status]}</StatusPill>
+              <p className="text-sm font-semibold">{reservation.code} · {reservation.roomTypeSnapshot ?? "Размещение"}</p>
+              <p className="text-xs text-muted-foreground">{formatStayRange(reservation.arrivalAt, reservation.departureAt)} · {room ? `домик ${room.number}` : "домик не назначен"}</p>
+              {reservation.etaAt && <p className="text-xs">Ожидаемое время приезда: {formatDateLong(reservation.etaAt)} · {formatTime(reservation.etaAt)}</p>}
+              {folio && <p className="text-xs font-medium">Остаток к оплате: {formatTenge(folio.balance)}</p>}
+              {readiness && !["in_house", "due_out", "checked_out"].includes(stay?.operationalStatus ?? "") && <p className="text-xs text-amber-700">{readiness.warnings[0] ?? "Готов к заезду"}</p>}
+              {["in_house", "due_out"].includes(stay?.operationalStatus ?? "") && <p className="text-xs">Услуги: {bookedServices.length} · запросы: {guestRequests.length}</p>}
+              <Button size="sm" variant="outline" className="w-full" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
+              {reservation.status === "confirmed" && <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setServiceOpen(true)}>Услуга</Button><Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>Запрос</Button></div>}
+            </div> : context?.request ? <div className="rounded-xl border border-border p-3">
+              <p className="text-sm font-semibold">Активное обращение · {context.request.code}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{context.request.roomType ?? context.request.items[0]?.name ?? "Уточнить запрос"} · {formatStayRange(context.request.checkIn, context.request.checkOut)}</p>
+              <Button size="sm" variant="outline" className="mt-2 w-full" onClick={() => navigate(`/requests/${context.request?.id}`)}>Открыть обращение</Button>
+            </div> : lastStay ? <p className="rounded-xl bg-secondary p-3 text-xs text-muted-foreground">Последнее проживание: {formatStayRange(lastStay.checkIn, lastStay.checkOut)}. История и отзыв — в профиле гостя.</p> : <p className="rounded-xl bg-secondary p-3 text-xs text-muted-foreground">Активного обращения или брони нет.</p>}
+            {context?.task && <div className="rounded-xl border border-border p-3"><p className="text-xs font-semibold uppercase text-muted-foreground">Следующее действие</p><p className="mt-1 text-sm">{context.task.title}</p><Button size="sm" variant="link" className="px-0" onClick={() => navigate("/tasks")}>К задачам</Button></div>}
+            {reservation && <><ServiceBookingDialog reservation={reservation} customerId={stay?.guestId ?? guest.id} open={serviceOpen} onOpenChange={setServiceOpen} /><GuestRequestDialog reservationId={reservation.id} open={requestOpen} onOpenChange={setRequestOpen} /></>}
             <div className="space-y-3">
               <Field label="Телефон">{guest.phone}</Field>
-              <Field label="Email">{guest.email}</Field>
+              <Field label="Эл. почта">{guest.email}</Field>
               <Field label="Проживаний">{guest.staysCount}</Field>
-              <Field label="LTV">{formatTenge(guest.lifetimeValue)}</Field>
+              <Field label="Покупки за всё время">{formatTenge(guest.lifetimeValue)}</Field>
               <Field label="Последний визит">
                 {guest.lastStayDate ? formatDateLong(guest.lastStayDate) : "Ещё не проживал"}
               </Field>
@@ -360,7 +394,7 @@ const Inbox = () => {
 
             {lead && (
               <Button variant="outline" className="w-full" onClick={() => navigate(`/leads/${lead.id}`)}>
-                Открыть сделку
+                Открыть обращение
               </Button>
             )}
           </aside>

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Users } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { StatCard } from "@/components/common/StatCard";
@@ -13,6 +13,7 @@ import { useScopedData } from "@/hooks/use-scoped-data";
 import type { Guest, SegmentKey } from "@/types/crm";
 import { formatDateNumeric, formatTenge, formatTengeCompact } from "@/lib/format";
 import { segmentLabels } from "@/lib/labels";
+import { customerContext } from "@/lib/hospitality";
 
 const segmentOptions = [
   { value: "all", label: "Все сегменты" },
@@ -27,9 +28,11 @@ const staysOptions = [
 ];
 
 const Guests = () => {
-  const { status, reload, propertyById } = useCrm();
+  const { status, reload, propertyById, data } = useCrm();
   const scoped = useScopedData();
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const role = params.get("filter") ?? "all";
 
   const [search, setSearch] = useState("");
   const [segment, setSegment] = useState("all");
@@ -38,6 +41,12 @@ const Guests = () => {
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
     return scoped.guests.filter((guest) => {
+      const context = customerContext(data, guest.id);
+      if (role === "in_house" && context.state !== "in_house") return false;
+      if (role === "future" && !(context.reservation && context.state === "reserved")) return false;
+      if (role === "with_stay" && guest.staysCount === 0 && !data.stays.some((stay) => stay.guestId === guest.id)) return false;
+      if (role === "services_only" && (guest.staysCount > 0 || !data.services.some((service) => service.guestId === guest.id))) return false;
+      if (role === "repeat" && guest.staysCount < 2) return false;
       if (segment !== "all" && !guest.segments.includes(segment as SegmentKey)) return false;
       if (stays !== "all" && guest.staysCount < Number(stays)) return false;
       if (query) {
@@ -46,7 +55,7 @@ const Guests = () => {
       }
       return true;
     });
-  }, [scoped.guests, search, segment, stays]);
+  }, [data, role, scoped.guests, search, segment, stays]);
 
   const stats = useMemo(() => {
     const repeat = scoped.guests.filter((guest) => guest.staysCount >= 2);
@@ -63,8 +72,8 @@ const Guests = () => {
   const columns: Column<Guest>[] = [
     {
       key: "guest",
-      header: "Гость",
-      render: (guest) => <PersonCell name={guest.fullName} subtitle={guest.company ?? "Частный гость"} />,
+      header: "Гость / контакт",
+      render: (guest) => <PersonCell name={guest.fullName} subtitle={guest.company ?? guest.phone ?? "Контакт"} />,
       sortValue: (guest) => guest.fullName,
     },
     {
@@ -75,7 +84,7 @@ const Guests = () => {
     },
     {
       key: "email",
-      header: "Email",
+      header: "Эл. почта",
       render: (guest) => <span className="text-sm text-muted-foreground">{guest.email}</span>,
       hideBelow: "xl",
     },
@@ -112,21 +121,21 @@ const Guests = () => {
     },
     {
       key: "ltv",
-      header: "LTV",
+      header: "Покупки",
       align: "right",
       render: (guest) => <span className="font-semibold tabular-nums">{formatTenge(guest.lifetimeValue)}</span>,
       sortValue: (guest) => guest.lifetimeValue,
     },
     {
       key: "segments",
-      header: "Сегменты",
+      header: "Сейчас",
       render: (guest) => (
         <div className="flex flex-wrap gap-1">
-          {guest.segments.slice(0, 2).map((key) => (
-            <StatusPill key={key} tone={key === "vip" ? "brand" : key === "lost" ? "danger" : "neutral"}>
-              {segmentLabels[key]}
-            </StatusPill>
-          ))}
+          <StatusPill tone={customerContext(data, guest.id).state === "in_house" ? "success" : "neutral"}>{
+            customerContext(data, guest.id).state === "in_house" ? "Проживает" : customerContext(data, guest.id).state === "reserved" ? "Будущий гость" :
+              guest.staysCount > 0 ? "Проживал" : data.services.some((service) => service.guestId === guest.id) ? "Только услуги" : "Контакт"
+          }</StatusPill>
+          {guest.segments.includes("vip") && <StatusPill tone="brand">VIP</StatusPill>}
         </div>
       ),
       hideBelow: "xl",
@@ -145,19 +154,24 @@ const Guests = () => {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Гости"
-        description="Единый профиль гостя по всей сети ЛЕС: один гость — одна карточка, независимо от объекта"
+        title="Гости и контакты"
+        description="Один профиль человека для обращений, услуг и проживания"
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Гостей в базе" value={String(stats.total)} icon={Users} />
+        <StatCard label="Людей в базе" value={String(stats.total)} icon={Users} />
         <StatCard label="Повторные гости" value={String(stats.repeat)} hint="2 и более проживаний" />
         <StatCard label="Гости нескольких объектов" value={String(stats.multiProperty)} hint="один профиль" />
-        <StatCard label="Средний LTV" value={formatTengeCompact(stats.avgLtv)} />
+        <StatCard label="Средние покупки" value={formatTengeCompact(stats.avgLtv)} />
       </div>
 
       <FilterBar>
-        <SearchInput value={search} onChange={setSearch} placeholder="Поиск по имени, телефону, email" className="w-full sm:w-80" />
+        <SearchInput value={search} onChange={setSearch} placeholder="Поиск по имени, телефону, эл. почте" className="w-full sm:w-80" />
+        <FilterSelect value={role} onChange={(value) => { const next = new URLSearchParams(params); if (value === "all") next.delete("filter"); else next.set("filter", value); setParams(next); }} options={[
+          { value: "all", label: "Все" }, { value: "in_house", label: "Сейчас проживают" },
+          { value: "future", label: "Будущие гости" }, { value: "with_stay", label: "С проживанием" },
+          { value: "services_only", label: "Только услуги" }, { value: "repeat", label: "Повторные" },
+        ]} />
         <FilterSelect value={segment} onChange={setSegment} options={segmentOptions} />
         <FilterSelect value={stays} onChange={setStays} options={staysOptions} />
         {(search || segment !== "all" || stays !== "all") && <ResetFiltersButton onClick={reset} />}

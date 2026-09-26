@@ -58,7 +58,7 @@ describe("Calendar month grid", () => {
     expect(dialog.textContent).toMatch(/заезд/);
     expect(dialog.textContent).toMatch(/выезд/);
 
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Закрыть" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 

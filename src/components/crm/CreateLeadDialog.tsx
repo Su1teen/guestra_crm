@@ -135,7 +135,7 @@ export const CreateLeadDialog = () => {
             <div className="relative">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Телефон, email или имя"
+                placeholder="Телефон, эл. почта или имя"
                 className="pl-9"
                 value={searchQuery}
                 onChange={(event) => { setSearchQuery(event.target.value); setSelectedGuest(null); }}
@@ -176,7 +176,7 @@ export const CreateLeadDialog = () => {
                   <Input value={guestForm.phone} onChange={(event) => setGuestForm({ ...guestForm, phone: event.target.value })} />
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Email</Label>
+                  <Label className="text-xs">Эл. почта</Label>
                   <Input type="email" value={guestForm.email} onChange={(event) => setGuestForm({ ...guestForm, email: event.target.value })} />
                 </div>
               </div>

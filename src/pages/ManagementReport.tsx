@@ -153,8 +153,8 @@ export default function ManagementReport({ initialPropertyId = 'all' }: { initia
 
   return <div className="mrr">
     <header className="mrr-hero">
-      <div><p className="mrr-eyebrow">GUESTRA / MANAGEMENT</p><h1>Управленческий отчёт</h1><p>Доходы, расходы и результат по каждому отелю и всей сети.</p></div>
-      <div className="mrr-hero-side"><span className="mrr-demo-badge">ДЕМО · MOCK DATA</span><button type="button" onClick={() => void exportExcel()} disabled={isExporting}><Download size={16} /> {isExporting ? 'Создаём Excel…' : 'Excel · все разделы'}</button>{exportError && <small role="alert">{exportError}</small>}</div>
+      <div><p className="mrr-eyebrow">GUESTRA / УПРАВЛЕНИЕ</p><h1>Управленческий отчёт</h1><p>Доходы, расходы и результат по каждому отелю и всей сети.</p></div>
+      <div className="mrr-hero-side"><span className="mrr-demo-badge">ДЕМО · ПРИМЕР ДАННЫХ</span><button type="button" onClick={() => void exportExcel()} disabled={isExporting}><Download size={16} /> {isExporting ? 'Создаём Excel…' : 'Excel · все разделы'}</button>{exportError && <small role="alert">{exportError}</small>}</div>
     </header>
 
     <div className="mrr-layout">

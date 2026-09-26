@@ -236,7 +236,7 @@ export const recalcFolio = async (db: DbLike, folioId: string): Promise<FolioRow
           : updated.depositRequired > 0 || payments.some((payment) => payment.status === "awaiting")
             ? "awaiting"
             : "not_required";
-  await db.update(s.leads).set({
+  if (folio.leadId) await db.update(s.leads).set({
     totalAmount,
     paidAmount: Math.max(0, paidAmount),
     deposit: updated.depositRequired,

@@ -57,7 +57,7 @@ const Performance = ({ embedded = false }: { embedded?: boolean }) => {
       ),
       sortValue: (row) => row.employee.name,
     },
-    { key: "leads", header: "Лиды", render: (row) => row.leads, sortValue: (row) => row.leads, align: "right" },
+    { key: "leads", header: "Обращения", render: (row) => row.leads, sortValue: (row) => row.leads, align: "right" },
     { key: "qualified", header: "Квалифицировано", render: (row) => row.qualified, sortValue: (row) => row.qualified, align: "right", hideBelow: "lg" },
     { key: "offers", header: "Предложения", render: (row) => row.offers, sortValue: (row) => row.offers, align: "right", hideBelow: "md" },
     { key: "confirmed", header: "Подтверждено", render: (row) => row.confirmed, sortValue: (row) => row.confirmed, align: "right" },
@@ -82,7 +82,7 @@ const Performance = ({ embedded = false }: { embedded?: boolean }) => {
         <StatCard label="Выручка команды" value={formatTengeCompact(totals.revenue)} icon={Wallet} />
         <StatCard label="Средняя конверсия" value={formatPercent(totals.conversion)} icon={Trophy} />
         <StatCard label="Среднее время ответа" value={formatResponseTime(totals.response)} icon={Clock3} />
-        <StatCard label="Выполнение follow-up" value={formatPercent(totals.followUp)} icon={CheckCircle2} />
+        <StatCard label="Повторные контакты" value={formatPercent(totals.followUp)} icon={CheckCircle2} />
       </div>
 
       <SectionCard
@@ -111,7 +111,7 @@ const Performance = ({ embedded = false }: { embedded?: boolean }) => {
               </DialogHeader>
 
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Metric label="Лиды" value={String(selected.leads)} />
+                <Metric label="Обращения" value={String(selected.leads)} />
                 <Metric label="Подтверждено" value={String(selected.confirmed)} />
                 <Metric label="Конверсия" value={formatPercent(selected.conversion)} />
                 <Metric label="Выручка" value={formatTengeCompact(selected.revenue)} />

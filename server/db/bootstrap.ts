@@ -1,6 +1,7 @@
 import { compare, hash } from "bcryptjs";
 import { and, eq, isNull } from "drizzle-orm";
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 import type { Database } from "./client.js";
 import { createDatabase } from "./client.js";
 import { readConfig, type AppConfig } from "../config.js";
@@ -200,7 +201,7 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   await ensureBootstrapUser(db, { ...DEMO_CREDENTIALS.admin, role: "admin", dataMode: "database", employeeId: "emp_admin", name: "Администратор Guestra" });
 
   await db.insert(s.guests).values([
-    { id: "guest_live_1", organizationId: "org_les_live", firstName: "Аружан", lastName: "Серикова", fullName: "Аружан Серикова", phone: "+7 701 555 10 10", email: "aruzhan@example.com", language: "Русский", preferredPropertyId: "les_borovoe", lifetimeValue: 420000, lastStayDate: date("2026-08-18T12:00:00Z"), preferences: { language: "Русский", roomPreference: "Тихий домик", bedPreference: "King size", foodPreference: "Без свинины", specialRequests: ["Детская кроватка"] }, identityMetadata: { primaryPhone: "+7 701 555 10 10", emails: ["aruzhan@example.com"], citizenship: "Казахстан" } },
+    { id: "guest_live_1", organizationId: "org_les_live", firstName: "Аружан", lastName: "Серикова", fullName: "Аружан Серикова", phone: "+7 701 555 10 10", normalizedPhone: "77015551010", email: "aruzhan@example.com", normalizedEmail: "aruzhan@example.com", language: "Русский", preferredPropertyId: "les_borovoe", lifetimeValue: 420000, lastStayDate: date("2026-08-18T12:00:00Z"), preferences: { language: "Русский", roomPreference: "Тихий домик", bedPreference: "King size", foodPreference: "Без свинины", specialRequests: ["Детская кроватка"] }, identityMetadata: { primaryPhone: "+7 701 555 10 10", emails: ["aruzhan@example.com"], citizenship: "Казахстан" } },
     { id: "guest_live_2", organizationId: "org_les_live", firstName: "Марат", lastName: "Касымов", fullName: "Марат Касымов", phone: null, email: null, company: "Qazaq Group", language: "Русский", preferredPropertyId: "les_astana", lifetimeValue: 0, preferences: { language: "Русский", roomPreference: "", bedPreference: "", foodPreference: "", specialRequests: [] }, identityMetadata: {} },
   ]).onConflictDoNothing();
   await db.insert(s.guestProperties).values([
@@ -209,8 +210,8 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   await db.insert(s.guestContactIdentities).values({ id: "identity_live_telegram_1", guestId: "guest_live_2", channel: "telegram", externalUserId: "seed-telegram-user", externalChatId: "seed-telegram-chat", username: "marat_seed" }).onConflictDoNothing();
 
   await db.insert(s.leads).values([
-    { id: "lead_live_1", code: "G-LIVE-001", guestId: "guest_live_1", propertyId: "les_borovoe", source: "returning", stage: "offer", intent: "hot", roomType: "Sky House", checkIn: date("2026-10-10T12:00:00Z"), checkOut: date("2026-10-12T12:00:00Z"), nights: 2, adults: 2, children: 1, roomAmount: 340000, totalAmount: 388000, deposit: 194000, paymentStatus: "not_required", ownerId: "emp_live_aigerim", lastActivityAt: date("2026-09-18T10:30:00Z"), nextActionLabel: "Связаться после просмотра предложения", nextActionDueAt: date("2026-09-20T10:00:00Z"), probability: 70, firstResponseMinutes: 4, slaMinutes: 15 },
-    { id: "lead_live_2", code: "G-LIVE-002", guestId: "guest_live_2", propertyId: "les_astana", source: "telegram", stage: "qualified", intent: "warm", roomType: "Люкс", checkIn: date("2026-11-05T12:00:00Z"), checkOut: date("2026-11-06T12:00:00Z"), nights: 1, adults: 1, children: 0, roomAmount: 165000, totalAmount: 165000, deposit: 0, paymentStatus: "not_required", ownerId: "emp_live_timur", lastActivityAt: date("2026-09-18T12:00:00Z"), nextActionLabel: "Подготовить корпоративный расчёт", nextActionDueAt: date("2026-09-20T12:00:00Z"), probability: 40, firstResponseMinutes: 8, slaMinutes: 30 },
+    { id: "lead_live_1", code: "G-LIVE-001", guestId: "guest_live_1", propertyId: "les_borovoe", source: "returning", stage: "offer", requestStatus: "active", intent: "hot", roomType: "Sky House", checkIn: date("2026-10-10T12:00:00Z"), checkOut: date("2026-10-12T12:00:00Z"), nights: 2, adults: 2, children: 1, roomAmount: 340000, totalAmount: 388000, deposit: 194000, paymentStatus: "not_required", ownerId: "emp_live_aigerim", lastActivityAt: date("2026-09-18T10:30:00Z"), nextActionLabel: "Связаться после просмотра предложения", nextActionDueAt: date("2026-09-20T10:00:00Z"), probability: 70, firstResponseMinutes: 4, slaMinutes: 15 },
+    { id: "lead_live_2", code: "G-LIVE-002", guestId: "guest_live_2", propertyId: "les_astana", source: "telegram", stage: "qualified", requestStatus: "active", intent: "warm", roomType: "Люкс", checkIn: date("2026-11-05T12:00:00Z"), checkOut: date("2026-11-06T12:00:00Z"), nights: 1, adults: 1, children: 0, roomAmount: 165000, totalAmount: 165000, deposit: 0, paymentStatus: "not_required", ownerId: "emp_live_timur", lastActivityAt: date("2026-09-18T12:00:00Z"), nextActionLabel: "Подготовить корпоративный расчёт", nextActionDueAt: date("2026-09-20T12:00:00Z"), probability: 40, firstResponseMinutes: 8, slaMinutes: 30 },
   ]).onConflictDoNothing();
   await db.insert(s.leadClassifications).values([
     { leadId: "lead_live_1", direction: "accommodation", quality: "target", temperature: "hot", probability: 70, reasons: [{ code: "has_dates", label: "Названы точные даты" }], missingData: [], recommendedAction: "Follow-up по предложению" },
@@ -261,6 +262,40 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
     { id: "room_live_b01", number: "B-01", propertyId: "les_borovoe", category: "Sky House", floor: 1, zone: "Лес", status: "vacant_dirty" },
     { id: "room_live_a101", number: "A-101", propertyId: "les_astana", category: "Люкс", floor: 1, zone: "Главный корпус", status: "out_of_order" },
   ]).onConflictDoNothing();
+  // Keep legacy property.roomTypes readable, but populate relational categories.
+  const seedProperties = await db.select().from(s.properties);
+  const seedRooms = await db.select().from(s.rooms);
+  const categories = new Map<string, { propertyId: string; name: string }>();
+  for (const property of seedProperties) for (const name of property.roomTypes ?? []) categories.set(`${property.id}:${name}`, { propertyId: property.id, name });
+  for (const room of seedRooms) categories.set(`${room.propertyId}:${room.category}`, { propertyId: room.propertyId, name: room.category });
+  for (const category of categories.values()) {
+    const key = `${category.propertyId}:${category.name}`;
+    await db.insert(s.unitTypes).values({ id: `ut_${createHash("md5").update(key).digest("hex")}`, ...category }).onConflictDoNothing();
+  }
+  const existingUnitTypes = await db.select().from(s.unitTypes);
+  for (const room of seedRooms) {
+    const unitType = existingUnitTypes.find((type) => type.propertyId === room.propertyId && type.name === room.category);
+    if (unitType && !room.unitTypeId) await db.update(s.rooms).set({ unitTypeId: unitType.id }).where(eq(s.rooms.id, room.id));
+  }
+  // A completed historical stay also has a reservation; repeated bootstrap does
+  // not rewrite the operational or financial history entered by staff.
+  await db.insert(s.reservations).values({
+    id: "res_seed_stay_live_1", code: "R-SEED-LES-LIVE-001", propertyId: "les_borovoe",
+    bookerCustomerId: "guest_live_1", roomTypeSnapshot: "Премиум-домик", source: "legacy_stay",
+    status: "completed", arrivalAt: date("2026-08-16T12:00:00Z"), departureAt: date("2026-08-18T12:00:00Z"),
+    adults: 2, children: 1, externalConfirmationNumber: "LES-LIVE-001",
+  }).onConflictDoNothing();
+  const [seedReservation] = await db.select().from(s.reservations).where(and(
+    eq(s.reservations.propertyId, "les_borovoe"), eq(s.reservations.externalConfirmationNumber, "LES-LIVE-001"),
+  )).limit(1);
+  if (seedReservation?.bookerCustomerId === "guest_live_1") {
+    await db.update(s.guestStays).set({ reservationId: seedReservation.id, operationalStatus: "checked_out" })
+      .where(and(eq(s.guestStays.id, "stay_live_1"), isNull(s.guestStays.reservationId)));
+    await db.insert(s.reservationGuests).values({ id: "rg_seed_stay_live_1", reservationId: seedReservation.id,
+      customerId: "guest_live_1", fullName: "Аружан Серикова", role: "primary", isPrimary: true, isBooker: true }).onConflictDoNothing();
+    await db.update(s.guestPayments).set({ reservationId: seedReservation.id })
+      .where(and(eq(s.guestPayments.id, "payment_live_1"), isNull(s.guestPayments.reservationId)));
+  }
   await db.insert(s.housekeepingTasks).values({ id: "hk_live_1", roomId: "room_live_b01", propertyId: "les_borovoe", type: "checkout", status: "assigned", priority: 4, dueAt: date("2026-09-20T14:00:00Z"), serviceDate: date("2026-09-20T00:00:00Z"), assigneeId: "emp_live_aigerim", estimatedMinutes: 45 }).onConflictDoNothing();
   await db.insert(s.housekeepingChecklistItems).values([
     { id: "hk_item_live_1", taskId: "hk_live_1", label: "Смена постельного белья", checked: false, position: 0 },
@@ -271,6 +306,14 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
 
   
   await seedServiceCatalog(db);
+  // A configured LES pilot example: package charge is explicit, entitlement is not free by accident.
+  await db.insert(s.packages).values({ id: "package_les_spa_visit", propertyId: "les_borovoe",
+    name: "Проживание и SPA", description: "Одно посещение SPA в рамках брони",
+    billingMode: "separate", price: 12000 }).onConflictDoNothing();
+  const [spaCatalogForPackage] = await db.select({ id: s.serviceCatalog.id }).from(s.serviceCatalog).where(and(
+    eq(s.serviceCatalog.propertyId, "les_borovoe"), eq(s.serviceCatalog.code, "spa_visit"))).limit(1);
+  if (spaCatalogForPackage) await db.insert(s.packageEntitlements).values({ id: "entitlement_les_spa_visit",
+    packageId: "package_les_spa_visit", catalogItemId: spaCatalogForPackage.id, includedQuantity: 1 }).onConflictDoNothing();
 
   // Каталог может уже существовать с другими id (unique по property_id+code) —
   // резолвим реальные id для ссылок из позиций и folio lines.
@@ -297,7 +340,7 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   await db.insert(s.guestProperties).values({ guestId: "guest_live_3", propertyId: "les_borovoe" }).onConflictDoNothing();
 
   await db.insert(s.leads).values({
-    id: "lead_live_3", code: "G-LIVE-003", guestId: "guest_live_3", propertyId: "les_borovoe", source: "instagram", stage: "planning", intent: "warm", probability: 45, ownerId: "emp_live_aigerim", totalAmount: 0, lastActivityAt: date("2026-09-19T10:00:00Z")
+    id: "lead_live_3", code: "G-LIVE-003", guestId: "guest_live_3", propertyId: "les_borovoe", source: "instagram", stage: "planning", requestStatus: "active", intent: "warm", probability: 45, ownerId: "emp_live_aigerim", totalAmount: 0, lastActivityAt: date("2026-09-19T10:00:00Z")
   }).onConflictDoNothing();
 
   await db.insert(s.leadClassifications).values({

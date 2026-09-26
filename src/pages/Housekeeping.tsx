@@ -146,7 +146,7 @@ const Housekeeping = () => {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Housekeeping"
+        title="Уборка"
         description="Доска уборки, чек-листы, инспекция и готовность номеров"
       />
 

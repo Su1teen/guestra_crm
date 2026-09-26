@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { FileText, Search, Target, User } from "lucide-react";
+import { CalendarDays, FileText, Search, Target, User } from "lucide-react";
 import {
   CommandDialog,
   CommandEmpty,
@@ -49,8 +49,11 @@ export const GlobalSearch = () => {
         return matches(offer.code) || matches(guest?.fullName);
       })
       .slice(0, 5);
-    return { guests, leads, offers };
-  }, [data.guests, data.leads, data.offers, guestById, query]);
+    const reservations = data.reservations.filter((reservation) => normalized &&
+      (matches(reservation.code) || matches(reservation.externalConfirmationNumber) || matches(guestById(reservation.bookerCustomerId)?.fullName)))
+      .slice(0, 6);
+    return { guests, leads, offers, reservations };
+  }, [data.guests, data.leads, data.offers, data.reservations, guestById, query]);
 
   const go = (path: string) => {
     setOpen(false);
@@ -66,7 +69,7 @@ export const GlobalSearch = () => {
         className="flex h-9 w-full max-w-sm items-center gap-2 rounded-xl border border-border bg-card px-3 text-sm text-muted-foreground transition-colors hover:border-brand-200 hover:text-foreground"
       >
         <Search className="h-4 w-4" />
-        <span className="flex-1 text-left">Поиск гостей, лидов, предложений</span>
+        <span className="flex-1 text-left">Поиск гостей, обращений и броней</span>
         <kbd className="hidden rounded border border-border bg-secondary px-1.5 py-0.5 text-[10px] font-medium sm:inline">
           ⌘K
         </kbd>
@@ -74,14 +77,14 @@ export const GlobalSearch = () => {
 
       <CommandDialog open={open} onOpenChange={setOpen}>
         <CommandInput
-          placeholder="Введите имя гостя, номер лида или предложения"
+          placeholder="Имя, телефон, номер обращения или брони"
           value={query}
           onValueChange={setQuery}
         />
         <CommandList>
           <CommandEmpty>Ничего не найдено. Уточните запрос.</CommandEmpty>
           {results.guests.length > 0 && (
-            <CommandGroup heading="Гости">
+            <CommandGroup heading="Гости и контакты">
               {results.guests.map((guest) => (
                 <CommandItem key={guest.id} value={`guest-${guest.id}-${guest.fullName}`} onSelect={() => go(`/guests/${guest.id}`)}>
                   <User className="mr-2 h-4 w-4 text-muted-foreground" />
@@ -92,9 +95,9 @@ export const GlobalSearch = () => {
             </CommandGroup>
           )}
           {results.leads.length > 0 && (
-            <CommandGroup heading="Лиды">
+            <CommandGroup heading="Обращения">
               {results.leads.map((lead) => (
-                <CommandItem key={lead.id} value={`lead-${lead.id}-${lead.code}`} onSelect={() => go(`/leads/${lead.id}`)}>
+                <CommandItem key={lead.id} value={`lead-${lead.id}-${lead.code}`} onSelect={() => go(`/requests/${lead.id}`)}>
                   <Target className="mr-2 h-4 w-4 text-muted-foreground" />
                   <span className="flex-1">
                     {lead.code} · {guestById(lead.guestId)?.fullName}
@@ -106,6 +109,11 @@ export const GlobalSearch = () => {
               ))}
             </CommandGroup>
           )}
+          {results.reservations.length > 0 && <CommandGroup heading="Бронирования">{results.reservations.map((reservation) =>
+            <CommandItem key={reservation.id} value={`reservation-${reservation.id}-${reservation.code}`} onSelect={() => go(`/reservations?reservation=${reservation.id}`)}>
+              <CalendarDays className="mr-2 h-4 w-4 text-muted-foreground" /><span className="flex-1">{reservation.code} · {guestById(reservation.bookerCustomerId)?.fullName}</span>
+              <span className="text-xs text-muted-foreground">{formatStayRange(reservation.arrivalAt, reservation.departureAt)}</span>
+            </CommandItem>)}</CommandGroup>}
           {results.offers.length > 0 && (
             <CommandGroup heading="Предложения">
               {results.offers.map((offer) => (

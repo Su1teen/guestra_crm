@@ -66,7 +66,7 @@ const SalesAnalytics = ({ embedded = false }: { embedded?: boolean }) => {
     <div className="space-y-5">
       {embedded ? <div className="flex justify-end rounded-xl border border-border bg-card p-3"><SegmentedTabs value={period} onChange={setPeriod} options={[{ value: "7", label: "7 дней" }, { value: "30", label: "30 дней" }, { value: "90", label: "90 дней" }]} /></div> : <PageHeader
         title="Аналитика продаж"
-        description="Объём лидов, конверсия, средний чек и потери по сети ЛЕС"
+        description="Объём обращений, конверсия, средний чек и потери по сети ЛЕС"
         actions={
           <SegmentedTabs
             value={period}
@@ -81,7 +81,7 @@ const SalesAnalytics = ({ embedded = false }: { embedded?: boolean }) => {
       />}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Лидов всего" value={String(scoped.leads.length)} icon={TrendingUp} hint={`квалифицировано ${summary.qualified}`} />
+        <StatCard label="Обращений всего" value={String(scoped.leads.length)} icon={TrendingUp} hint={`квалифицировано ${summary.qualified}`} />
         <StatCard label="Конверсия в бронь" value={formatPercent(summary.conversion)} icon={Percent} />
         <StatCard label="Средний чек" value={formatTengeCompact(summary.avgDealValue)} icon={Wallet} />
         <StatCard
@@ -96,7 +96,7 @@ const SalesAnalytics = ({ embedded = false }: { embedded?: boolean }) => {
         <StatCard label="Подтверждённые брони" value={String(summary.confirmedCount)} hint={formatTengeCompact(summary.confirmedRevenue)} />
         <StatCard label="Стоимость воронки" value={formatTengeCompact(summary.pipelineValue)} hint={`взвешенно ${formatTengeCompact(summary.weightedPipeline)}`} />
         <StatCard label="Ожидают оплаты" value={String(summary.paymentPendingCount)} hint={formatTengeCompact(summary.paymentPendingValue)} />
-        <StatCard label="Проигранные лиды" value={String(summary.lostCount)} hint={formatTengeCompact(summary.lostValue)} />
+        <StatCard label="Потерянные обращения" value={String(summary.lostCount)} hint={formatTengeCompact(summary.lostValue)} />
       </div>
 
       <div className="grid gap-5 xl:grid-cols-3">
@@ -151,7 +151,7 @@ const SalesAnalytics = ({ embedded = false }: { embedded?: boolean }) => {
       </div>
 
       <div className="grid gap-5 xl:grid-cols-2">
-        <SectionCard title="Объём лидов" description="Новые лиды и квалификация">
+        <SectionCard title="Объём обращений" description="Новые обращения и квалификация">
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={trendData}>
@@ -159,7 +159,7 @@ const SalesAnalytics = ({ embedded = false }: { embedded?: boolean }) => {
                 <XAxis dataKey="label" {...chartAxis} tickLine={false} axisLine={false} interval="preserveStartEnd" />
                 <YAxis {...chartAxis} tickLine={false} axisLine={false} allowDecimals={false} />
                 <ChartTooltip />
-                <Line type="monotone" dataKey="leads" name="Лиды" stroke="#4C6EF5" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="leads" name="Обращения" stroke="#4C6EF5" strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="qualified" name="Квалифицированы" stroke="#10b981" strokeWidth={2} dot={false} />
                 <Line type="monotone" dataKey="confirmed" name="Подтверждены" stroke="#f59e0b" strokeWidth={2} dot={false} />
               </LineChart>
@@ -201,7 +201,7 @@ const SalesAnalytics = ({ embedded = false }: { embedded?: boolean }) => {
                 <XAxis type="number" {...chartAxis} tickLine={false} axisLine={false} />
                 <YAxis type="category" dataKey="name" {...chartAxis} tickLine={false} axisLine={false} width={120} />
                 <ChartTooltip />
-                <Bar dataKey="leads" name="Лиды" radius={[0, 6, 6, 0]}>
+                <Bar dataKey="leads" name="Обращения" radius={[0, 6, 6, 0]}>
                   {bySource.map((item, index) => (
                     <Cell key={item.key} fill={brandColors[index % brandColors.length]} />
                   ))}
@@ -211,7 +211,7 @@ const SalesAnalytics = ({ embedded = false }: { embedded?: boolean }) => {
           </div>
         </SectionCard>
 
-        <SectionCard title="Причины потерь" description="Проигранные лиды и упущенная выручка">
+        <SectionCard title="Причины потерь" description="Потерянные обращения и упущенная выручка">
           {lostReasons.length === 0 ? (
             <p className="text-sm text-muted-foreground">Проигранных лидов нет.</p>
           ) : (

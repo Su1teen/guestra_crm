@@ -160,7 +160,7 @@ const Leads = () => {
         <SearchInput
           value={filters.search}
           onChange={(value) => setFilter("search", value)}
-          placeholder="Поиск по гостю, телефону, номеру лида"
+          placeholder="Поиск по гостю, телефону, номеру обращения"
           className="w-full sm:w-80"
         />
         <FilterSelect value={filters.stage} onChange={(value) => setFilter("stage", value as never)} options={stageOptions} />

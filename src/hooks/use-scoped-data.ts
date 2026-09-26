@@ -14,6 +14,8 @@ import type {
   OperationalTask,
   PmsDailySnapshot,
   Room,
+  Reservation,
+  ReservationUnit,
   SalesMetricPoint,
   Task,
 } from "@/types/crm";
@@ -25,6 +27,8 @@ export interface ScopedData {
   conversations: Conversation[];
   guests: Guest[];
   stays: GuestStay[];
+  reservations: Reservation[];
+  reservationUnits: ReservationUnit[];
   payments: GuestPayment[];
   campaigns: Campaign[];
   metrics: SalesMetricPoint[];
@@ -48,6 +52,8 @@ export const useScopedData = (): ScopedData => {
         conversations: data.conversations,
         guests: data.guests,
         stays: data.stays,
+        reservations: data.reservations,
+        reservationUnits: data.reservationUnits,
         payments: data.payments,
         campaigns: data.campaigns,
         metrics: data.metrics,
@@ -62,6 +68,8 @@ export const useScopedData = (): ScopedData => {
 
     const leads = data.leads.filter((lead) => lead.propertyId === property);
     const leadIds = new Set(leads.map((lead) => lead.id));
+    const reservations = data.reservations.filter((reservation) => reservation.propertyId === property);
+    const reservationIds = new Set(reservations.map((reservation) => reservation.id));
     return {
       leads,
       offers: data.offers.filter((offer) => offer.propertyId === property),
@@ -69,7 +77,9 @@ export const useScopedData = (): ScopedData => {
       conversations: data.conversations.filter((conversation) => conversation.propertyId === property),
       guests: data.guests.filter((guest) => guest.propertyIds.includes(property)),
       stays: data.stays.filter((stay) => stay.propertyId === property),
-      payments: data.payments.filter((payment) => payment.leadId != null && leadIds.has(payment.leadId)),
+      reservations,
+      reservationUnits: data.reservationUnits.filter((unit) => reservationIds.has(unit.reservationId)),
+      payments: data.payments.filter((payment) => (payment.leadId != null && leadIds.has(payment.leadId)) || (payment.reservationId != null && reservationIds.has(payment.reservationId))),
       campaigns: data.campaigns.filter((campaign) => campaign.propertyId === property || campaign.propertyId === "all"),
       metrics: data.metrics.filter((point) => point.propertyId === property),
       followUps: data.followUps.filter((item) => item.propertyId === property),

@@ -66,7 +66,7 @@ export const sourceLabels: Record<LeadSource, string> = {
   returning: "Повторный гость",
   corporate: "Корпоративный клиент",
   referral: "Рекомендация",
-  email: "Email",
+  email: "Эл. почта",
   walk_in: "Визит",
 };
 
@@ -131,13 +131,15 @@ export const taskStatusTone: Record<TaskStatus, Tone> = {
 };
 
 export const taskTypeLabels: Record<TaskType, string> = {
-  follow_up: "Follow-up",
+  follow_up: "Связаться с гостем",
   call: "Звонок",
   message: "Сообщение",
   offer: "Предложение",
   payment_reminder: "Напоминание об оплате",
   internal: "Внутренняя задача",
   meeting: "Встреча",
+  pre_arrival: "Подготовка к заезду",
+  guest_request: "Запрос гостя",
 };
 
 export const taskTypeAccent: Record<TaskType, string> = {
@@ -148,6 +150,8 @@ export const taskTypeAccent: Record<TaskType, string> = {
   payment_reminder: "bg-amber-500",
   internal: "bg-slate-400",
   meeting: "bg-rose-500",
+  pre_arrival: "bg-amber-500",
+  guest_request: "bg-teal-500",
 };
 
 export const taskPriorityLabels: Record<TaskPriority, string> = {
@@ -182,7 +186,7 @@ export const channelLabels: Record<Channel, string> = {
   phone: "Телефон",
   website: "Сайт",
   instagram: "Instagram",
-  email: "Email",
+  email: "Эл. почта",
   other: "Другое",
 };
 
@@ -247,7 +251,7 @@ export const guestPaymentStatusLabels: Record<"paid" | "awaiting" | "refunded", 
 };
 
 export const activityTypeLabels: Record<string, string> = {
-  lead_created: "Лид создан",
+  lead_created: "Обращение создано",
   message: "Сообщение",
   call: "Звонок",
   offer_created: "Предложение подготовлено",
@@ -510,7 +514,7 @@ export const specialRequestTypeLabels: Record<SpecialRequestType, string> = {
 };
 
 export const specialRequestRouteLabels: Record<SpecialRequestRoute, string> = {
-  housekeeping: "Housekeeping",
+  housekeeping: "Уборка",
   maintenance: "Ремонт",
   reception: "Ресепшн",
   restaurant: "Ресторан SOVA",
@@ -536,7 +540,7 @@ export const specialRequestDefaultRoute: Record<SpecialRequestType, SpecialReque
 };
 
 export const operationalRouteLabels: Record<OperationalRoute, string> = {
-  housekeeping: "Housekeeping",
+  housekeeping: "Уборка",
   maintenance: "Ремонт",
   reception: "Ресепшн",
   restaurant: "Ресторан SOVA",

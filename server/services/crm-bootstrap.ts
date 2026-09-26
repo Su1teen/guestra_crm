@@ -15,7 +15,8 @@ export const loadCrmDataset = async (db: Database) => {
     stageRows, activityRows, classificationRows, specialRequestRows, offerRows, offerLineRows, taskRows,
     followUpRows, conversationRows, messageRows, segmentRows, segmentRuleRows, segmentGuestRows, campaignRows,
     roomRows, housekeepingRows, checklistRows, maintenanceRows, operationalRows, metricRows, pmsRows, interestRows, itemRows, serviceCatalogRows,
-    folioRows, folioLineRows,
+    folioRows, folioLineRows, reservationRows, reservationUnitRows, reservationGuestRows, unitTypeRows,
+    serviceReservationRows, packageRows, entitlementRows, reviewRows, reservationNoteRows,
   ] = await Promise.all([
     db.select().from(s.organizations), db.select().from(s.properties), db.select().from(s.employees),
     db.select().from(s.employeeProperties), db.select().from(s.guests), db.select().from(s.guestContactIdentities),
@@ -30,6 +31,8 @@ export const loadCrmDataset = async (db: Database) => {
     db.select().from(s.maintenanceTickets), db.select().from(s.operationalTasks), db.select().from(s.salesMetricSnapshots),
     db.select().from(s.pmsDailySnapshots), db.select().from(s.leadInterests), db.select().from(s.leadItems), db.select().from(s.serviceCatalog),
     db.select().from(s.folios), db.select().from(s.folioLines),
+    db.select().from(s.reservations), db.select().from(s.reservationUnits), db.select().from(s.reservationGuests), db.select().from(s.unitTypes),
+    db.select().from(s.serviceReservations), db.select().from(s.packages), db.select().from(s.packageEntitlements), db.select().from(s.guestReviews), db.select().from(s.reservationNotes),
   ]);
 
   const org = orgRows[0];
@@ -63,7 +66,9 @@ export const loadCrmDataset = async (db: Database) => {
     const preferences = (row.preferences ?? {}) as Record<string, unknown>;
     return {
       id: row.id, firstName: row.firstName ?? "", lastName: row.lastName ?? "", fullName: row.fullName,
-      phone: row.phone, email: row.email, company: row.company ?? undefined, language: row.language,
+      phone: row.phone, email: row.email, normalizedPhone: row.normalizedPhone, normalizedEmail: row.normalizedEmail,
+      profileStatus: row.profileStatus, preferredChannel: row.preferredChannel ?? undefined,
+      mergedIntoGuestId: row.mergedIntoGuestId ?? undefined, company: row.company ?? undefined, language: row.language,
       segments: segmentGuestRows.filter((item) => item.guestId === row.id).map((item) => segmentRows.find((segment) => segment.id === item.segmentId)?.key).filter(Boolean),
       staysCount: (staysByGuest.get(row.id) ?? []).length,
       propertyIds: (guestPropertiesByGuest.get(row.id) ?? []).map((item) => item.propertyId),
@@ -74,9 +79,17 @@ export const loadCrmDataset = async (db: Database) => {
       contactIdentities: (identitiesByGuest.get(row.id) ?? []).map((item) => ({ id: item.id, channel: item.channel, externalUserId: item.externalUserId, externalChatId: item.externalChatId, username: item.username })),
     };
   });
-  const stays = stayRows.map((row) => ({ id: row.id, guestId: row.guestId, propertyId: row.propertyId, roomType: row.roomType, checkIn: row.checkIn, checkOut: row.checkOut, nights: row.nights, adults: row.adults, children: row.children, amount: row.amount, bookingReference: row.bookingReference, status: row.status, serviceNames: row.serviceNames ?? [] }));
+  const stays = stayRows.map((row) => ({ id: row.id, guestId: row.guestId, propertyId: row.propertyId, reservationId: row.reservationId ?? undefined, reservationUnitId: row.reservationUnitId ?? undefined, roomId: row.roomId ?? undefined, actualCheckIn: row.actualCheckIn ?? undefined, actualCheckOut: row.actualCheckOut ?? undefined, operationalStatus: row.operationalStatus, roomType: row.roomType, checkIn: row.checkIn, checkOut: row.checkOut, nights: row.nights, adults: row.adults, children: row.children, amount: row.amount, bookingReference: row.bookingReference, status: row.status, serviceNames: row.serviceNames ?? [] }));
+  const reservations = reservationRows.map((row) => ({ id: row.id, code: row.code, propertyId: row.propertyId, bookerCustomerId: row.bookerCustomerId, requestId: row.requestId ?? undefined, unitTypeId: row.unitTypeId ?? undefined, ratePlanId: row.ratePlanId ?? undefined, packageId: row.packageId ?? undefined, roomTypeSnapshot: row.roomTypeSnapshot ?? undefined, source: row.source, status: row.status, arrivalAt: row.arrivalAt, departureAt: row.departureAt, adults: row.adults, children: row.children, currency: row.currency, specialRequest: row.specialRequest ?? undefined, etaAt: row.etaAt ?? undefined, externalReservationId: row.externalReservationId ?? undefined, externalConfirmationNumber: row.externalConfirmationNumber ?? undefined, confirmedAt: row.confirmedAt ?? undefined, cancelledAt: row.cancelledAt ?? undefined, createdAt: row.createdAt, updatedAt: row.updatedAt }));
+  const reservationNotes = reservationNoteRows.map((row) => ({ id: row.id, reservationId: row.reservationId,
+    authorId: row.authorId ?? undefined, text: row.text, createdAt: row.createdAt }));
+  const reservationUnits = reservationUnitRows.map((row) => ({ id: row.id, reservationId: row.reservationId, roomId: row.roomId, arrivalAt: row.arrivalAt, departureAt: row.departureAt, status: row.status, assignedAt: row.assignedAt }));
+  const reservationGuests = reservationGuestRows.map((row) => ({ id: row.id, reservationId: row.reservationId,
+    customerId: row.customerId ?? undefined, fullName: row.fullName ?? undefined, role: row.role,
+    isPrimary: row.isPrimary, isBooker: row.isBooker, ageGroup: row.ageGroup ?? undefined }));
+  const unitTypes = unitTypeRows.map((row) => ({ id: row.id, propertyId: row.propertyId, name: row.name, active: row.active }));
   const services = serviceRows.map((row) => ({ id: row.id, guestId: row.guestId, stayId: row.stayId ?? undefined, leadId: row.leadId ?? undefined, propertyId: row.propertyId ?? undefined, name: row.name, serviceType: row.serviceType ?? undefined, date: row.date, amount: row.amount, quantity: row.quantity, participants: row.participants ?? undefined, startAt: row.startAt ?? undefined, endAt: row.endAt ?? undefined, bookingReference: row.bookingReference ?? undefined, status: row.status }));
-  const payments = paymentRows.map((row) => ({ id: row.id, guestId: row.guestId, stayId: row.stayId ?? undefined, leadId: row.leadId ?? undefined, folioId: row.folioId ?? undefined, date: row.date, amount: row.amount, method: row.method, status: row.status, reference: row.reference }));
+  const payments = paymentRows.map((row) => ({ id: row.id, guestId: row.guestId, stayId: row.stayId ?? undefined, reservationId: row.reservationId ?? undefined, leadId: row.leadId ?? undefined, folioId: row.folioId ?? undefined, date: row.date, amount: row.amount, method: row.method, status: row.status, reference: row.reference }));
   const notes = noteRows.map((row) => ({ id: row.id, guestId: row.guestId, authorId: row.authorId, createdAt: row.createdAt, text: row.text }));
   const guestActivity = guestActivityRows.map((row) => ({ id: row.id, guestId: row.guestId, propertyId: row.propertyId ?? undefined, employeeId: row.employeeId ?? undefined, at: row.occurredAt, type: row.type, title: row.title, description: row.description ?? undefined, amount: row.amount ?? undefined }));
 
@@ -112,7 +125,7 @@ export const loadCrmDataset = async (db: Database) => {
   const leads = leadRows.map((row) => {
     const classification = classificationsByLead.get(row.id);
     return {
-      id: row.id, code: row.code, guestId: row.guestId, propertyId: row.propertyId, source: row.source, stage: row.stage,
+      id: row.id, code: row.code, guestId: row.guestId, propertyId: row.propertyId, source: row.source, stage: row.stage, requestStatus: row.requestStatus,
       intent: row.intent, roomType: row.roomType, checkIn: row.checkIn, checkOut: row.checkOut, nights: row.nights,
       adults: row.adults, children: row.children, roomAmount: row.roomAmount,
       services: (leadServicesByLead.get(row.id) ?? []).map((item) => ({ name: item.name, amount: item.amount })),
@@ -132,22 +145,22 @@ export const loadCrmDataset = async (db: Database) => {
     };
   });
   const offers = offerRows.map((row) => ({ id: row.id, code: row.code, leadId: row.leadId, guestId: row.guestId, propertyId: row.propertyId, folioId: row.folioId ?? undefined, roomType: row.roomType, checkIn: row.checkIn, checkOut: row.checkOut, nights: row.nights, adults: row.adults, children: row.children, status: row.status, ownerId: row.ownerId, createdAt: row.createdAt, expiresAt: row.expiresAt, sentAt: row.sentAt ?? undefined, viewedAt: row.viewedAt ?? undefined, lines: (linesByOffer.get(row.id) ?? []).sort((a, b) => a.position - b.position).map((item) => ({ label: item.label, quantity: item.quantity ?? undefined, amount: item.amount, leadItemId: item.leadItemId ?? undefined })), total: row.total, deposit: row.deposit, comment: row.comment ?? undefined, terms: row.terms ?? undefined }));
-  const tasks = taskRows.map((row) => ({ id: row.id, title: row.title, type: row.type, status: row.status, priority: row.priority, dueAt: row.dueAt, ownerId: row.ownerId, guestId: row.guestId ?? undefined, leadId: row.leadId ?? undefined, propertyId: row.propertyId, description: row.description ?? undefined, completedAt: row.completedAt ?? undefined }));
+  const tasks = taskRows.map((row) => ({ id: row.id, title: row.title, type: row.type, status: row.status, priority: row.priority, dueAt: row.dueAt, ownerId: row.ownerId, guestId: row.guestId ?? undefined, leadId: row.leadId ?? undefined, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined, source: row.source ?? undefined, department: row.department ?? undefined, propertyId: row.propertyId, description: row.description ?? undefined, completedAt: row.completedAt ?? undefined }));
   const followUps = followUpRows.map((row) => ({ id: row.id, leadId: row.leadId, guestId: row.guestId, propertyId: row.propertyId, channel: row.channel, direction: row.direction, reason: row.reason, queue: row.queue, status: row.status, stage: row.stage, temperature: row.temperature, potentialAmount: row.potentialAmount, dueAt: row.dueAt, createdAt: row.createdAt, completedAt: row.completedAt ?? undefined, ownerId: row.ownerId, lastMessage: row.lastMessage ?? undefined, context: row.context, recommendedAction: row.recommendedAction, lostReason: row.lostReason ?? undefined }));
-  const conversations = conversationRows.map((row) => ({ id: row.id, guestId: row.guestId, leadId: row.leadId ?? undefined, offerId: row.offerId ?? undefined, channel: row.channel, propertyId: row.propertyId, assigneeId: row.assigneeId ?? undefined, status: row.status, unreadCount: row.unreadCount, lastMessageAt: row.lastMessageAt, classification: row.classification ?? undefined, summary: row.summary ?? undefined, slaMinutes: row.slaMinutes, firstResponseAt: row.firstResponseAt ?? undefined, closeResult: row.closeResult ?? undefined, messages: (messagesByConversation.get(row.id) ?? []).map((item) => ({ id: item.id, conversationId: item.conversationId, direction: item.direction, employeeId: item.employeeId ?? undefined, text: item.text, at: item.sentAt, attachmentName: item.attachmentName ?? undefined })) }));
+  const conversations = conversationRows.map((row) => ({ id: row.id, guestId: row.guestId, leadId: row.leadId ?? undefined, offerId: row.offerId ?? undefined, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined, channel: row.channel, propertyId: row.propertyId, assigneeId: row.assigneeId ?? undefined, status: row.status, unreadCount: row.unreadCount, lastMessageAt: row.lastMessageAt, classification: row.classification ?? undefined, summary: row.summary ?? undefined, slaMinutes: row.slaMinutes, firstResponseAt: row.firstResponseAt ?? undefined, closeResult: row.closeResult ?? undefined, messages: (messagesByConversation.get(row.id) ?? []).map((item) => ({ id: item.id, conversationId: item.conversationId, direction: item.direction, employeeId: item.employeeId ?? undefined, text: item.text, at: item.sentAt, attachmentName: item.attachmentName ?? undefined })) }));
   const segments = segmentRows.map((row) => ({ id: row.id, key: row.key, name: row.name, description: row.description, rules: (rulesBySegment.get(row.id) ?? []).map((item) => ({ field: item.field, operator: item.operator, value: item.value })), guestIds: (guestsBySegment.get(row.id) ?? []).map((item) => item.guestId), avgLifetimeValue: row.avgLifetimeValue, avgStays: row.avgStays, lastActivityAt: row.lastActivityAt }));
   const campaigns = campaignRows.map((row) => ({ id: row.id, name: row.name, segmentId: row.segmentId, propertyId: row.propertyId ?? "all", status: row.status, createdAt: row.createdAt, scheduledAt: row.scheduledAt, channel: row.channel, message: row.message, metrics: row.metrics }));
   const rooms = roomRows.map((row) => ({ id: row.id, number: row.number, propertyId: row.propertyId, category: row.category, floor: row.floor, zone: row.zone, status: row.status, activeTaskId: activeHousekeepingByRoom.get(row.id), activeMaintenanceId: activeMaintenanceByRoom.get(row.id), occupiedByGuestId: row.occupiedByGuestId ?? undefined, checkOutAt: row.checkOutAt ?? undefined }));
-  const housekeepingTasks = housekeepingRows.map((row) => { const room = roomById.get(row.roomId)!; return { id: row.id, roomId: row.roomId, roomNumber: room?.number ?? "", propertyId: row.propertyId, category: room?.category ?? "", floor: room?.floor ?? 0, zone: room?.zone ?? "", type: row.type, status: row.status, priority: row.priority, dueAt: row.dueAt, serviceDate: row.serviceDate, assigneeId: row.assigneeId ?? undefined, assignedAt: row.assignedAt ?? undefined, startedAt: row.startedAt ?? undefined, completedAt: row.completedAt ?? undefined, inspectedAt: row.inspectedAt ?? undefined, checklist: (checklistByTask.get(row.id) ?? []).sort((a, b) => a.position - b.position).map((item) => ({ label: item.label, checked: item.checked, notes: item.notes ?? undefined })), notes: row.notes ?? undefined, guestWishes: row.guestWishes ?? undefined, maintenanceRequired: row.maintenanceRequired, maintenanceNotes: row.maintenanceNotes ?? undefined, maintenanceId: maintenanceByHousekeeping.get(row.id), leadId: row.leadId ?? undefined, guestId: row.guestId ?? undefined, estimatedMinutes: row.estimatedMinutes, actualMinutes: row.actualMinutes ?? undefined, skippedReason: row.skippedReason ?? undefined }; });
+  const housekeepingTasks = housekeepingRows.map((row) => { const room = roomById.get(row.roomId)!; return { id: row.id, stayId: row.stayId ?? undefined, roomId: row.roomId, roomNumber: room?.number ?? "", propertyId: row.propertyId, category: room?.category ?? "", floor: room?.floor ?? 0, zone: room?.zone ?? "", type: row.type, status: row.status, priority: row.priority, dueAt: row.dueAt, serviceDate: row.serviceDate, assigneeId: row.assigneeId ?? undefined, assignedAt: row.assignedAt ?? undefined, startedAt: row.startedAt ?? undefined, completedAt: row.completedAt ?? undefined, inspectedAt: row.inspectedAt ?? undefined, checklist: (checklistByTask.get(row.id) ?? []).sort((a, b) => a.position - b.position).map((item) => ({ label: item.label, checked: item.checked, notes: item.notes ?? undefined })), notes: row.notes ?? undefined, guestWishes: row.guestWishes ?? undefined, maintenanceRequired: row.maintenanceRequired, maintenanceNotes: row.maintenanceNotes ?? undefined, maintenanceId: maintenanceByHousekeeping.get(row.id), leadId: row.leadId ?? undefined, guestId: row.guestId ?? undefined, estimatedMinutes: row.estimatedMinutes, actualMinutes: row.actualMinutes ?? undefined, skippedReason: row.skippedReason ?? undefined }; });
   const maintenanceTickets = maintenanceRows.map((row) => ({ id: row.id, code: row.code, roomId: row.roomId ?? undefined, roomNumber: row.roomId ? roomById.get(row.roomId)?.number : undefined, propertyId: row.propertyId, zone: row.zone, category: row.category, description: row.description, priority: row.priority, status: row.status, assigneeId: row.assigneeId ?? undefined, discoveredAt: row.discoveredAt, slaDueAt: row.slaDueAt, resolvedAt: row.resolvedAt ?? undefined, verifiedAt: row.verifiedAt ?? undefined, blocksRoom: row.blocksRoom, housekeepingTaskId: row.housekeepingTaskId ?? undefined, result: row.result ?? undefined, photoStub: row.photoStub ?? undefined }));
-  const operationalTasks = operationalRows.map((row) => ({ id: row.id, leadId: row.leadId ?? undefined, guestId: row.guestId ?? undefined, propertyId: row.propertyId, route: row.route, title: row.title, description: row.description ?? undefined, status: row.status, priority: row.priority, dueAt: row.dueAt, assigneeId: row.assigneeId ?? undefined, createdAt: row.createdAt, completedAt: row.completedAt ?? undefined, source: row.source, linkedHousekeepingId: row.linkedHousekeepingId ?? undefined, linkedMaintenanceId: row.linkedMaintenanceId ?? undefined }));
+  const operationalTasks = operationalRows.map((row) => ({ id: row.id, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined, leadId: row.leadId ?? undefined, guestId: row.guestId ?? undefined, propertyId: row.propertyId, route: row.route, title: row.title, description: row.description ?? undefined, status: row.status, priority: row.priority, dueAt: row.dueAt, assigneeId: row.assigneeId ?? undefined, createdAt: row.createdAt, completedAt: row.completedAt ?? undefined, source: row.source, linkedHousekeepingId: row.linkedHousekeepingId ?? undefined, linkedMaintenanceId: row.linkedMaintenanceId ?? undefined }));
   const metrics = metricRows.map((row) => ({ date: row.date, propertyId: row.propertyId, leads: row.leads, qualified: row.qualified, offers: row.offers, confirmed: row.confirmed, revenue: row.revenue, lost: row.lost }));
   const pmsSnapshots = pmsRows.map((row) => ({ date: row.date, propertyId: row.propertyId, occupancy: row.occupancy === null ? null : row.occupancy / 10000, adr: row.adr, revpar: row.revpar, arrivals: row.arrivals, departures: row.departures, availableRooms: row.availableRooms, outOfOrderRooms: row.outOfOrderRooms }));
 
   const serviceCatalog = serviceCatalogRows.map(row => ({ id: row.id, propertyId: row.propertyId, code: row.code, category: row.category, serviceType: row.serviceType ?? undefined, name: row.name, description: row.description ?? undefined, active: row.active, pricingMode: row.pricingMode, defaultPrice: row.defaultPrice ?? undefined, pricingUnit: row.pricingUnit ?? undefined, defaultDurationMinutes: row.defaultDurationMinutes ?? undefined, displayOrder: row.displayOrder, currency: row.currency, metadata: row.metadata ?? undefined }))
     .sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0));
   const folios = folioRows.map((row) => ({
-    id: row.id, code: row.code, leadId: row.leadId, guestId: row.guestId, propertyId: row.propertyId,
+    id: row.id, code: row.code, leadId: row.leadId ?? undefined, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined, guestId: row.guestId, propertyId: row.propertyId,
     status: row.status, currency: row.currency, subtotal: row.subtotal, discountAmount: row.discountAmount,
     totalAmount: row.totalAmount, depositRequired: row.depositRequired, paidAmount: row.paidAmount,
     balance: row.balance, closedAt: row.closedAt ?? undefined, createdAt: row.createdAt, updatedAt: row.updatedAt,
@@ -158,5 +171,21 @@ export const loadCrmDataset = async (db: Database) => {
       createdAt: line.createdAt, updatedAt: line.updatedAt,
     })),
   }));
-  return { serviceCatalog, folios, organization, properties, employees, guests, stays, services, payments, notes, guestActivity, leads, offers, tasks, conversations, segments, campaigns, metrics, followUps, rooms, housekeepingTasks, maintenanceTickets, operationalTasks, pmsSnapshots };
+  const serviceReservations = serviceReservationRows.map((row) => ({ id: row.id, propertyId: row.propertyId,
+    customerId: row.customerId, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined,
+    catalogItemId: row.catalogItemId, folioId: row.folioId ?? undefined, folioLineId: row.folioLineId ?? undefined,
+    entitlementId: row.entitlementId ?? undefined, status: row.status, startAt: row.startAt,
+    endAt: row.endAt ?? undefined, participants: row.participants, quantity: row.quantity,
+    unitPrice: row.unitPrice, totalAmount: row.totalAmount, currency: row.currency,
+    notes: row.notes ?? undefined, completedAt: row.completedAt ?? undefined, cancelledAt: row.cancelledAt ?? undefined }));
+  const packages = packageRows.map((row) => ({ id: row.id, propertyId: row.propertyId, name: row.name,
+    description: row.description ?? undefined, billingMode: row.billingMode, price: row.price, active: row.active }));
+  const packageEntitlements = entitlementRows.map((row) => ({ id: row.id, packageId: row.packageId,
+    catalogItemId: row.catalogItemId, includedQuantity: row.includedQuantity }));
+  const reviews = reviewRows.map((row) => ({ id: row.id, propertyId: row.propertyId,
+    guestId: row.guestId ?? undefined, stayId: row.stayId ?? undefined, guestName: row.guestName,
+    channel: row.channel, rating: row.rating, maxRating: row.maxRating, reviewAt: row.reviewAt,
+    text: row.text, topic: row.topic, status: row.status, reply: row.reply ?? undefined,
+    respondedAt: row.respondedAt ?? undefined, externalUrl: row.externalUrl ?? undefined }));
+  return { serviceCatalog, serviceReservations, packages, packageEntitlements, reviews, folios, organization, properties, employees, guests, stays, reservations, reservationUnits, reservationGuests, reservationNotes, unitTypes, services, payments, notes, guestActivity, leads, offers, tasks, conversations, segments, campaigns, metrics, followUps, rooms, housekeepingTasks, maintenanceTickets, operationalTasks, pmsSnapshots };
 };

@@ -35,7 +35,7 @@ const QUEUE_ORDER: FollowUpQueue[] = [
   "done",
 ];
 
-const FollowUp = () => {
+const FollowUp = ({ embedded = false }: { embedded?: boolean }) => {
   const { toast } = useToast();
   const navigate = useNavigate();
   const { status, reload, completeFollowUp, skipFollowUp, rescheduleFollowUp, reassignFollowUp, guestById, employeeById, data } = useCrm();
@@ -71,12 +71,12 @@ const FollowUp = () => {
 
   const handleComplete = (item: FollowUp) => {
     completeFollowUp(item.id);
-    toast({ title: "Follow-up завершён", description: item.recommendedAction });
+    toast({ title: "Контакт завершён", description: item.recommendedAction });
   };
 
   const handleSkip = (item: FollowUp) => {
     skipFollowUp(item.id, "Другое");
-    toast({ title: "Follow-up пропущен" });
+    toast({ title: "Контакт пропущен" });
   };
 
   const handleReschedule = (item: FollowUp) => {
@@ -173,13 +173,10 @@ const FollowUp = () => {
 
   return (
     <div className="space-y-5">
-      <PageHeader
-        title="Follow-up"
-        description="Не теряйте клиентов, которые поинтересовались, но не дошли до бронирования"
-      />
+      {!embedded && <PageHeader title="Связаться с гостем" description="Следующие контакты по обращениям" />}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Активные follow-up" value={String(openCount)} />
+        <StatCard label="Активные контакты" value={String(openCount)} />
         <StatCard label="Просрочено" value={String(overdue.length)} />
         <StatCard
           label="Выполнено в срок"
@@ -190,7 +187,7 @@ const FollowUp = () => {
       </div>
 
       {overdue.length > 0 && (
-        <SectionCard title="Просроченные follow-up" description="Требуют немедленной реакции">
+        <SectionCard title="Просроченные контакты" description="Требуют немедленной реакции">
           <div className="space-y-2">
             {overdue.slice(0, 5).map((item) => {
               const guest = guestById(item.guestId);
@@ -224,7 +221,7 @@ const FollowUp = () => {
         </SectionCard>
       )}
 
-      <SectionCard title="Очереди follow-up" description="Фильтруйте по очереди и ответственному">
+      <SectionCard title="Очередь контактов" description="Фильтруйте по сроку и ответственному">
         <div className="flex flex-wrap items-center gap-3">
           <SegmentedTabs
             value={queue}
@@ -258,8 +255,8 @@ const FollowUp = () => {
             initialSort={{ key: "dueAt", direction: "asc" }}
             emptyState={
               <EmptyState
-                title="Follow-up не найдены"
-                description="Для выбранных фильтров нет активных follow-up."
+                title="Контакты не найдены"
+                description="Для выбранных фильтров нет активных задач связи."
                 icon={Phone}
               />
             }
@@ -267,7 +264,7 @@ const FollowUp = () => {
         </div>
       </SectionCard>
 
-      <SectionCard title="Контекст обращений" description="Краткий контекст по каждому follow-up">
+      <SectionCard title="Контекст обращений" description="Что нужно сделать следующим">
         <div className="grid gap-3 md:grid-cols-2">
           {filtered.slice(0, 8).map((item) => {
             const guest = guestById(item.guestId);

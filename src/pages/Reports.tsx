@@ -103,7 +103,7 @@ const Reports = () => {
           reportType: "executive-summary",
           kpis: [
             { label: "Новые обращения", value: sales.newLeads },
-            { label: "Целевые лиды", value: scoped.leads.filter((lead) => lead.classification.quality === "target").length },
+            { label: "Целевые обращения", value: scoped.leads.filter((lead) => lead.classification.quality === "target").length },
             { label: "Открытые сделки", value: sales.openDeals },
             { label: "Стоимость воронки", value: sales.pipelineValue, format: "currency" },
             { label: "Взвешенная воронка", value: sales.weightedPipeline, format: "currency" },
@@ -125,7 +125,7 @@ const Reports = () => {
           })),
           methodology: [
             { metric: "Конверсия", formula: "confirmed / (confirmed + lost)" },
-            { metric: "Взвешенная воронка", formula: "Σ totalAmount × probability / 100 для открытых лидов" },
+            { metric: "Взвешенная воронка", formula: "Сумма × вероятность / 100 для открытых обращений" },
             { metric: "Средний чек", formula: "Σ totalAmount подтверждённых / количество подтверждённых" },
           ],
         });
@@ -162,7 +162,7 @@ const Reports = () => {
             amount: lead.totalAmount,
           })),
           methodology: [
-            { metric: "Новые обращения", formula: "Лиды со стадией new" },
+            { metric: "Новые обращения", formula: "Обращения на стадии «Новое»" },
             { metric: "Выручка", formula: "Σ totalAmount подтверждённых броней" },
           ],
         });
@@ -171,7 +171,7 @@ const Reports = () => {
     {
       id: "funnel",
       name: "Воронка продаж",
-      description: "Распределение лидов по стадиям воронки",
+      description: "Распределение обращений по стадиям воронки",
       build: async () => {
         await downloadReportWorkbook({
           ...commonParams,
@@ -189,7 +189,7 @@ const Reports = () => {
             conversionFromPrevious: stage.conversionFromPrevious,
           })),
           methodology: [
-            { metric: "Доля стадии", formula: "count / Σ всех лидов × 100" },
+            { metric: "Доля стадии", formula: "Количество на стадии / все обращения × 100" },
           ],
         });
       },
@@ -229,7 +229,7 @@ const Reports = () => {
     {
       id: "sources",
       name: "Источники обращений",
-      description: "Распределение лидов по каналам привлечения",
+      description: "Распределение обращений по каналам привлечения",
       build: async () => {
         const sourceMap = new Map<string, number>();
         scoped.leads.forEach((lead) => sourceMap.set(lead.source, (sourceMap.get(lead.source) ?? 0) + 1));
@@ -337,7 +337,7 @@ const Reports = () => {
           })),
           columns: [
             { key: "name", header: "Сотрудник" },
-            { key: "leads", header: "Лиды", format: "number" },
+            { key: "leads", header: "Обращения", format: "number" },
             { key: "confirmed", header: "Брони", format: "number" },
             { key: "revenue", header: "Выручка", format: "currency" },
           ],
@@ -347,7 +347,7 @@ const Reports = () => {
             confirmed: item.confirmed,
             revenue: item.revenue,
           })),
-          methodology: [{ metric: "Выручка сотрудника", formula: "Σ totalAmount подтверждённых лидов сотрудника" }],
+          methodology: [{ metric: "Выручка сотрудника", formula: "Сумма подтверждённых обращений сотрудника" }],
         });
       },
     },
@@ -389,12 +389,12 @@ const Reports = () => {
     },
     {
       id: "follow-up",
-      name: "Follow-up",
+      name: "Контакты с гостями",
       description: "Выполнение follow-up и просрочки",
       build: async () => {
         await downloadReportWorkbook({
           ...commonParams,
-          title: "Follow-up отчёт",
+          title: "Отчёт по контактам с гостями",
           reportType: "follow-up",
           kpis: [
             { label: "Всего follow-up", value: scoped.followUps.length, format: "number" },
@@ -403,7 +403,7 @@ const Reports = () => {
             { label: "Выполнение в срок", value: fuCompletion ?? "Нет данных", format: "percent" },
           ],
           columns: [
-            { key: "leadId", header: "Лид" },
+            { key: "leadId", header: "Обращение" },
             { key: "reason", header: "Причина" },
             { key: "status", header: "Статус" },
             { key: "dueAt", header: "Срок", format: "datetime" },
@@ -417,7 +417,7 @@ const Reports = () => {
             amount: item.potentialAmount,
           })),
           methodology: [
-            { metric: "Follow-up completion", formula: "completedOnTime / allWithDue × 100" },
+            { metric: "Контакты выполнены в срок", formula: "completedOnTime / allWithDue × 100" },
           ],
         });
       },
@@ -456,7 +456,7 @@ const Reports = () => {
             count: data.count,
             revenue: data.revenue,
           })),
-          methodology: [{ metric: "Упущенная выручка", formula: "Σ totalAmount потерянных лидов" }],
+          methodology: [{ metric: "Упущенная выручка", formula: "Сумма потерянных обращений" }],
         });
       },
     },
@@ -494,12 +494,12 @@ const Reports = () => {
     },
     {
       id: "housekeeping",
-      name: "Housekeeping",
+      name: "Уборка",
       description: "Задачи уборки и готовность номеров",
       build: async () => {
         await downloadReportWorkbook({
           ...commonParams,
-          title: "Housekeeping отчёт",
+          title: "Отчёт по уборке",
           reportType: "housekeeping",
           kpis: [
             { label: "Всего задач", value: scoped.housekeepingTasks.length, format: "number" },
@@ -526,12 +526,12 @@ const Reports = () => {
     },
     {
       id: "maintenance",
-      name: "Maintenance",
+      name: "Техобслуживание",
       description: "Заявки на ремонт и неисправности",
       build: async () => {
         await downloadReportWorkbook({
           ...commonParams,
-          title: "Maintenance отчёт",
+          title: "Отчёт по техобслуживанию",
           reportType: "maintenance",
           kpis: [
             { label: "Всего заявок", value: scoped.maintenanceTickets.length, format: "number" },
