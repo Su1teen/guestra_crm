@@ -54,9 +54,6 @@ export const AppShell = () => {
   const unread = scoped.conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
   const openTasks = scoped.tasks.filter((task) => task.status !== "done" && task.ownerId === currentEmployee.id);
   const overdueTasks = openTasks.filter((task) => task.status === "overdue");
-  const overdueFollowUps = scoped.followUps.filter(
-    (item) => item.status === "open" && new Date(item.dueAt) < new Date(),
-  );
 
   const groups: NavGroup[] = useMemo(
     () => [
@@ -68,12 +65,13 @@ export const AppShell = () => {
           { to: "/requests", label: "Обращения", icon: Layers },
           { to: "/reservations", label: "Бронирования", icon: CalendarDays },
           { to: "/guests", label: "Гости и контакты", icon: Users },
-          { to: "/tasks", label: "Задачи", icon: CheckSquare, badge: overdueTasks.length + overdueFollowUps.length },
+          { to: "/tasks", label: "Задачи", icon: CheckSquare, badge: overdueTasks.length },
         ],
       },
       {
         title: "Операции",
         items: [
+          { to: "/services", label: "Услуги и активности", icon: CalendarDays },
           { to: "/housekeeping", label: "Уборка", icon: CheckSquare },
           { to: "/maintenance", label: "Техобслуживание", icon: Wrench },
         ],
@@ -88,7 +86,7 @@ export const AppShell = () => {
         items: [{ to: "/analytics", label: "Аналитика", icon: BarChart3 }],
       },
     ],
-    [overdueFollowUps.length, overdueTasks.length, unread],
+    [overdueTasks.length, unread],
   );
 
   const sidebar = (
@@ -208,7 +206,7 @@ export const AppShell = () => {
           </div>
         </header>
 
-        <main key={location.pathname} className="animate-fade-in px-4 py-6 lg:px-6 lg:py-8">
+        <main key={location.pathname} className={cn("animate-fade-in px-4 py-6 lg:px-6 lg:py-8", location.pathname === "/inbox" && "box-border h-[calc(100dvh-4rem)] min-h-0 overflow-hidden px-3 py-3 lg:px-4 lg:py-4")}>
           <Outlet />
         </main>
       </div>

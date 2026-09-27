@@ -1,405 +1,445 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Inbox as InboxIcon, Paperclip, Send, StickyNote, UserPlus, Check } from "lucide-react";
-import { PageHeader } from "@/components/common/PageHeader";
+import { ArrowRight, CalendarClock, Check, Circle, CreditCard, Inbox as InboxIcon, MessageCircle, Paperclip, Send, StickyNote, UserPlus } from "lucide-react";
 import { EmptyState, ErrorState, LoadingScreen } from "@/components/common/States";
-import { StatusPill } from "@/components/common/StatusPill";
-import { Field, InitialsAvatar } from "@/components/common/Identity";
-import { FilterSelect, SearchInput, SegmentedTabs } from "@/components/common/Filters";
+import { InitialsAvatar } from "@/components/common/Identity";
+import { FilterSelect, SearchInput } from "@/components/common/Filters";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { CreateTaskDialog } from "@/components/crm/CreateTaskDialog";
+import { CreateReservationDialog } from "@/components/crm/CreateReservationDialog";
+import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
+import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDialog";
+import { GuestRequestDialog } from "@/components/crm/GuestRequestDialog";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import { formatDateLong, formatRelative, formatStayRange, formatTenge, formatTime, occupancyLabel } from "@/lib/format";
-import {
-  channelLabels,
-  conversationStatusLabels,
-  offerStatusLabels,
-  offerStatusTone,
-  stageLabels,
-  stageTone,
-} from "@/lib/labels";
-import type { Conversation } from "@/types/crm";
+import { channelLabels, offerStatusLabels, offerStatusTone, taskPriorityLabels, taskPriorityTone } from "@/lib/labels";
+import type { Conversation, Task } from "@/types/crm";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { conversationQueueLabel, conversationQueueState, type ConversationQueueState } from "@/lib/conversations";
 import { customerContext, effectiveStayStatus, operationalStatusLabels, reservationReadiness, reservationStatusLabels } from "@/lib/hospitality";
-import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
-import { GuestRequestDialog } from "@/components/crm/GuestRequestDialog";
-
-type InboxTab = "all" | "unread" | "mine" | "unassigned" | "pending" | "closed";
 
 const channelOptions = [
   { value: "all", label: "Все каналы" },
   ...Object.entries(channelLabels).map(([value, label]) => ({ value, label })),
 ];
+const quickFilters = [
+  { key: "mine", label: "Мои" },
+  { key: "unassigned", label: "Без ответственного" },
+  { key: "unread", label: "Непрочитанные" },
+] as const;
+type QuickFilter = typeof quickFilters[number]["key"];
+
+const localDateTime = (value: string) => {
+  const date = new Date(value);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+};
+const dateTimeIso = (value: string) => new Date(value).toISOString();
 
 const Inbox = () => {
-  const { status, reload, data, guestById, leadById, offerById, currentEmployee, employeeById, propertyById, sendMessage, markConversationRead, setConversationStatus, assignConversation } =
-    useCrm();
+  const {
+    status, reload, data, guestById, leadById, currentEmployee, employeeById, propertyById,
+    sendMessage, markConversationRead, setConversationStatus, assignConversation,
+    toggleTaskDone, updateTask, createOfferFromLead, setOfferStatus, recordPayment,
+    updateLead, folioByLeadId,
+  } = useCrm();
   const scoped = useScopedData();
   const navigate = useNavigate();
   const { toast } = useToast();
   const [params, setParams] = useSearchParams();
-
-  const [tab, setTab] = useState<InboxTab>(() => params.get("tab") === "unread" ? "unread" : "all");
+  const [queue, setQueue] = useState<ConversationQueueState>(() => {
+    const value = params.get("tab");
+    return value === "closed" ? "closed" : value === "pending" || value === "waiting_guest" ? "waiting_guest" : "needs_answer";
+  });
   const [channel, setChannel] = useState("all");
   const [search, setSearch] = useState("");
+  const [quick, setQuick] = useState<Record<QuickFilter, boolean>>({ mine: false, unassigned: false, unread: false });
   const [draft, setDraft] = useState("");
   const [asNote, setAsNote] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(params.get("conversation"));
+  const [busy, setBusy] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
   const [serviceOpen, setServiceOpen] = useState(false);
+  const [selectedServiceId, setSelectedServiceId] = useState<string>();
   const [requestOpen, setRequestOpen] = useState(false);
+  const [rescheduleAt, setRescheduleAt] = useState("");
+  const [rescheduleTaskId, setRescheduleTaskId] = useState<string | null>(null);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<"card" | "transfer" | "cash">("card");
+  const [factsOpen, setFactsOpen] = useState(false);
+  const [arrivalDraft, setArrivalDraft] = useState("");
+  const [departureDraft, setDepartureDraft] = useState("");
+  const [roomTypeDraft, setRoomTypeDraft] = useState("");
+  const [adultsDraft, setAdultsDraft] = useState(2);
+  const [childrenDraft, setChildrenDraft] = useState(0);
 
-  const filtered = useMemo(() => {
+  const visibleConversations = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return scoped.conversations
-      .filter((conversation) => {
-        if (channel !== "all" && conversation.channel !== channel) return false;
-        if (tab === "unread" && conversation.unreadCount === 0) return false;
-        if (tab === "mine" && conversation.assigneeId !== currentEmployee.id) return false;
-        if (tab === "unassigned" && conversation.assigneeId) return false;
-        if (tab === "pending" && conversation.status !== "pending") return false;
-        if (tab === "closed" && conversation.status !== "closed") return false;
-        if (tab !== "closed" && tab !== "all" && conversation.status === "closed") return false;
-        if (query) {
-          const guest = guestById(conversation.guestId);
-          const haystack = [guest?.fullName, guest?.phone, ...conversation.messages.map((message) => message.text)]
-            .filter(Boolean)
-            .join(" ")
-            .toLowerCase();
-          if (!haystack.includes(query)) return false;
-        }
-        return true;
-      })
-      .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
-  }, [channel, currentEmployee.id, guestById, scoped.conversations, search, tab]);
+    return scoped.conversations.filter((conversation) => {
+      if (channel !== "all" && conversation.channel !== channel) return false;
+      if (conversationQueueState(conversation) !== queue) return false;
+      if (quick.mine && conversation.assigneeId !== currentEmployee.id) return false;
+      if (quick.unassigned && conversation.assigneeId) return false;
+      if (quick.unread && conversation.unreadCount === 0) return false;
+      if (query) {
+        const customer = guestById(conversation.guestId);
+        const request = conversation.leadId ? leadById(conversation.leadId) : undefined;
+        const reservation = conversation.reservationId ? data.reservations.find((item) => item.id === conversation.reservationId) : undefined;
+        const haystack = [customer?.fullName, customer?.phone, request?.code, reservation?.code,
+          ...conversation.messages.map((message) => message.text)].filter(Boolean).join(" ").toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
+      return true;
+    }).sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
+  }, [channel, currentEmployee.id, data.reservations, guestById, leadById, quick.mine, quick.unassigned, quick.unread, queue, scoped.conversations, search]);
 
-  const selected: Conversation | undefined =
-    filtered.find((conversation) => conversation.id === selectedId) ?? filtered[0];
+  const selected: Conversation | undefined = visibleConversations.find((item) => item.id === selectedId) ?? visibleConversations[0];
+  const selectedConversationId = selected?.id;
+  const selectedUnreadCount = selected?.unreadCount ?? 0;
 
   useEffect(() => {
-    if (selected && selected.unreadCount > 0) {
-      markConversationRead(selected.id);
-    }
-  }, [markConversationRead, selected]);
+    if (selectedConversationId && selectedUnreadCount > 0) void markConversationRead(selectedConversationId);
+  }, [markConversationRead, selectedConversationId, selectedUnreadCount]);
 
   useEffect(() => {
-    if (selected && params.get("conversation") !== selected.id) {
-      const next = new URLSearchParams(params);
-      next.set("conversation", selected.id);
+    const next = new URLSearchParams(params);
+    if (selectedConversationId && next.get("conversation") !== selectedConversationId) {
+      next.set("conversation", selectedConversationId);
       setParams(next, { replace: true });
     }
-  }, [params, selected, setParams]);
+  }, [params, selectedConversationId, setParams]);
 
   if (status === "error") return <ErrorState onRetry={reload} />;
   if (status === "loading") return <LoadingScreen />;
 
-  const counts = {
-    all: scoped.conversations.length,
-    unread: scoped.conversations.filter((conversation) => conversation.unreadCount > 0).length,
-    mine: scoped.conversations.filter((conversation) => conversation.assigneeId === currentEmployee.id).length,
-    unassigned: scoped.conversations.filter((conversation) => !conversation.assigneeId).length,
-    pending: scoped.conversations.filter((conversation) => conversation.status === "pending").length,
-    closed: scoped.conversations.filter((conversation) => conversation.status === "closed").length,
+  const queueCounts: Record<ConversationQueueState, number> = {
+    needs_answer: scoped.conversations.filter((item) => conversationQueueState(item) === "needs_answer").length,
+    waiting_guest: scoped.conversations.filter((item) => conversationQueueState(item) === "waiting_guest").length,
+    closed: scoped.conversations.filter((item) => conversationQueueState(item) === "closed").length,
   };
-
   const guest = selected ? guestById(selected.guestId) : undefined;
-  const lead = selected?.leadId ? leadById(selected.leadId) : undefined;
-  const offer = selected?.offerId ? offerById(selected.offerId) : undefined;
-  const context = guest ? customerContext(data, guest.id) : null;
-  const reservation = selected?.reservationId ? data.reservations.find((item) => item.id === selected.reservationId) : context?.reservation;
-  const stay = selected?.stayId ? data.stays.find((item) => item.id === selected.stayId) : context?.stay;
-  const room = data.rooms.find((item) => item.id === stay?.roomId) ??
-    data.rooms.find((item) => item.id === data.reservationUnits.find((unit) => unit.reservationId === reservation?.id)?.roomId);
-  const folio = data.folios.find((item) => item.reservationId === reservation?.id || (reservation?.requestId && item.leadId === reservation.requestId));
+  const request = selected?.leadId ? leadById(selected.leadId) : undefined;
+  const guestSummary = guest ? customerContext(data, guest.id) : null;
+  const reservation = selected?.reservationId ? data.reservations.find((item) => item.id === selected.reservationId)
+    : request ? data.reservations.find((item) => item.requestId === request.id)
+      : guestSummary?.reservation;
+  const stay = selected?.stayId ? data.stays.find((item) => item.id === selected.stayId)
+    : reservation ? data.stays.find((item) => item.reservationId === reservation.id)
+      : request ? undefined : guestSummary?.stay;
+  const room = data.rooms.find((item) => item.id === (stay?.roomId ?? data.reservationUnits.find((unit) => unit.reservationId === reservation?.id)?.roomId));
+  const folio = reservation
+    ? data.folios.find((item) => item.reservationId === reservation.id || (reservation.requestId && item.leadId === reservation.requestId))
+    : request ? folioByLeadId(request.id) : undefined;
+  const offer = selected?.offerId ? data.offers.find((item) => item.id === selected.offerId)
+    : request ? data.offers.filter((item) => item.leadId === request.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] : undefined;
+  const activeTasks = selected ? data.tasks.filter((task) => task.status !== "done" && (
+    task.conversationId === selected.id || Boolean(request && task.leadId === request.id) ||
+    Boolean(reservation && task.reservationId === reservation.id) || Boolean(stay && task.stayId === stay.id)
+  )).sort((a, b) => a.dueAt.localeCompare(b.dueAt)) : [];
+  const nextTask = activeTasks[0] ?? (!request && !reservation && !stay ? guestSummary?.task : undefined);
+  const stayState = stay ? effectiveStayStatus(stay) : null;
+  const isInHouse = stayState === "in_house" || stayState === "due_out";
   const readiness = reservation ? reservationReadiness(data, reservation) : null;
-  const bookedServices = reservation ? data.serviceReservations.filter((item) => item.reservationId === reservation.id && item.status === "scheduled") : [];
+  const bookedServices = data.serviceReservations.filter((item) => item.status === "scheduled" &&
+    (reservation ? item.reservationId === reservation.id : request ? item.requestId === request.id : item.customerId === guest?.id && !item.reservationId));
   const guestRequests = reservation ? data.tasks.filter((item) => item.reservationId === reservation.id && item.type === "guest_request" && item.status !== "done") : [];
-  const lastStay = !reservation && guest ? data.stays.filter((item) => item.guestId === guest.id && item.operationalStatus === "checked_out").sort((a, b) => b.checkOut.localeCompare(a.checkOut))[0] : null;
+  const lastStay = !reservation && guest ? data.stays.filter((item) => item.guestId === guest.id && item.operationalStatus === "checked_out")
+    .sort((a, b) => b.checkOut.localeCompare(a.checkOut))[0] : null;
+  const totalAmount = folio?.totalAmount ?? request?.totalAmount ?? 0;
+  const paidAmount = folio?.paidAmount ?? request?.paidAmount ?? 0;
+  const balance = folio?.balance ?? Math.max(0, totalAmount - paidAmount);
 
-  const submit = () => {
-    if (!selected || !draft.trim()) return;
-    sendMessage(selected.id, draft.trim(), asNote);
-    setDraft("");
-    toast({ title: asNote ? "Внутренняя заметка добавлена" : "Сообщение отправлено" });
+  const writeQueueToUrl = (nextQueue: ConversationQueueState) => {
+    setQueue(nextQueue);
+    const next = new URLSearchParams(params);
+    if (nextQueue === "needs_answer") next.delete("tab");
+    else next.set("tab", nextQueue === "waiting_guest" ? "waiting_guest" : "closed");
+    setParams(next, { replace: true });
   };
+  const submitMessage = async () => {
+    if (!selected || !draft.trim() || busy) return;
+    const isNote = asNote;
+    setBusy(true);
+    try {
+      await sendMessage(selected.id, draft.trim(), isNote);
+      setDraft("");
+      if (!isNote) writeQueueToUrl("waiting_guest");
+      toast({ title: isNote ? "Внутренняя заметка добавлена" : "Сообщение отправлено" });
+    } catch (error) {
+      toast({ title: "Не удалось отправить сообщение", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    } finally { setBusy(false); }
+  };
+  const changeConversationStatus = async () => {
+    if (!selected) return;
+    const reopening = conversationQueueState(selected) === "closed";
+    const latestExternal = [...selected.messages].reverse().find((message) => message.direction !== "note");
+    const targetStatus = reopening ? (latestExternal?.direction === "out" ? "pending" : "open") : "closed";
+    try {
+      await setConversationStatus(selected.id, targetStatus);
+      writeQueueToUrl(reopening ? (targetStatus === "pending" ? "waiting_guest" : "needs_answer") : "closed");
+      toast({ title: reopening ? "Диалог снова открыт" : "Диалог закрыт" });
+    } catch (error) {
+      toast({ title: "Не удалось изменить состояние диалога", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    }
+  };
+  const createOffer = async () => {
+    if (!request) return;
+    try {
+      const offerId = await createOfferFromLead(request.id);
+      if (offerId) toast({ title: "Предложение сформировано" });
+    } catch (error) {
+      toast({ title: "Не удалось сформировать предложение", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    }
+  };
+  const savePayment = async () => {
+    if (!request || Number(paymentAmount) <= 0 || Number(paymentAmount) > balance) return;
+    setBusy(true);
+    try {
+      await recordPayment(request.id, { amount: Number(paymentAmount), method: paymentMethod });
+      setPaymentOpen(false);
+      setPaymentAmount("");
+      toast({ title: "Оплата зарегистрирована", description: formatTenge(Number(paymentAmount)) });
+    } catch (error) {
+      toast({ title: "Не удалось зарегистрировать оплату", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    } finally { setBusy(false); }
+  };
+  const openFacts = () => {
+    if (!request) return;
+    setArrivalDraft(request.checkIn.slice(0, 10));
+    setDepartureDraft(request.checkOut.slice(0, 10));
+    setRoomTypeDraft(request.roomType ?? "");
+    setAdultsDraft(request.adults);
+    setChildrenDraft(request.children);
+    setFactsOpen(true);
+  };
+  const saveFacts = () => {
+    if (!request || !arrivalDraft || !departureDraft || departureDraft <= arrivalDraft) return;
+    updateLead(request.id, { checkIn: new Date(`${arrivalDraft}T15:00:00`).toISOString(),
+      checkOut: new Date(`${departureDraft}T12:00:00`).toISOString(), roomType: roomTypeDraft || undefined,
+      adults: adultsDraft, children: childrenDraft });
+    setFactsOpen(false);
+    toast({ title: "Данные обращения обновлены" });
+  };
+  const completeTask = async (task: Task) => {
+    try { await toggleTaskDone(task.id); toast({ title: "Задача выполнена", description: task.title }); }
+    catch (error) { toast({ title: "Не удалось завершить задачу", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); }
+  };
+  const rescheduleTask = async (task: Task) => {
+    if (!rescheduleAt) return;
+    try {
+      await updateTask(task.id, { dueAt: dateTimeIso(rescheduleAt), status: new Date(rescheduleAt) < new Date() ? "overdue" : "todo" });
+      setRescheduleTaskId(null);
+      setRescheduleAt("");
+      toast({ title: "Срок задачи перенесён" });
+    } catch (error) { toast({ title: "Не удалось перенести задачу", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); }
+  };
+  const reassignTask = async (task: Task, ownerId: string) => {
+    try { await updateTask(task.id, { ownerId }); toast({ title: "Ответственный обновлён" }); }
+    catch (error) { toast({ title: "Не удалось назначить задачу", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); }
+  };
+
+  const commandPanel = selected && guest ? (
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-card">
+      <div className="border-b border-border px-4 py-3">
+        <p className="text-sm font-semibold">Контекст гостя</p>
+        <div className="mt-2 flex items-center gap-2.5">
+          <InitialsAvatar name={guest.fullName} size="sm" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium">{guest.fullName}</p>
+            <p className="truncate text-xs text-muted-foreground">{channelLabels[selected.channel]} · {employeeById(selected.assigneeId ?? "")?.shortName ?? "Без ответственного"}</p>
+          </div>
+          <Link aria-label="Открыть профиль гостя" to={`/guests/${guest.id}`} className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"><ArrowRight className="h-4 w-4" /></Link>
+        </div>
+      </div>
+
+      <div className="space-y-4 p-4">
+        {nextTask ? (
+          <section className="rounded-xl bg-brand-50/70 p-3">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-brand-800"><Circle className="h-3 w-3 fill-current" />Следующее действие</div>
+            <p className="mt-2 text-sm font-semibold">{nextTask.title}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{formatRelative(nextTask.dueAt)} · {employeeById(nextTask.ownerId)?.shortName ?? "Без ответственного"}</p>
+            {nextTask.description && <p className="mt-2 text-xs text-muted-foreground">{nextTask.description}</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button size="sm" onClick={() => void completeTask(nextTask)}><Check className="mr-1.5 h-3.5 w-3.5" />Выполнено</Button>
+              <Button size="sm" variant="outline" onClick={() => { setRescheduleAt(localDateTime(nextTask.dueAt)); setRescheduleTaskId(rescheduleTaskId === nextTask.id ? null : nextTask.id); }}><CalendarClock className="mr-1.5 h-3.5 w-3.5" />Перенести</Button>
+            </div>
+            {rescheduleTaskId === nextTask.id && <div className="mt-3 flex gap-2"><Input aria-label="Новый срок задачи" type="datetime-local" value={rescheduleAt} onChange={(event) => setRescheduleAt(event.target.value)} className="h-9 min-w-0" /><Button size="sm" onClick={() => void rescheduleTask(nextTask)}>Сохранить</Button></div>}
+            <div className="mt-3 grid gap-1.5">
+              <Label className="text-xs text-muted-foreground">Ответственный</Label>
+              <FilterSelect value={nextTask.ownerId} onChange={(value) => void reassignTask(nextTask, value)} options={data.employees.map((employee) => ({ value: employee.id, label: employee.name }))} className="w-full" ariaLabel="Ответственный за задачу" />
+            </div>
+          </section>
+        ) : (
+          <CreateTaskDialog propertyId={selected.propertyId} guestId={guest.id} leadId={request?.id}
+            conversationId={selected.id} reservationId={reservation?.id} stayId={stay?.id} roomId={room?.id}
+            defaultTitle={`Связаться с гостем: ${guest.fullName}`}
+            trigger={<Button variant="outline" className="w-full justify-start"><span className="mr-2 text-lg leading-none">＋</span>Создать задачу</Button>} />
+        )}
+
+        {isInHouse && reservation ? (
+          <section className="space-y-2 border-b border-border pb-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Сейчас проживает</p>
+            <p className="text-sm font-semibold">{room ? `Домик ${room.number}` : reservation.roomTypeSnapshot ?? "Размещение"}</p>
+            <p className="text-xs text-muted-foreground">{stayState === "due_out" ? "Выезд сегодня" : `Выезд ${formatDateLong(stay?.checkOut ?? reservation.departureAt)}`} · {stay?.checkOut ? formatTime(stay.checkOut) : "12:00"}</p>
+            <p className="text-xs">Баланс: {formatTenge(balance)}</p>
+            <p className="text-xs text-muted-foreground">Услуги: {bookedServices.length} · Открытые запросы: {guestRequests.length}</p>
+            <div className="grid grid-cols-2 gap-2">
+              <Button size="sm" variant="outline" onClick={() => setServiceOpen(true)}>Добавить услугу</Button>
+              <Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>Добавить запрос</Button>
+              {balance > 0 && <Button size="sm" variant="outline" onClick={() => { setPaymentAmount(String(balance)); setPaymentOpen(true); }}>Оплата</Button>}
+              <Button size="sm" variant="outline" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
+            </div>
+          </section>
+        ) : reservation ? (
+          <section className="space-y-2 border-b border-border pb-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Бронирование</p>
+            <div className="flex items-center justify-between gap-2"><p className="text-sm font-semibold">{reservation.code}</p><span className="text-xs text-emerald-700">{reservationStatusLabels[reservation.status]}</span></div>
+            <p className="text-sm">{reservation.roomTypeSnapshot ?? "Размещение"}{room ? ` · домик ${room.number}` : ""}</p>
+            <p className="text-xs text-muted-foreground">{formatStayRange(reservation.arrivalAt, reservation.departureAt)} · {occupancyLabel(reservation.adults, reservation.children)}</p>
+            <p className="text-xs">Оплачено {formatTenge(paidAmount)} · Остаток {formatTenge(balance)}</p>
+            {readiness?.warnings[0] && <p className="text-xs text-amber-700">Готовность: {readiness.warnings[0]}</p>}
+            <div className="grid grid-cols-2 gap-2">
+              <Button size="sm" variant="outline" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
+              <Button size="sm" variant="outline" onClick={() => { setDraft(""); document.getElementById("inbox-message-draft")?.focus(); }}>Написать</Button>
+              {reservation.status === "confirmed" && <><Button size="sm" variant="outline" onClick={() => setServiceOpen(true)}>Добавить услугу</Button><Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>Добавить запрос</Button></>}
+            </div>
+          </section>
+        ) : request ? (
+          <section className="space-y-2 border-b border-border pb-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Сейчас · обращение</p>
+            <div className="flex items-center justify-between gap-2"><p className="text-sm font-semibold">{request.code}</p><button type="button" onClick={openFacts} className="text-xs text-brand-700 hover:underline">Изменить</button></div>
+            <p className="text-sm">{request.classification.direction === "accommodation" ? "Проживание" : "Запрос гостя"}</p>
+            {request.classification.direction === "accommodation" && <><p className="text-xs text-muted-foreground">{formatStayRange(request.checkIn, request.checkOut)} · {occupancyLabel(request.adults, request.children)}</p>
+              <p className="text-xs">Категория: {request.roomType || "не выбрана"}</p>
+              {!request.roomType && <p className="text-xs text-amber-700">Не хватает категории размещения</p>}</>}
+            <Button size="sm" variant="outline" className="w-full" onClick={() => navigate(`/requests/${request.id}`)}>Открыть обращение полностью</Button>
+            <Button size="sm" variant="outline" className="w-full" onClick={() => setServiceOpen(true)}>Забронировать услугу</Button>
+            {request.classification.direction === "accommodation" && <div className="grid grid-cols-2 gap-2">
+              <Button size="sm" onClick={() => void createOffer()}>{offer ? "Обновить предложение" : "Создать предложение"}</Button>
+              {!reservation && <CreateReservationDialog request={request} stayInContext />}
+            </div>}
+            {offer && <div className="mt-2 rounded-lg border border-border p-3">
+              <div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold">Последнее предложение · {offer.code}</p><span className={cn("text-xs", offerStatusTone[offer.status] === "success" ? "text-emerald-700" : "text-muted-foreground")}>{offerStatusLabels[offer.status]}</span></div>
+              <p className="mt-1 text-sm font-semibold">{formatTenge(offer.total)}</p>
+              <div className="mt-2 flex flex-wrap gap-2"><Button size="sm" variant="ghost" onClick={() => navigate(`/offers/${offer.id}`)}>Открыть</Button>
+                {offer.status === "sent" || offer.status === "viewed" ? <Button size="sm" variant="outline" onClick={() => { setOfferStatus(offer.id, "accepted"); toast({ title: "Согласие по предложению отмечено" }); }}>Гость согласен</Button> : null}</div>
+            </div>}
+            {balance > 0 && <div className="mt-2 rounded-lg bg-secondary/70 p-3"><p className="text-xs font-semibold">Оплата</p><p className="mt-1 text-xs text-muted-foreground">Итого {formatTenge(totalAmount)} · оплачено {formatTenge(paidAmount)} · остаток {formatTenge(balance)}</p><Button size="sm" variant="outline" className="mt-2" onClick={() => { setPaymentAmount(String(balance)); setPaymentOpen(true); }}><CreditCard className="mr-1.5 h-3.5 w-3.5" />Зарегистрировать оплату</Button></div>}
+          </section>
+        ) : lastStay ? (
+          <section className="space-y-2 border-b border-border pb-4"><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Последний визит</p><p className="text-sm font-semibold">{lastStay.roomType}</p><p className="text-xs text-muted-foreground">{formatStayRange(lastStay.checkIn, lastStay.checkOut)}</p><p className="text-xs">Отзыв: {data.reviews.some((review) => review.guestId === guest.id) ? "получен" : "ещё не получен"}</p></section>
+        ) : <p className="rounded-lg bg-secondary/70 p-3 text-xs text-muted-foreground">Нет активных обращений или брони.</p>}
+
+        {bookedServices.length > 0 && <section className="space-y-2 border-b border-border pb-4"><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Запланированные услуги</p>
+          {bookedServices.slice(0, 4).map((service) => <button type="button" key={service.id} className="block w-full rounded-lg border p-2 text-left text-xs hover:bg-secondary" onClick={() => setSelectedServiceId(service.id)}>
+            <span className="font-medium">{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"}</span> · {new Date(service.startAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</button>)}</section>}
+
+        <section className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Кратко о госте</p>
+          <p className="text-xs">{guest.staysCount > 0 ? `Повторный гость · ${guest.staysCount} проживаний` : "Первый визит"}</p>
+          <p className="text-xs">Язык: {guest.language || "не указан"}</p>
+          <p className="text-xs">Предпочтение: {guest.preferences.roomPreference || "не указано"}</p>
+          <p className="text-xs">Телефон: {guest.phone}</p>
+          <Link to={`/guests/${guest.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline">Открыть профиль <ArrowRight className="h-3 w-3" /></Link>
+        </section>
+
+        <section className="space-y-2 border-t border-border pt-3">
+          <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ответственный за диалог</Label>
+          <FilterSelect value={selected.assigneeId ?? "none"} onChange={(value) => {
+            void assignConversation(selected.id, value === "none" ? null : value).then(() => toast({ title: "Ответственный обновлён" })).catch((error) => toast({ title: "Не удалось назначить диалог", description: error instanceof Error ? error.message : undefined, variant: "destructive" }));
+          }} options={[{ value: "none", label: "Без ответственного" }, ...data.employees.map((employee) => ({ value: employee.id, label: employee.name }))]} className="w-full" ariaLabel="Ответственный за диалог" />
+        </section>
+      </div>
+    </div>
+  ) : <EmptyState compact title="Нет контекста гостя" description="Для диалога не найден профиль." />;
 
   return (
-    <div className="space-y-5">
-      <PageHeader
-        title="Входящие"
-        description="Единый центр переписки с гостями по всем каналам"
-        actions={
-          <FilterSelect value={channel} onChange={setChannel} options={channelOptions} ariaLabel="Канал" />
-        }
-      />
-
-      <SegmentedTabs
-        value={tab}
-        onChange={(value) => { setTab(value); const next = new URLSearchParams(params); if (value === "all") next.delete("tab"); else next.set("tab", value); setParams(next, { replace: true }); }}
-        options={[
-          { value: "all", label: "Все", count: counts.all },
-          { value: "unread", label: "Непрочитанные", count: counts.unread },
-          { value: "mine", label: "Мои", count: counts.mine },
-          { value: "unassigned", label: "Без ответственного", count: counts.unassigned },
-          { value: "pending", label: "Ожидают ответа", count: counts.pending },
-          { value: "closed", label: "Закрытые", count: counts.closed },
-        ]}
-      />
-
-      <div className="grid items-start gap-4 lg:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_300px]">
-        <div className="flex h-[min(72vh,800px)] min-h-[560px] flex-col gap-3">
-          <SearchInput value={search} onChange={setSearch} placeholder="Поиск по диалогам" />
-          <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto rounded-2xl border border-border bg-card shadow-card">
-            {filtered.map((conversation) => {
-              const conversationGuest = guestById(conversation.guestId);
-              const lastMessage = conversation.messages[conversation.messages.length - 1];
-              return (
-                <button
-                  key={conversation.id}
-                  type="button"
-                  onClick={() => setSelectedId(conversation.id)}
-                  className={cn(
-                    "flex w-full flex-col gap-1 px-4 py-3 text-left transition-colors",
-                    selected?.id === conversation.id ? "bg-brand-50/70" : "hover:bg-secondary/60",
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="flex min-w-0 items-center gap-2">
-                      <InitialsAvatar name={conversationGuest?.fullName ?? "Гость"} size="sm" />
-                      <span className="truncate text-sm font-medium text-foreground">
-                        {conversationGuest?.fullName ?? "Гость"}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-[11px] text-muted-foreground">
-                      {formatRelative(conversation.lastMessageAt)}
-                    </span>
-                  </div>
-                  <p className="line-clamp-2 text-xs text-muted-foreground">{lastMessage?.text}</p>
-                  <div className="flex items-center gap-1.5">
-                    <StatusPill tone="neutral">{channelLabels[conversation.channel]}</StatusPill>
-                    <StatusPill tone={conversation.status === "closed" ? "neutral" : conversation.status === "pending" ? "warning" : "info"}>
-                      {conversationStatusLabels[conversation.status]}
-                    </StatusPill>
-                    {conversation.unreadCount > 0 && <StatusPill tone="brand">{conversation.unreadCount}</StatusPill>}
-                  </div>
-                </button>
-              );
-            })}
-            {filtered.length === 0 && (
-              <div className="p-4">
-                <EmptyState compact title="Диалогов нет" description="Измените фильтр или поиск." icon={InboxIcon} />
-              </div>
-            )}
-          </div>
-        </div>
-
-        {selected && guest ? (
-          <div className="flex h-[min(72vh,800px)] min-h-[560px] min-w-0 flex-col rounded-2xl border border-border bg-card shadow-card">
-            <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-foreground">{guest.fullName}</p>
-                <p className="text-xs text-muted-foreground">
-                  {channelLabels[selected.channel]} · {propertyById(selected.propertyId)?.name ?? selected.propertyId} ·{" "}
-                  {selected.assigneeId ? employeeById(selected.assigneeId)?.shortName ?? "без ответственного" : "без ответственного"}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                {!selected.assigneeId && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="gap-1.5"
-                    onClick={() => {
-                      assignConversation(selected.id, currentEmployee.id);
-                      toast({ title: "Диалог назначен на вас" });
-                    }}
-                  >
-                    <UserPlus className="h-3.5 w-3.5" />
-                    Взять в работу
-                  </Button>
-                )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-1.5"
-                  onClick={() => {
-                    setConversationStatus(selected.id, selected.status === "closed" ? "open" : "closed");
-                    toast({ title: selected.status === "closed" ? "Диалог снова открыт" : "Диалог закрыт" });
-                  }}
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  {selected.status === "closed" ? "Открыть" : "Закрыть"}
-                </Button>
-              </div>
-            </header>
-
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
-              {selected.messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={cn(
-                    "max-w-[80%] rounded-2xl px-3.5 py-2.5 text-sm",
-                    message.direction === "in"
-                      ? "bg-secondary text-foreground"
-                      : message.direction === "note"
-                        ? "ml-auto border border-amber-200 bg-amber-50 text-amber-900"
-                        : "ml-auto bg-brand-500 text-white",
-                  )}
-                >
-                  {message.direction === "note" && (
-                    <p className="mb-1 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide">
-                      <StickyNote className="h-3 w-3" />
-                      Внутренняя заметка
-                    </p>
-                  )}
-                  <p>{message.text}</p>
-                  {message.attachmentName && (
-                    <p
-                      className={cn(
-                        "mt-2 flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs",
-                        message.direction === "out" ? "bg-white/15" : "bg-card",
-                      )}
-                    >
-                      <Paperclip className="h-3 w-3" />
-                      {message.attachmentName}
-                    </p>
-                  )}
-                  <p
-                    className={cn(
-                      "mt-1 text-[11px]",
-                      message.direction === "out" ? "text-white/70" : "text-muted-foreground",
-                    )}
-                  >
-                    {formatTime(message.at)}
-                    {message.employeeId ? ` · ${employeeById(message.employeeId)?.shortName ?? "Сотрудник"}` : ""}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            <div className="border-t border-border px-5 py-3">
-              <Tabs value={asNote ? "note" : "reply"} onValueChange={(value) => setAsNote(value === "note")}>
-                <TabsList>
-                  <TabsTrigger value="reply">Ответ гостю</TabsTrigger>
-                  <TabsTrigger value="note">Внутренняя заметка</TabsTrigger>
-                </TabsList>
-              </Tabs>
-              <Textarea
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                rows={2}
-                className="mt-3"
-                placeholder={asNote ? "Заметка видна только команде" : "Напишите сообщение гостю"}
-              />
-              <div className="mt-2 flex items-center justify-between">
-                <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" disabled>
-                  <Paperclip className="h-3.5 w-3.5" />
-                  Вложение
-                </Button>
-                <Button size="sm" className="gap-1.5" onClick={submit} disabled={!draft.trim()}>
-                  <Send className="h-3.5 w-3.5" />
-                  {asNote ? "Сохранить заметку" : "Отправить"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <EmptyState title="Диалог не выбран" description="Выберите переписку из списка." icon={InboxIcon} />
-        )}
-
-        {selected && guest && (
-          <aside className="h-[min(72vh,800px)] min-h-0 space-y-4 overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-card">
-            <div>
-              <p className="text-sm font-semibold text-foreground">Что происходит сейчас</p>
-              <Link to={`/guests/${guest.id}`} className="text-xs text-brand-600 hover:underline">
-                Открыть профиль
-              </Link>
-            </div>
-            {reservation ? <div className="space-y-2 rounded-xl border border-brand-200 bg-brand-50/60 p-3">
-              <StatusPill tone={stay && ["in_house", "due_out"].includes(effectiveStayStatus(stay)) ? "success" : "info"}>{stay ? operationalStatusLabels[effectiveStayStatus(stay)] : reservationStatusLabels[reservation.status]}</StatusPill>
-              <p className="text-sm font-semibold">{reservation.code} · {reservation.roomTypeSnapshot ?? "Размещение"}</p>
-              <p className="text-xs text-muted-foreground">{formatStayRange(reservation.arrivalAt, reservation.departureAt)} · {room ? `домик ${room.number}` : "домик не назначен"}</p>
-              {reservation.etaAt && <p className="text-xs">Ожидаемое время приезда: {formatDateLong(reservation.etaAt)} · {formatTime(reservation.etaAt)}</p>}
-              {folio && <p className="text-xs font-medium">Остаток к оплате: {formatTenge(folio.balance)}</p>}
-              {readiness && !["in_house", "due_out", "checked_out"].includes(stay?.operationalStatus ?? "") && <p className="text-xs text-amber-700">{readiness.warnings[0] ?? "Готов к заезду"}</p>}
-              {["in_house", "due_out"].includes(stay?.operationalStatus ?? "") && <p className="text-xs">Услуги: {bookedServices.length} · запросы: {guestRequests.length}</p>}
-              <Button size="sm" variant="outline" className="w-full" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
-              {reservation.status === "confirmed" && <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setServiceOpen(true)}>Услуга</Button><Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>Запрос</Button></div>}
-            </div> : context?.request ? <div className="rounded-xl border border-border p-3">
-              <p className="text-sm font-semibold">Активное обращение · {context.request.code}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{context.request.roomType ?? context.request.items[0]?.name ?? "Уточнить запрос"} · {formatStayRange(context.request.checkIn, context.request.checkOut)}</p>
-              <Button size="sm" variant="outline" className="mt-2 w-full" onClick={() => navigate(`/requests/${context.request?.id}`)}>Открыть обращение</Button>
-            </div> : lastStay ? <p className="rounded-xl bg-secondary p-3 text-xs text-muted-foreground">Последнее проживание: {formatStayRange(lastStay.checkIn, lastStay.checkOut)}. История и отзыв — в профиле гостя.</p> : <p className="rounded-xl bg-secondary p-3 text-xs text-muted-foreground">Активного обращения или брони нет.</p>}
-            {context?.task && <div className="rounded-xl border border-border p-3"><p className="text-xs font-semibold uppercase text-muted-foreground">Следующее действие</p><p className="mt-1 text-sm">{context.task.title}</p><Button size="sm" variant="link" className="px-0" onClick={() => navigate("/tasks")}>К задачам</Button></div>}
-            {reservation && <><ServiceBookingDialog reservation={reservation} customerId={stay?.guestId ?? guest.id} open={serviceOpen} onOpenChange={setServiceOpen} /><GuestRequestDialog reservationId={reservation.id} open={requestOpen} onOpenChange={setRequestOpen} /></>}
-            <div className="space-y-3">
-              <Field label="Телефон">{guest.phone}</Field>
-              <Field label="Эл. почта">{guest.email}</Field>
-              <Field label="Проживаний">{guest.staysCount}</Field>
-              <Field label="Покупки за всё время">{formatTenge(guest.lifetimeValue)}</Field>
-              <Field label="Последний визит">
-                {guest.lastStayDate ? formatDateLong(guest.lastStayDate) : "Ещё не проживал"}
-              </Field>
-              <Field label="Предпочтения">{guest.preferences.roomPreference}</Field>
-            </div>
-
-            {lead && (
-              <div className="rounded-xl border border-border p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <Link to={`/leads/${lead.id}`} className="text-sm font-semibold text-brand-600 hover:underline">
-                    {lead.code}
-                  </Link>
-                  <StatusPill tone={stageTone[lead.stage]}>{stageLabels[lead.stage]}</StatusPill>
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {propertyById(lead.propertyId)?.name ?? lead.propertyId} · {formatStayRange(lead.checkIn, lead.checkOut)}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {lead.roomType} · {occupancyLabel(lead.adults, lead.children)}
-                </p>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatTenge(lead.totalAmount)}</p>
-              </div>
-            )}
-
-            {offer && (
-              <div className="rounded-xl border border-border p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <Link to={`/offers/${offer.id}`} className="text-sm font-semibold text-brand-600 hover:underline">
-                    {offer.code}
-                  </Link>
-                  <StatusPill tone={offerStatusTone[offer.status]}>{offerStatusLabels[offer.status]}</StatusPill>
-                </div>
-                <p className="mt-1 text-sm font-semibold text-foreground">{formatTenge(offer.total)}</p>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Назначить</p>
-              <FilterSelect
-                value={selected.assigneeId ?? "none"}
-                onChange={(value) => {
-                  if (value === "none") return;
-                  assignConversation(selected.id, value);
-                  toast({ title: "Ответственный обновлён" });
-                }}
-                options={[
-                  { value: "none", label: "Без ответственного" },
-                  ...data.employees.map((employee) => ({ value: employee.id, label: employee.name })),
-                ]}
-                className="w-full"
-              />
-            </div>
-
-            {lead && (
-              <Button variant="outline" className="w-full" onClick={() => navigate(`/leads/${lead.id}`)}>
-                Открыть обращение
-              </Button>
-            )}
-          </aside>
-        )}
+    <div className="flex h-full min-h-0 flex-col gap-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2"><MessageCircle className="h-5 w-5 text-brand-600" /><h1 className="text-lg font-semibold">Входящие</h1><span className="hidden text-xs text-muted-foreground sm:inline">Переписка и действия по гостю</span></div>
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-2 xl:flex-none"><SearchInput value={search} onChange={setSearch} placeholder="Гость, бронь или сообщение" className="w-full max-w-xs" /><FilterSelect value={channel} onChange={setChannel} options={channelOptions} ariaLabel="Канал" /></div>
       </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
+        <Tabs value={queue} onValueChange={(value) => writeQueueToUrl(value as ConversationQueueState)}>
+          <TabsList className="h-9 bg-transparent p-0">
+            {(["needs_answer", "waiting_guest", "closed"] as const).map((value) => <TabsTrigger key={value} value={value} className="h-9 rounded-none border-b-2 border-transparent px-3 text-xs data-[state=active]:border-brand-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground">
+              {conversationQueueLabel[value]} <span className="ml-1.5 text-[10px] text-muted-foreground">{queueCounts[value]}</span>
+            </TabsTrigger>)}
+          </TabsList>
+        </Tabs>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {quickFilters.map((filter) => <Button key={filter.key} type="button" size="sm" variant={quick[filter.key] ? "secondary" : "ghost"} aria-pressed={quick[filter.key]} className="h-8 px-2.5 text-xs" onClick={() => setQuick((current) => ({ ...current, [filter.key]: !current[filter.key] }))}>{filter.label}</Button>)}
+          <Button type="button" size="sm" variant="outline" className="h-8 xl:hidden" onClick={() => setContextOpen(true)}>Контекст</Button>
+        </div>
+      </div>
+
+      <div className="grid min-h-0 flex-1 gap-2.5 xl:grid-cols-[250px_minmax(0,1fr)_292px]">
+        <section className="flex min-h-[190px] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card xl:min-h-0">
+          <div className="border-b border-border px-3 py-2"><p className="text-xs font-medium text-muted-foreground">Диалоги · {visibleConversations.length}</p></div>
+          <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">
+            {visibleConversations.map((conversation) => {
+              const person = guestById(conversation.guestId);
+              const last = [...conversation.messages].reverse().find((message) => message.direction !== "note");
+              const linkedRequest = conversation.leadId ? leadById(conversation.leadId) : undefined;
+              const linkedReservation = conversation.reservationId ? data.reservations.find((item) => item.id === conversation.reservationId) : undefined;
+              const label = conversationQueueState(conversation);
+              return <button key={conversation.id} type="button" onClick={() => setSelectedId(conversation.id)} className={cn("w-full border-l-[3px] px-3 py-3 text-left transition-colors", selected?.id === conversation.id ? "border-brand-500 bg-brand-50/60" : "border-transparent hover:bg-secondary/50")}>
+                <div className="flex items-center justify-between gap-2"><span className="flex min-w-0 items-center gap-2"><InitialsAvatar name={person?.fullName ?? "Гость"} size="sm" /><span className="truncate text-sm font-medium">{person?.fullName ?? "Гость"}</span></span><span className="shrink-0 text-[10px] text-muted-foreground">{formatRelative(conversation.lastMessageAt)}</span></div>
+                <p className="mt-1.5 line-clamp-1 text-xs text-muted-foreground">{last?.text}</p>
+                <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10px]">
+                  <span className="shrink-0 text-muted-foreground">{channelLabels[conversation.channel]}</span><span className="text-muted-foreground">·</span>
+                  <span className={cn("truncate font-medium", label === "needs_answer" ? "text-amber-700" : label === "closed" ? "text-muted-foreground" : "text-emerald-700")}>{conversationQueueLabel[label]}</span>
+                  {conversation.unreadCount > 0 && <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-brand-500" title="Непрочитано" />}
+                </div>
+                {(linkedRequest || linkedReservation) && <p className="mt-1 truncate text-[10px] text-muted-foreground">{linkedReservation ? `Бронь ${linkedReservation.code}` : `${linkedRequest?.code} · ${linkedRequest?.roomType ?? "Проживание"} · ${formatStayRange(linkedRequest?.checkIn ?? "", linkedRequest?.checkOut ?? "")}`}</p>}
+                <p className="mt-1 truncate text-[10px] text-muted-foreground">{conversation.assigneeId ? employeeById(conversation.assigneeId)?.shortName : "Без ответственного"}</p>
+              </button>;
+            })}
+            {!visibleConversations.length && <div className="p-4"><EmptyState compact title="Диалогов нет" description="Измените фильтр или поиск." icon={InboxIcon} /></div>}
+          </div>
+        </section>
+
+        {selected && guest ? <section className="flex min-h-[460px] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card xl:min-h-0">
+          <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+            <div className="min-w-0"><p className="truncate text-sm font-semibold">{guest.fullName}</p><p className="text-xs text-muted-foreground">{channelLabels[selected.channel]} · {propertyById(selected.propertyId)?.shortName ?? selected.propertyId} · {conversationQueueLabel[conversationQueueState(selected)]}</p></div>
+            <div className="flex items-center gap-2">
+              {!selected.assigneeId && <Button size="sm" variant="outline" className="gap-1.5" onClick={() => { void assignConversation(selected.id, currentEmployee.id).then(() => toast({ title: "Диалог назначен на вас" })).catch(() => toast({ title: "Не удалось назначить диалог", variant: "destructive" })); }}><UserPlus className="h-3.5 w-3.5" />Взять</Button>}
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void changeConversationStatus()}><Check className="h-3.5 w-3.5" />{conversationQueueState(selected) === "closed" ? "Открыть" : "Закрыть"}</Button>
+            </div>
+          </header>
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-secondary/20 px-4 py-4 sm:px-6">
+            {selected.messages.map((message) => <div key={message.id} className={cn("max-w-[82%] rounded-2xl px-3.5 py-2.5 text-sm shadow-sm", message.direction === "in" ? "bg-card text-foreground" : message.direction === "note" ? "ml-auto border border-amber-200 bg-amber-50 text-amber-950" : "ml-auto bg-brand-500 text-white")}>
+              {message.direction === "note" && <p className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide"><StickyNote className="h-3 w-3" />Внутренняя заметка</p>}
+              <p className="whitespace-pre-wrap">{message.text}</p>
+              {message.attachmentName && <p className={cn("mt-2 flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs", message.direction === "out" ? "bg-white/15" : "bg-secondary")}><Paperclip className="h-3 w-3" />{message.attachmentName}</p>}
+              <p className={cn("mt-1 text-[10px]", message.direction === "out" ? "text-white/70" : "text-muted-foreground")}>{formatTime(message.at)}{message.employeeId ? ` · ${employeeById(message.employeeId)?.shortName ?? "Сотрудник"}` : ""}</p>
+            </div>)}
+          </div>
+          <div className="border-t border-border bg-card px-4 py-3">
+            <div className="mb-2 flex gap-1"><Button size="sm" variant={!asNote ? "secondary" : "ghost"} className="h-7 px-2 text-xs" onClick={() => setAsNote(false)}>Ответ гостю</Button><Button size="sm" variant={asNote ? "secondary" : "ghost"} className="h-7 px-2 text-xs" onClick={() => setAsNote(true)}>Внутренняя заметка</Button></div>
+            <Textarea id="inbox-message-draft" value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} className="resize-none" placeholder={asNote ? "Заметка видна только команде" : "Напишите сообщение гостю"} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submitMessage(); } }} />
+            <div className="mt-2 flex items-center justify-between"><Button variant="ghost" size="sm" className="h-8 gap-1.5 text-muted-foreground" disabled><Paperclip className="h-3.5 w-3.5" />Вложение</Button><Button size="sm" className="h-8 gap-1.5" onClick={() => void submitMessage()} disabled={!draft.trim() || busy}><Send className="h-3.5 w-3.5" />{busy ? "Отправляем…" : asNote ? "Сохранить заметку" : "Отправить"}</Button></div>
+          </div>
+        </section> : <EmptyState title="Диалог не выбран" description="Выберите переписку из списка." icon={InboxIcon} />}
+
+        <aside className="hidden min-h-0 overflow-hidden rounded-xl border border-border xl:block">{commandPanel}</aside>
+      </div>
+
+      <Sheet open={contextOpen} onOpenChange={setContextOpen}><SheetContent side="right" className="w-[min(380px,92vw)] overflow-y-auto p-0"><SheetHeader className="sr-only"><SheetTitle>Контекст гостя</SheetTitle><SheetDescription>Текущая бронь, обращение и задача</SheetDescription></SheetHeader>{commandPanel}</SheetContent></Sheet>
+      <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent className="sm:max-w-sm"><DialogHeader><DialogTitle>Зарегистрировать оплату</DialogTitle><DialogDescription>Оплата будет записана в существующее фолио обращения.</DialogDescription></DialogHeader><div className="space-y-3"><div className="space-y-1.5"><Label htmlFor="inbox-payment-amount">Сумма, ₸</Label><Input id="inbox-payment-amount" type="number" min={1} max={balance} value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} /></div><div className="space-y-1.5"><Label>Способ</Label><FilterSelect value={paymentMethod} onChange={(value) => setPaymentMethod(value as typeof paymentMethod)} options={[{ value: "card", label: "Карта" }, { value: "transfer", label: "Перевод" }, { value: "cash", label: "Наличные" }]} className="w-full" /></div></div><DialogFooter><Button variant="outline" onClick={() => setPaymentOpen(false)}>Отмена</Button><Button onClick={() => void savePayment()} disabled={busy || Number(paymentAmount) <= 0 || Number(paymentAmount) > balance}>Сохранить оплату</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={factsOpen} onOpenChange={setFactsOpen}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Данные обращения</DialogTitle><DialogDescription>Ключевые сведения можно уточнить, не закрывая диалог.</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-3"><div className="space-y-1.5"><Label htmlFor="inbox-arrival">Заезд</Label><Input id="inbox-arrival" type="date" value={arrivalDraft} onChange={(event) => setArrivalDraft(event.target.value)} /></div><div className="space-y-1.5"><Label htmlFor="inbox-departure">Выезд</Label><Input id="inbox-departure" type="date" value={departureDraft} onChange={(event) => setDepartureDraft(event.target.value)} /></div><div className="col-span-2 space-y-1.5"><Label htmlFor="inbox-room-type">Категория размещения</Label><Input id="inbox-room-type" value={roomTypeDraft} onChange={(event) => setRoomTypeDraft(event.target.value)} placeholder="Например, A-Frame" /></div><div className="space-y-1.5"><Label htmlFor="inbox-adults">Взрослые</Label><Input id="inbox-adults" type="number" min={1} value={adultsDraft} onChange={(event) => setAdultsDraft(Number(event.target.value))} /></div><div className="space-y-1.5"><Label htmlFor="inbox-children">Дети</Label><Input id="inbox-children" type="number" min={0} value={childrenDraft} onChange={(event) => setChildrenDraft(Number(event.target.value))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setFactsOpen(false)}>Отмена</Button><Button onClick={saveFacts} disabled={!arrivalDraft || !departureDraft || departureDraft <= arrivalDraft}>Сохранить</Button></DialogFooter></DialogContent></Dialog>
+      {guest && <ServiceBookingDialog reservation={reservation} customerId={stay?.guestId ?? guest.id} propertyId={selected?.propertyId} requestId={request?.id} open={serviceOpen} onOpenChange={setServiceOpen} />}
+      {reservation && <GuestRequestDialog reservationId={reservation.id} open={requestOpen} onOpenChange={setRequestOpen} />}
+      <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
     </div>
   );
 };

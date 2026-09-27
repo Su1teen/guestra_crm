@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 import { recalcFolio } from "./folio.js";
+import { allocateServiceResources, resolveServiceEnd } from "./service-availability-service.js";
 
 type Tx = Pick<Database, "select" | "insert" | "update" | "delete" | "execute">;
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
@@ -15,6 +16,7 @@ export class ServiceConflict extends Error {
 export interface ServiceBookingInput {
   customerId: string;
   propertyId: string;
+  requestId?: string;
   reservationId?: string;
   catalogItemId: string;
   startAt: string;
@@ -26,6 +28,7 @@ export interface ServiceBookingInput {
   useEntitlement?: boolean;
   notes?: string;
   idempotencyKey: string;
+  preferredResourceIds?: Record<string, string>;
   employeeId?: string;
 }
 
@@ -34,7 +37,8 @@ export const bookService = async (tx: Tx, input: ServiceBookingInput) => {
     .where(eq(s.serviceReservations.idempotencyKey, input.idempotencyKey)).limit(1);
   if (existing) {
     if (existing.customerId !== input.customerId || existing.catalogItemId !== input.catalogItemId ||
-        existing.reservationId !== (input.reservationId ?? null)) throw new ServiceConflict("Ключ запроса уже использован для другой услуги");
+        existing.reservationId !== (input.reservationId ?? null) ||
+        existing.requestId !== (input.requestId ?? null)) throw new ServiceConflict("Ключ запроса уже использован для другой услуги");
     return { service: existing, duplicate: true };
   }
   const [catalog] = await tx.select().from(s.serviceCatalog).where(and(
@@ -45,6 +49,14 @@ export const bookService = async (tx: Tx, input: ServiceBookingInput) => {
   const [customer] = await tx.select({ id: s.guests.id }).from(s.guests)
     .where(eq(s.guests.id, input.customerId)).limit(1);
   if (!customer) throw new ServiceConflict("Гость / контакт не найден");
+  if (input.requestId) {
+    const [serviceRequest] = await tx.select().from(s.leads).where(eq(s.leads.id, input.requestId)).limit(1);
+    if (!serviceRequest || serviceRequest.guestId !== input.customerId || serviceRequest.propertyId !== input.propertyId)
+      throw new ServiceConflict("Обращение не связано с этим клиентом и объектом");
+    if (input.reservationId && serviceRequest.id !== (await tx.select({ requestId: s.reservations.requestId }).from(s.reservations)
+      .where(eq(s.reservations.id, input.reservationId)).limit(1))[0]?.requestId)
+      throw new ServiceConflict("Обращение не относится к выбранной брони");
+  }
   let reservation: typeof s.reservations.$inferSelect | undefined;
   let stay: typeof s.guestStays.$inferSelect | undefined;
   let folio: typeof s.folios.$inferSelect | undefined;
@@ -93,7 +105,20 @@ export const bookService = async (tx: Tx, input: ServiceBookingInput) => {
     throw new ServiceConflict("Для изменения цены укажите причину");
   }
   const at = now();
+  if (catalog.bookingMode !== "manual" && catalog.pricingUnit === "person" && input.quantity !== input.participants)
+    throw new ServiceConflict("Для этой услуги количество должно совпадать с числом участников");
+  const endAt = resolveServiceEnd(catalog, input.startAt, input.endAt);
+  const assignments = await allocateServiceResources(tx, { catalog, startAt: input.startAt, endAt,
+    participants: input.participants, quantity: input.quantity, preferredResourceIds: input.preferredResourceIds });
   const total = price * input.quantity;
+  if (!folio && !reservation && total > 0) {
+    await tx.execute(sql`SELECT id FROM guests WHERE id = ${input.customerId} FOR UPDATE`);
+    if (input.requestId) [folio] = await tx.select().from(s.folios)
+      .where(and(eq(s.folios.leadId, input.requestId), eq(s.folios.guestId, input.customerId)))
+      .limit(1);
+    if (!folio) [folio] = await tx.insert(s.folios).values({ id: id("folio"), code: `F-SVC-${randomUUID().slice(0, 12)}`,
+      guestId: input.customerId, leadId: input.requestId, propertyId: input.propertyId, currency: catalog.currency }).returning();
+  }
   let line: typeof s.folioLines.$inferSelect | undefined;
   if (folio && total > 0) {
     [line] = await tx.insert(s.folioLines).values({ id: id("fline"), folioId: folio.id,
@@ -105,13 +130,17 @@ export const bookService = async (tx: Tx, input: ServiceBookingInput) => {
     await recalcFolio(tx, folio.id);
   }
   const [service] = await tx.insert(s.serviceReservations).values({ id: id("service_reservation"),
-    propertyId: input.propertyId, customerId: input.customerId,
+    propertyId: input.propertyId, customerId: input.customerId, requestId: input.requestId,
     reservationId: reservation?.id, stayId: stay?.id, catalogItemId: catalog.id,
     folioId: folio?.id, folioLineId: line?.id, entitlementId: entitlement?.id,
     idempotencyKey: input.idempotencyKey, status: "scheduled", startAt: input.startAt,
-    endAt: input.endAt, participants: input.participants, quantity: input.quantity,
+    endAt, participants: input.participants, quantity: input.quantity,
     unitPrice: price, totalAmount: total, currency: catalog.currency, notes: input.notes,
   }).returning();
+  if (assignments.length) await tx.insert(s.serviceResourceAllocations).values(assignments.map((assignment) => ({
+    id: id("service_allocation"), serviceReservationId: service.id, resourceGroupId: assignment.resourceGroupId,
+    resourceId: assignment.resourceId, startAt: input.startAt, endAt, quantity: assignment.quantity,
+  })));
   await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: input.customerId,
     propertyId: input.propertyId, employeeId: input.employeeId, type: "service_scheduled",
     title: `Запланировано: ${catalog.name}`, amount: total, occurredAt: at });
@@ -134,6 +163,9 @@ export const changeServiceStatus = async (tx: Tx, serviceId: string, status: "co
       .where(eq(s.folioLines.id, service.folioLineId));
     if (service.folioId) await recalcFolio(tx, service.folioId);
   }
+  if (status === "cancelled") await tx.update(s.serviceResourceAllocations).set({ status: "released", updatedAt: at })
+    .where(and(eq(s.serviceResourceAllocations.serviceReservationId, service.id),
+      eq(s.serviceResourceAllocations.status, "active")));
   const [catalog] = await tx.select().from(s.serviceCatalog)
     .where(eq(s.serviceCatalog.id, service.catalogItemId)).limit(1);
   await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: service.customerId,
@@ -141,4 +173,33 @@ export const changeServiceStatus = async (tx: Tx, serviceId: string, status: "co
     title: `${status === "completed" ? "Оказана" : "Отменена"}: ${catalog?.name ?? "услуга"}`,
     amount: status === "completed" ? service.totalAmount : null, occurredAt: at });
   return { service: updated, duplicate: false };
+};
+
+export const rescheduleService = async (tx: Tx, serviceId: string, input: {
+  startAt: string; endAt?: string; preferredResourceIds?: Record<string, string>; employeeId?: string;
+}) => {
+  await tx.execute(sql`SELECT id FROM service_reservations WHERE id = ${serviceId} FOR UPDATE`);
+  const [service] = await tx.select().from(s.serviceReservations).where(eq(s.serviceReservations.id, serviceId)).limit(1);
+  if (!service) return null;
+  if (service.status !== "scheduled") throw new ServiceConflict("Перенести можно только запланированную услугу");
+  const [catalog] = await tx.select().from(s.serviceCatalog).where(eq(s.serviceCatalog.id, service.catalogItemId)).limit(1);
+  if (!catalog) throw new ServiceConflict("Услуга не найдена в каталоге");
+  const endAt = resolveServiceEnd(catalog, input.startAt, input.endAt);
+  const assignments = await allocateServiceResources(tx, { catalog, startAt: input.startAt, endAt,
+    participants: service.participants, quantity: service.quantity,
+    preferredResourceIds: input.preferredResourceIds, excludeServiceReservationId: service.id });
+  const at = now();
+  await tx.update(s.serviceResourceAllocations).set({ status: "released", updatedAt: at })
+    .where(and(eq(s.serviceResourceAllocations.serviceReservationId, service.id),
+      eq(s.serviceResourceAllocations.status, "active")));
+  if (assignments.length) await tx.insert(s.serviceResourceAllocations).values(assignments.map((assignment) => ({
+    id: id("service_allocation"), serviceReservationId: service.id, resourceGroupId: assignment.resourceGroupId,
+    resourceId: assignment.resourceId, startAt: input.startAt, endAt, quantity: assignment.quantity,
+  })));
+  const [updated] = await tx.update(s.serviceReservations).set({ startAt: input.startAt, endAt, updatedAt: at })
+    .where(eq(s.serviceReservations.id, service.id)).returning();
+  await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: service.customerId,
+    propertyId: service.propertyId, employeeId: input.employeeId, type: "service_rescheduled",
+    title: `Перенесено: ${catalog.name}`, description: `${service.startAt} → ${input.startAt}`, occurredAt: at });
+  return updated;
 };

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Users } from "lucide-react";
+import { Plus, Users } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { StatCard } from "@/components/common/StatCard";
 import { DataTable, type Column } from "@/components/common/DataTable";
@@ -15,6 +15,8 @@ import { formatDateNumeric, formatTenge, formatTengeCompact } from "@/lib/format
 import { segmentLabels } from "@/lib/labels";
 import { customerContext } from "@/lib/hospitality";
 import { CreateGuestDialog } from "@/components/crm/CreateGuestDialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 
 const segmentOptions = [
   { value: "all", label: "Все сегменты" },
@@ -38,6 +40,7 @@ const Guests = () => {
   const [search, setSearch] = useState("");
   const [segment, setSegment] = useState("all");
   const [stays, setStays] = useState("all");
+  const [newGuestOpen, setNewGuestOpen] = useState(false);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -157,7 +160,7 @@ const Guests = () => {
       <PageHeader
         title="Гости и контакты"
         description="Один профиль человека для обращений, услуг и проживания"
-        actions={<CreateGuestDialog onCreated={(guestId) => navigate(`/guests/${guestId}`)} />}
+        actions={<div className="flex items-center gap-2"><DropdownMenu><DropdownMenuTrigger asChild><Button className="gap-2"><Plus className="h-4 w-4" />Добавить</Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => setNewGuestOpen(true)}><Users className="mr-2 h-4 w-4" />Новый гость</DropdownMenuItem></DropdownMenuContent></DropdownMenu><CreateGuestDialog open={newGuestOpen} onOpenChange={setNewGuestOpen} trigger={null} preferredPropertyId={data.properties.find((item) => /боровое/i.test(item.name))?.id} onCreated={(guestId) => navigate(`/guests/${guestId}`)} /></div>}
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

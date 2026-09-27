@@ -9,6 +9,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import Today from "@/pages/Today";
 import RequestsWorkspace from "@/pages/RequestsWorkspace";
 import Reservations from "@/pages/Reservations";
+import Services from "@/pages/Services";
 import AnalyticsHub from "@/pages/AnalyticsHub";
 import Inbox from "@/pages/Inbox";
 import LeadDetail from "@/pages/LeadDetail";
@@ -59,10 +60,11 @@ const AppRoutes = () => {
         <Route path="leads/:leadId" element={<LeadDetail />} />
         <Route path="offers" element={<Offers />} />
         <Route path="offers/:offerId" element={<OfferDetail />} />
-        <Route path="follow-up" element={<LegacyRedirect to="/tasks" view="followups" />} />
+        <Route path="follow-up" element={<LegacyRedirect to="/tasks" />} />
         <Route path="tasks" element={<Tasks />} />
         <Route path="calendar" element={<LegacyRedirect to="/tasks" view="calendar" />} />
         <Route path="reservations" element={<Reservations />} />
+        <Route path="services" element={<Services />} />
         <Route path="guests" element={<Guests />} />
         <Route path="guests/:guestId" element={<GuestDetail />} />
         <Route path="classification" element={<Classification />} />

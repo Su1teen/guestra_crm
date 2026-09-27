@@ -9,6 +9,8 @@ import { Timeline } from "@/components/common/Timeline";
 import { EmptyState, ErrorState, LoadingScreen } from "@/components/common/States";
 import { SegmentedTabs } from "@/components/common/Filters";
 import { CreateTaskDialog } from "@/components/crm/CreateTaskDialog";
+import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
+import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useCrm } from "@/store/crm-store";
@@ -47,6 +49,8 @@ const GuestDetail = () => {
 
   const [tab, setTab] = useState<TabKey>("overview");
   const [note, setNote] = useState("");
+  const [serviceOpen, setServiceOpen] = useState(false);
+  const [selectedServiceId, setSelectedServiceId] = useState<string>();
 
   const guest = guestById(guestId);
 
@@ -70,7 +74,8 @@ const GuestDetail = () => {
       reservations: reservationsForCustomer(guest.id).sort((a, b) => b.arrivalAt.localeCompare(a.arrivalAt)),
       stays: data.stays.filter((stay) => stay.guestId === guest.id).sort((a, b) => b.checkIn.localeCompare(a.checkIn)),
       services: data.services.filter((service) => service.guestId === guest.id),
-      serviceReservations: data.serviceReservations.filter((service) => service.customerId === guest.id),
+      serviceReservations: data.serviceReservations.filter((service) => service.customerId === guest.id)
+        .sort((a, b) => (a.status === "scheduled" ? 0 : 1) - (b.status === "scheduled" ? 0 : 1) || a.startAt.localeCompare(b.startAt)),
       payments: data.payments.filter((payment) => payment.guestId === guest.id).sort((a, b) => b.date.localeCompare(a.date)),
       notes: data.notes.filter((item) => item.guestId === guest.id),
       conversations: data.conversations.filter((conversation) => conversation.guestId === guest.id),
@@ -139,6 +144,7 @@ const GuestDetail = () => {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => setServiceOpen(true)}>Забронировать услугу</Button>
           <CreateTaskDialog
             trigger={
               <Button variant="outline" className="gap-2">
@@ -345,7 +351,7 @@ const GuestDetail = () => {
       {tab === "spending" && (
         <SectionCard padded={false} bodyClassName="p-0">
           <ul className="divide-y divide-border">
-            {related.serviceReservations.map((service) => <li key={service.id} className="flex items-center justify-between gap-3 px-5 py-3"><div><p className="text-sm font-medium">{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"}</p><p className="text-xs text-muted-foreground">{formatDateNumeric(service.startAt)} · {service.status === "scheduled" ? "Запланирована" : service.status === "completed" ? "Оказана" : "Отменена"}{service.entitlementId ? " · включена в пакет" : ""}</p></div><span className="text-sm font-medium">{formatTenge(service.totalAmount)}</span></li>)}
+            {related.serviceReservations.map((service) => <li key={service.id} className="flex items-center justify-between gap-3 px-5 py-3"><div><p className="text-sm font-medium">{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"}</p><p className="text-xs text-muted-foreground">{formatDateNumeric(service.startAt)} · {service.status === "scheduled" ? "Запланирована" : service.status === "completed" ? "Оказана" : "Отменена"}{service.entitlementId ? " · включена в пакет" : ""}{!service.reservationId ? " · без проживания" : ""}</p><Button size="sm" variant="link" className="px-0" onClick={() => setSelectedServiceId(service.id)}>Открыть услугу</Button></div><span className="text-sm font-medium">{formatTenge(service.totalAmount)}</span></li>)}
             {related.services.map((service) => {
               const stay = service.stayId ? data.stays.find((s) => s.id === service.stayId) : undefined;
               return (
@@ -482,6 +488,8 @@ const GuestDetail = () => {
           </SectionCard>
         </div>
       )}
+      <ServiceBookingDialog customerId={guest.id} propertyId={guest.preferredPropertyId} open={serviceOpen} onOpenChange={setServiceOpen} />
+      <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
     </div>
   );
 };

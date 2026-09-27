@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -8,15 +9,26 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useCrm } from "@/store/crm-store";
 import { useToast } from "@/hooks/use-toast";
 
-export const CreateGuestDialog = ({ onCreated }: { onCreated?: (guestId: string) => void }) => {
+export const CreateGuestDialog = ({ onCreated, open: controlledOpen, onOpenChange, preferredPropertyId, trigger }: {
+  onCreated?: (guestId: string) => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  preferredPropertyId?: string;
+  trigger?: ReactNode | null;
+}) => {
   const { data, createGuest } = useCrm();
   const { toast } = useToast();
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
   const [busy, setBusy] = useState(false);
   const [fullName, setFullName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
-  const [propertyId, setPropertyId] = useState(data.properties[0]?.id ?? "");
+  const [propertyId, setPropertyId] = useState(preferredPropertyId ?? data.properties[0]?.id ?? "");
+  useEffect(() => {
+    if (open && preferredPropertyId) setPropertyId(preferredPropertyId);
+  }, [open, preferredPropertyId]);
   const submit = async () => {
     if (!fullName.trim()) return;
     setBusy(true);
@@ -32,7 +44,7 @@ export const CreateGuestDialog = ({ onCreated }: { onCreated?: (guestId: string)
     } finally { setBusy(false); }
   };
   return <Dialog open={open} onOpenChange={setOpen}>
-    <DialogTrigger asChild><Button className="gap-2"><Plus className="h-4 w-4" />Добавить гостя</Button></DialogTrigger>
+    {trigger !== null && <DialogTrigger asChild>{trigger ?? <Button className="gap-2"><Plus className="h-4 w-4" />Добавить гостя</Button>}</DialogTrigger>}
     <DialogContent className="sm:max-w-md">
       <DialogHeader><DialogTitle>Новый гость / контакт</DialogTitle><DialogDescription>Создайте единый профиль, чтобы связать с ним обращения, брони и услуги.</DialogDescription></DialogHeader>
       <div className="space-y-4 py-2">

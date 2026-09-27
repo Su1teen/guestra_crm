@@ -48,7 +48,7 @@ beforeAll(async () => {
   for (const statement of migration2.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
     await client.exec(statement);
   }
-  for (const name of ["0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey"]) {
+  for (const name of ["0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey", "0006_task_context_and_followup_queue", "0007_service_resource_availability"]) {
     const migration = await readFile(new URL(`../drizzle/${name}.sql`, import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) await client.exec(statement);
   }
@@ -60,12 +60,14 @@ beforeAll(async () => {
 describe("database migrations", () => {
   it("orders and applies the resort journey migration after the initial schema", async () => {
     const migrations = readMigrationFiles({ migrationsFolder: "drizzle" });
-    expect(migrations).toHaveLength(6);
+    expect(migrations).toHaveLength(8);
     expect(migrations[1].folderMillis).toBeGreaterThan(migrations[0].folderMillis);
     expect(migrations[2].folderMillis).toBeGreaterThan(migrations[1].folderMillis);
     expect(migrations[3].folderMillis).toBeGreaterThan(migrations[2].folderMillis);
     expect(migrations[4].folderMillis).toBeGreaterThan(migrations[3].folderMillis);
     expect(migrations[5].folderMillis).toBeGreaterThan(migrations[4].folderMillis);
+    expect(migrations[6].folderMillis).toBeGreaterThan(migrations[5].folderMillis);
+    expect(migrations[7].folderMillis).toBeGreaterThan(migrations[6].folderMillis);
 
     const client = new PGlite();
     const migrationDb = drizzle(client);
@@ -78,6 +80,11 @@ describe("database migrations", () => {
     expect(folioTables.rows.map((row) => row.table_name).sort()).toEqual(["folio_lines", "folios"]);
     const reservationTables = await client.query<{ table_name: string }>("select table_name from information_schema.tables where table_name in ('reservations', 'reservation_units', 'reservation_guests', 'unit_types')");
     expect(reservationTables.rows).toHaveLength(4);
+    const taskColumns = await client.query<{ column_name: string }>("select column_name from information_schema.columns where table_name = 'tasks'");
+    expect(taskColumns.rows.map((column) => column.column_name)).toContain("conversation_id");
+    expect(taskColumns.rows.map((column) => column.column_name)).toContain("room_id");
+    const resourceTables = await client.query<{ table_name: string }>("select table_name from information_schema.tables where table_name in ('service_resource_groups', 'service_resources', 'service_resource_requirements', 'service_resource_allocations', 'service_resource_blocks')");
+    expect(resourceTables.rows).toHaveLength(5);
     await bootstrapDatabase(migrationDb as unknown as Database, config);
     const folios = await client.query<{ id: string }>("select id from folios");
     expect(folios.rows.length).toBeGreaterThan(0);
@@ -164,11 +171,126 @@ describe("authentication and database bootstrap", () => {
     expect(reloaded.body.leads.find((lead: { id: string }) => lead.id === "lead_live_2").roomType).toBe("Делюкс — сохранено");
   });
 
+  it("persists conversation context, replies, assignment, rescheduling, and task completion", async () => {
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: config.ADMIN_BOOTSTRAP_EMAIL, password: config.ADMIN_BOOTSTRAP_PASSWORD }).expect(200);
+    const conversationId = "conversation_context_test";
+    const reservationId = "res_seed_stay_live_1";
+    await db.insert(s.conversations).values({ id: conversationId, guestId: "guest_live_1", leadId: "lead_live_1",
+      reservationId, stayId: "stay_live_1", channel: "telegram", propertyId: "les_borovoe", assigneeId: "emp_live_aigerim",
+      status: "open", unreadCount: 1, lastMessageAt: "2026-09-27T09:00:00.000Z" });
+
+    const created = await agent.post("/api/crm/tasks").send({ title: "TEST: Контекст диалога", type: "follow_up",
+      priority: "medium", dueAt: "2026-09-28T10:00:00.000Z", ownerId: "emp_live_aigerim", guestId: "guest_live_1",
+      leadId: "lead_live_1", conversationId, reservationId, stayId: "stay_live_1", propertyId: "les_borovoe",
+      description: "Проверка связей контекста" }).expect(201);
+    expect(created.body).toMatchObject({ conversationId, reservationId, stayId: "stay_live_1" });
+
+    const dueAt = "2026-09-29T10:00:00.000Z";
+    await agent.patch(`/api/crm/tasks/${created.body.id}`).send({ ownerId: "emp_admin", dueAt }).expect(200);
+    await agent.patch(`/api/crm/tasks/${created.body.id}`).send({ status: "done", completedAt: "2026-09-27T12:00:00.000Z" }).expect(200);
+    await agent.post(`/api/crm/conversations/${conversationId}/messages`).send({ text: "Ответ для проверки" }).expect(201);
+
+    const persisted = await agent.get("/api/crm/bootstrap").expect(200);
+    const persistedTask = persisted.body.tasks.find((task: { id: string }) => task.id === created.body.id);
+    const persistedConversation = persisted.body.conversations.find((item: { id: string }) => item.id === conversationId);
+    await db.delete(s.tasks).where(eq(s.tasks.id, created.body.id));
+    await db.delete(s.conversations).where(eq(s.conversations.id, conversationId));
+    expect(persistedTask).toMatchObject({
+      ownerId: "emp_admin", status: "done", conversationId, reservationId, stayId: "stay_live_1",
+    });
+    expect(new Date(persistedTask.dueAt).toISOString()).toBe(dueAt);
+    expect(persistedConversation).toMatchObject({ status: "pending", unreadCount: 0,
+      reservationId, stayId: "stay_live_1" });
+    expect(persistedConversation.messages.at(-1)).toMatchObject({ direction: "out", text: "Ответ для проверки" });
+  });
+
   it("can run deterministic bootstrap repeatedly without duplicate records", async () => {
     const before = { organizations: await tableCount(s.organizations), users: await tableCount(s.appUsers), guests: await tableCount(s.guests) };
     await bootstrapDatabase(db, config);
     const after = { organizations: await tableCount(s.organizations), users: await tableCount(s.appUsers), guests: await tableCount(s.guests) };
     expect(after).toEqual(before);
+  });
+});
+
+describe("service resource scheduling", () => {
+  const admin = async () => {
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: config.ADMIN_BOOTSTRAP_EMAIL, password: config.ADMIN_BOOTSTRAP_PASSWORD }).expect(200);
+    return agent;
+  };
+  const base = { customerId: "guest_live_1", propertyId: "les_borovoe", participants: 1, quantity: 1 };
+
+  it("keeps a standalone request, service, resource and folio without a stay", async () => {
+    const agent = await admin();
+    await db.insert(s.leads).values({ id: "TEST_SERVICE_ONLY_REQUEST", code: "TEST-SPA-ONLY",
+      guestId: base.customerId, propertyId: base.propertyId, source: "phone", stage: "new",
+      ownerId: "emp_admin", lastActivityAt: "2027-10-01T00:00:00.000Z" });
+    const payload = { ...base, requestId: "TEST_SERVICE_ONLY_REQUEST", catalogItemId: "svc_spa_visit",
+      startAt: "2027-10-02T05:00:00.000Z", idempotencyKey: "TEST-SPA-ONLY-BOOKING" };
+    const result = await agent.post("/api/crm/service-reservations").send(payload).expect(201);
+    expect(result.body.service).toMatchObject({ requestId: payload.requestId, reservationId: null, stayId: null });
+    expect((await agent.post("/api/crm/service-reservations").send(payload).expect(200)).body.duplicate).toBe(true);
+    const snapshot = await agent.get("/api/crm/bootstrap").expect(200);
+    const service = snapshot.body.serviceReservations.find((item: { id: string }) => item.id === result.body.service.id);
+    expect(service.requestId).toBe(payload.requestId);
+    expect(service.reservationId).toBeUndefined();
+    expect(service.stayId).toBeUndefined();
+    expect(snapshot.body.serviceResourceAllocations.filter((item: { serviceReservationId: string }) => item.serviceReservationId === service.id)).toHaveLength(1);
+    const standaloneFolio = snapshot.body.folios.find((item: { id: string }) => item.id === service.folioId);
+    expect(standaloneFolio.leadId).toBe(payload.requestId);
+    expect(standaloneFolio.reservationId).toBeUndefined();
+    expect((await db.select().from(s.reservations).where(eq(s.reservations.requestId, payload.requestId)))).toHaveLength(0);
+    expect((await db.select().from(s.guestStays).where(eq(s.guestStays.guestId, base.customerId))).filter((item) => item.bookingReference === "TEST-SPA-ONLY")).toHaveLength(0);
+  });
+
+  it("serializes physical units, frees them on cancel and reschedule, and honors blocks", async () => {
+    const agent = await admin();
+    const firstTime = "2027-10-03T05:00:00.000Z";
+    const secondTime = "2027-10-04T05:00:00.000Z";
+    const payload = { ...base, catalogItemId: "svc_atv", startAt: firstTime, participants: 10, quantity: 10 };
+    const first = await agent.post("/api/crm/service-reservations").send({ ...payload, idempotencyKey: "TEST-ATV-TEN-1" }).expect(201);
+    expect((await db.select().from(s.serviceResourceAllocations).where(eq(s.serviceResourceAllocations.serviceReservationId, first.body.service.id)))).toHaveLength(10);
+    await agent.post("/api/crm/service-reservations").send({ ...payload, quantity: 1, participants: 1,
+      idempotencyKey: "TEST-ATV-COLLISION" }).expect(409);
+    await agent.patch(`/api/crm/service-reservations/${first.body.service.id}`).send({ status: "cancelled" }).expect(200);
+    const second = await agent.post("/api/crm/service-reservations").send({ ...payload, quantity: 1, participants: 1,
+      idempotencyKey: "TEST-ATV-AFTER-CANCEL" }).expect(201);
+    await agent.post(`/api/crm/service-reservations/${second.body.service.id}/reschedule`).send({ startAt: secondTime }).expect(200);
+    const movedAllocations = await db.select().from(s.serviceResourceAllocations)
+      .where(eq(s.serviceResourceAllocations.serviceReservationId, second.body.service.id));
+    expect(movedAllocations.filter((item) => item.status === "active")).toHaveLength(1);
+    expect(new Date(movedAllocations.find((item) => item.status === "active")!.startAt).toISOString()).toBe(secondTime);
+    await agent.post("/api/crm/service-reservations").send({ ...payload, quantity: 10, idempotencyKey: "TEST-ATV-OLD-FREE" }).expect(201);
+    const block = await agent.post("/api/crm/service-resource-blocks").send({ resourceGroupId: "srg_atv",
+      startAt: "2027-10-05T05:00:00.000Z", endAt: "2027-10-05T06:00:00.000Z", reason: "TEST обслуживание" }).expect(201);
+    await agent.post("/api/crm/service-reservations").send({ ...payload, startAt: "2027-10-05T05:00:00.000Z",
+      quantity: 1, participants: 1, idempotencyKey: "TEST-ATV-BLOCKED" }).expect(409);
+    await agent.patch(`/api/crm/service-resource-blocks/${block.body.id}`).send({ status: "cancelled" }).expect(200);
+    await agent.post("/api/crm/service-reservations").send({ ...payload, startAt: "2027-10-05T05:00:00.000Z",
+      quantity: 1, participants: 1, idempotencyKey: "TEST-ATV-UNBLOCKED" }).expect(201);
+  });
+
+  it("enforces shared SPA capacity and simultaneous massage therapist plus room", async () => {
+    const agent = await admin();
+    const startAt = "2027-10-06T05:00:00.000Z";
+    await agent.post("/api/crm/service-reservations").send({ ...base, catalogItemId: "svc_spa_visit", startAt,
+      participants: 24, quantity: 24, idempotencyKey: "TEST-SPA-24" }).expect(201);
+    await agent.post("/api/crm/service-reservations").send({ ...base, catalogItemId: "svc_spa_pool", startAt,
+      participants: 2, quantity: 2, idempotencyKey: "TEST-SPA-OVER-CAPACITY" }).expect(409);
+    const one = await agent.post("/api/crm/service-reservations").send({ ...base, catalogItemId: "svc_massage", startAt,
+      idempotencyKey: "TEST-MASSAGE-1" }).expect(201);
+    expect((await db.select().from(s.serviceResourceAllocations).where(eq(s.serviceResourceAllocations.serviceReservationId, one.body.service.id)))).toHaveLength(2);
+    await agent.post("/api/crm/service-resource-blocks").send({ resourceGroupId: "srg_massage_room",
+      startAt, endAt: "2027-10-06T06:00:00.000Z", reason: "TEST кабинеты недоступны" }).expect(409);
+    const room = (await db.select().from(s.serviceResourceAllocations).where(eq(s.serviceResourceAllocations.serviceReservationId, one.body.service.id)))
+      .find((item) => item.resourceGroupId === "srg_massage_room")!;
+    const otherRoom = (await db.select().from(s.serviceResources).where(eq(s.serviceResources.resourceGroupId, "srg_massage_room")))
+      .find((item) => item.id !== room.resourceId)!;
+    await agent.post("/api/crm/service-resource-blocks").send({ resourceGroupId: "srg_massage_room", resourceId: otherRoom.id,
+      startAt, endAt: "2027-10-06T06:00:00.000Z", reason: "TEST кабинет недоступен" }).expect(201);
+    await agent.post("/api/crm/service-reservations").send({ ...base, catalogItemId: "svc_massage", startAt,
+      idempotencyKey: "TEST-MASSAGE-NO-ROOM" }).expect(409);
   });
 });
 
@@ -490,7 +612,7 @@ describe("operational guest journey", () => {
     ]);
 
     const paidInput = { customerId: "guest_live_1", propertyId: "les_borovoe", reservationId: reservation.id,
-      catalogItemId: "svc_spa_visit", startAt: new Date(Date.now() + 86_400_000).toISOString(), participants: 1,
+      catalogItemId: "svc_spa_visit", startAt: "2027-10-01T06:00:00.000Z", participants: 1,
       quantity: 1, idempotencyKey: "ops-service-paid-1" };
     const paid = await agent.post("/api/crm/service-reservations").send(paidInput).expect(201);
     expect((await agent.post("/api/crm/service-reservations").send(paidInput).expect(200)).body.duplicate).toBe(true);

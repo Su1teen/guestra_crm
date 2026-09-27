@@ -353,8 +353,10 @@ export const tasks = pgTable("tasks", {
   ownerId: text("owner_id").notNull().references(() => employees.id),
   guestId: text("guest_id").references(() => guests.id, { onDelete: "set null" }),
   leadId: text("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
   reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
   stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
+  roomId: text("room_id").references(() => rooms.id, { onDelete: "set null" }),
   source: text("source"),
   department: text("department"),
   propertyId: text("property_id").notNull().references(() => properties.id),
@@ -745,6 +747,8 @@ export const serviceCatalog = pgTable("service_catalog", {
   /** Единица тарификации: night / person / session / hour / unit / item. */
   pricingUnit: text("pricing_unit"),
   defaultDurationMinutes: integer("default_duration_minutes"),
+  bookingMode: text("booking_mode").notNull().default("manual"),
+  slotIntervalMinutes: integer("slot_interval_minutes").notNull().default(60),
   displayOrder: integer("display_order").notNull().default(0),
   currency: text("currency").notNull().default("KZT"),
   metadata: jsonb("metadata").$type<Record<string, unknown>>(),
@@ -753,6 +757,39 @@ export const serviceCatalog = pgTable("service_catalog", {
 }, (table) => [
   uniqueIndex("service_catalog_property_code_uidx").on(table.propertyId, table.code),
 ]);
+
+export const serviceResourceGroups = pgTable("service_resource_groups", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id").notNull().references(() => properties.id),
+  code: text("code").notNull(),
+  name: text("name").notNull(),
+  allocationMode: text("allocation_mode").notNull(),
+  capacity: integer("capacity").notNull().default(0),
+  active: boolean("active").notNull().default(true),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [uniqueIndex("service_resource_groups_property_code_uidx").on(table.propertyId, table.code)]);
+
+export const serviceResources = pgTable("service_resources", {
+  id: text("id").primaryKey(),
+  resourceGroupId: text("resource_group_id").notNull().references(() => serviceResourceGroups.id),
+  code: text("code").notNull(), name: text("name").notNull(),
+  capacity: integer("capacity").notNull().default(1),
+  status: text("status").notNull().default("active"),
+  active: boolean("active").notNull().default(true),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [uniqueIndex("service_resources_group_code_uidx").on(table.resourceGroupId, table.code)]);
+
+export const serviceResourceRequirements = pgTable("service_resource_requirements", {
+  id: text("id").primaryKey(),
+  catalogItemId: text("catalog_item_id").notNull().references(() => serviceCatalog.id),
+  resourceGroupId: text("resource_group_id").notNull().references(() => serviceResourceGroups.id),
+  demandBasis: text("demand_basis").notNull().default("fixed"),
+  demandQuantity: integer("demand_quantity").notNull().default(1),
+  minCapacityBasis: text("min_capacity_basis").notNull().default("none"),
+  createdAt: createdAt(),
+}, (table) => [uniqueIndex("service_requirements_catalog_group_uidx").on(table.catalogItemId, table.resourceGroupId)]);
 
 export const packages = pgTable("packages", {
   id: text("id").primaryKey(),
@@ -779,6 +816,7 @@ export const serviceReservations = pgTable("service_reservations", {
   id: text("id").primaryKey(),
   propertyId: text("property_id").notNull().references(() => properties.id),
   customerId: text("customer_id").notNull().references(() => guests.id),
+  requestId: text("request_id").references(() => leads.id, { onDelete: "set null" }),
   reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
   stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
   catalogItemId: text("catalog_item_id").notNull().references(() => serviceCatalog.id),
@@ -805,6 +843,34 @@ export const serviceReservations = pgTable("service_reservations", {
   index("service_reservations_stay_idx").on(table.stayId),
   index("service_reservations_customer_idx").on(table.customerId),
 ]);
+
+export const serviceResourceAllocations = pgTable("service_resource_allocations", {
+  id: text("id").primaryKey(),
+  serviceReservationId: text("service_reservation_id").notNull().references(() => serviceReservations.id, { onDelete: "cascade" }),
+  resourceGroupId: text("resource_group_id").notNull().references(() => serviceResourceGroups.id),
+  resourceId: text("resource_id").references(() => serviceResources.id),
+  startAt: timestamp("start_at", { withTimezone: true, mode: "string" }).notNull(),
+  endAt: timestamp("end_at", { withTimezone: true, mode: "string" }).notNull(),
+  quantity: integer("quantity").notNull().default(1),
+  status: text("status").notNull().default("active"),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [
+  index("service_allocations_resource_time_idx").on(table.resourceId, table.startAt, table.endAt),
+  index("service_allocations_group_time_idx").on(table.resourceGroupId, table.startAt, table.endAt),
+  index("service_allocations_reservation_idx").on(table.serviceReservationId),
+]);
+
+export const serviceResourceBlocks = pgTable("service_resource_blocks", {
+  id: text("id").primaryKey(),
+  resourceGroupId: text("resource_group_id").notNull().references(() => serviceResourceGroups.id),
+  resourceId: text("resource_id").references(() => serviceResources.id),
+  startAt: timestamp("start_at", { withTimezone: true, mode: "string" }).notNull(),
+  endAt: timestamp("end_at", { withTimezone: true, mode: "string" }).notNull(),
+  reason: text("reason").notNull(),
+  status: text("status").notNull().default("active"),
+  createdBy: text("created_by").references(() => employees.id, { onDelete: "set null" }),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [index("service_blocks_group_time_idx").on(table.resourceGroupId, table.startAt, table.endAt)]);
 
 /** Internal review journal; publishing to third-party platforms is separate. */
 export const guestReviews = pgTable("guest_reviews", {

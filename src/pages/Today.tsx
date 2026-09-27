@@ -28,6 +28,8 @@ const Today = () => {
   const newRequests = scoped.leads.filter((item) => item.requestStatus === "new" || (!item.requestStatus && item.stage === "new"));
   const unread = scoped.conversations.filter((item) => item.unreadCount > 0 && item.status !== "closed");
   const pendingPayment = scoped.reservations.filter((item) => item.status === "pending_payment");
+  const todaysServices = data.serviceReservations.filter((item) => item.status === "scheduled" && sameDate(item.startAt, now) &&
+    (property === "all" || item.propertyId === property)).sort((a, b) => a.startAt.localeCompare(b.startAt));
   const unassigned = arrivals.filter((item) => !scoped.reservationUnits.some((unit) => unit.reservationId === item.id));
   const notReady = arrivals.filter((item) => reservationReadiness(data, item).warnings.some((warning) =>
     /домик|уборка|обслуживание/i.test(warning)));
@@ -72,6 +74,11 @@ const Today = () => {
       <div className="grid gap-4 md:grid-cols-2">
         {[{ title: "Заезды", items: arrivals }, { title: "Выезды", items: departures }].map((group) => <div key={group.title}><p className="mb-2 text-sm font-semibold">{group.title} · {group.items.length}</p>{group.items.length ? <ul className="space-y-2">{group.items.slice(0, 8).map((reservation) => { const stay = scoped.stays.find((item) => item.reservationId === reservation.id); const warnings = reservationReadiness(data, reservation).warnings; return <li key={reservation.id}><button type="button" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)} className="flex w-full items-center justify-between rounded-xl border border-border px-3 py-2 text-left hover:bg-secondary/50"><span><span className="block text-sm font-medium">{data.guests.find((guest) => guest.id === reservation.bookerCustomerId)?.fullName ?? "Гость / контакт"}</span><span className="text-xs text-muted-foreground">{reservation.code} · {formatDateNumeric(reservation.arrivalAt)} — {formatDateNumeric(reservation.departureAt)}</span>{group.title === "Заезды" && warnings.length > 0 && <span className="block text-xs text-amber-700">{warnings[0]}</span>}</span><StatusPill tone={warnings.length && group.title === "Заезды" ? "warning" : "info"}>{stay ? operationalStatusLabels[effectiveStayStatus(stay, now)] : reservationStatusLabels[reservation.status]}</StatusPill></button></li>; })}</ul> : <p className="text-sm text-muted-foreground">На сегодня нет.</p>}</div>)}
       </div>
+    </SectionCard>
+    <SectionCard title={`Услуги сегодня · ${todaysServices.length}`} actions={<Button variant="ghost" size="sm" onClick={() => navigate("/services")}>Расписание</Button>}>
+      {todaysServices.length ? <ul className="space-y-2">{todaysServices.slice(0, 8).map((service) => <li key={service.id} className="flex justify-between rounded-lg border px-3 py-2 text-sm">
+        <span>{new Date(service.startAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} · {data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"} · {data.guests.find((item) => item.id === service.customerId)?.fullName ?? "Гость"}</span>
+        <span>{service.quantity} ед.</span></li>)}</ul> : <p className="text-sm text-muted-foreground">На сегодня услуг нет.</p>}
     </SectionCard>
   </div>;
 };

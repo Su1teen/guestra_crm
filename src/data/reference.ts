@@ -1,4 +1,5 @@
 import type { Employee, Organization, Property, PropertyId } from "@/types/crm";
+import { lesBorovoeUnitTypes } from "@shared/les-borovoe-inventory";
 
 export const organization: Organization = {
   id: "org_les",
@@ -14,7 +15,7 @@ export const properties: Property[] = [
     name: "ЛЕС Боровое",
     shortName: "Боровое",
     city: "Боровое, Акмолинская область",
-    roomTypes: ["Премиум-домик", "Стандартный домик", "Семейный коттедж", "Люкс-шале"],
+    roomTypes: lesBorovoeUnitTypes.map((unit) => unit.name),
   },
   {
     id: "les_astana",
@@ -40,10 +41,13 @@ export const propertyName = (id: PropertyId | "all") =>
   id === "all" ? "Все объекты ЛЕС" : propertyById(id).name;
 
 export const nightlyRate: Record<string, number> = {
+  // Только для генерации демонстрационной аналитики. Рабочая стоимость брони
+  // берётся из service_catalog и не использует эти значения.
   "Премиум-домик": 210_000,
   "Стандартный домик": 135_000,
   "Семейный коттедж": 245_000,
   "Люкс-шале": 320_000,
+  ...Object.fromEntries(lesBorovoeUnitTypes.map((unit) => [unit.name, unit.demoNightlyRate])),
   "Делюкс-номер": 96_000,
   "Стандартный номер": 68_000,
   Люкс: 165_000,

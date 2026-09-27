@@ -17,6 +17,7 @@ export const loadCrmDataset = async (db: Database) => {
     roomRows, housekeepingRows, checklistRows, maintenanceRows, operationalRows, metricRows, pmsRows, interestRows, itemRows, serviceCatalogRows,
     folioRows, folioLineRows, reservationRows, reservationUnitRows, reservationGuestRows, unitTypeRows,
     serviceReservationRows, packageRows, entitlementRows, reviewRows, reservationNoteRows,
+    resourceGroupRows, resourceRows, requirementRows, allocationRows, resourceBlockRows,
   ] = await Promise.all([
     db.select().from(s.organizations), db.select().from(s.properties), db.select().from(s.employees),
     db.select().from(s.employeeProperties), db.select().from(s.guests), db.select().from(s.guestContactIdentities),
@@ -33,6 +34,8 @@ export const loadCrmDataset = async (db: Database) => {
     db.select().from(s.folios), db.select().from(s.folioLines),
     db.select().from(s.reservations), db.select().from(s.reservationUnits), db.select().from(s.reservationGuests), db.select().from(s.unitTypes),
     db.select().from(s.serviceReservations), db.select().from(s.packages), db.select().from(s.packageEntitlements), db.select().from(s.guestReviews), db.select().from(s.reservationNotes),
+    db.select().from(s.serviceResourceGroups), db.select().from(s.serviceResources), db.select().from(s.serviceResourceRequirements),
+    db.select().from(s.serviceResourceAllocations), db.select().from(s.serviceResourceBlocks),
   ]);
 
   const org = orgRows[0];
@@ -145,7 +148,7 @@ export const loadCrmDataset = async (db: Database) => {
     };
   });
   const offers = offerRows.map((row) => ({ id: row.id, code: row.code, leadId: row.leadId, guestId: row.guestId, propertyId: row.propertyId, folioId: row.folioId ?? undefined, roomType: row.roomType, checkIn: row.checkIn, checkOut: row.checkOut, nights: row.nights, adults: row.adults, children: row.children, status: row.status, ownerId: row.ownerId, createdAt: row.createdAt, expiresAt: row.expiresAt, sentAt: row.sentAt ?? undefined, viewedAt: row.viewedAt ?? undefined, lines: (linesByOffer.get(row.id) ?? []).sort((a, b) => a.position - b.position).map((item) => ({ label: item.label, quantity: item.quantity ?? undefined, amount: item.amount, leadItemId: item.leadItemId ?? undefined })), total: row.total, deposit: row.deposit, comment: row.comment ?? undefined, terms: row.terms ?? undefined }));
-  const tasks = taskRows.map((row) => ({ id: row.id, title: row.title, type: row.type, status: row.status, priority: row.priority, dueAt: row.dueAt, ownerId: row.ownerId, guestId: row.guestId ?? undefined, leadId: row.leadId ?? undefined, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined, source: row.source ?? undefined, department: row.department ?? undefined, propertyId: row.propertyId, description: row.description ?? undefined, completedAt: row.completedAt ?? undefined }));
+  const tasks = taskRows.map((row) => ({ id: row.id, title: row.title, type: row.type, status: row.status, priority: row.priority, dueAt: row.dueAt, ownerId: row.ownerId, guestId: row.guestId ?? undefined, leadId: row.leadId ?? undefined, conversationId: row.conversationId ?? undefined, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined, roomId: row.roomId ?? undefined, source: row.source ?? undefined, department: row.department ?? undefined, propertyId: row.propertyId, description: row.description ?? undefined, completedAt: row.completedAt ?? undefined }));
   const followUps = followUpRows.map((row) => ({ id: row.id, leadId: row.leadId, guestId: row.guestId, propertyId: row.propertyId, channel: row.channel, direction: row.direction, reason: row.reason, queue: row.queue, status: row.status, stage: row.stage, temperature: row.temperature, potentialAmount: row.potentialAmount, dueAt: row.dueAt, createdAt: row.createdAt, completedAt: row.completedAt ?? undefined, ownerId: row.ownerId, lastMessage: row.lastMessage ?? undefined, context: row.context, recommendedAction: row.recommendedAction, lostReason: row.lostReason ?? undefined }));
   const conversations = conversationRows.map((row) => ({ id: row.id, guestId: row.guestId, leadId: row.leadId ?? undefined, offerId: row.offerId ?? undefined, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined, channel: row.channel, propertyId: row.propertyId, assigneeId: row.assigneeId ?? undefined, status: row.status, unreadCount: row.unreadCount, lastMessageAt: row.lastMessageAt, classification: row.classification ?? undefined, summary: row.summary ?? undefined, slaMinutes: row.slaMinutes, firstResponseAt: row.firstResponseAt ?? undefined, closeResult: row.closeResult ?? undefined, messages: (messagesByConversation.get(row.id) ?? []).map((item) => ({ id: item.id, conversationId: item.conversationId, direction: item.direction, employeeId: item.employeeId ?? undefined, text: item.text, at: item.sentAt, attachmentName: item.attachmentName ?? undefined })) }));
   const segments = segmentRows.map((row) => ({ id: row.id, key: row.key, name: row.name, description: row.description, rules: (rulesBySegment.get(row.id) ?? []).map((item) => ({ field: item.field, operator: item.operator, value: item.value })), guestIds: (guestsBySegment.get(row.id) ?? []).map((item) => item.guestId), avgLifetimeValue: row.avgLifetimeValue, avgStays: row.avgStays, lastActivityAt: row.lastActivityAt }));
@@ -157,7 +160,7 @@ export const loadCrmDataset = async (db: Database) => {
   const metrics = metricRows.map((row) => ({ date: row.date, propertyId: row.propertyId, leads: row.leads, qualified: row.qualified, offers: row.offers, confirmed: row.confirmed, revenue: row.revenue, lost: row.lost }));
   const pmsSnapshots = pmsRows.map((row) => ({ date: row.date, propertyId: row.propertyId, occupancy: row.occupancy === null ? null : row.occupancy / 10000, adr: row.adr, revpar: row.revpar, arrivals: row.arrivals, departures: row.departures, availableRooms: row.availableRooms, outOfOrderRooms: row.outOfOrderRooms }));
 
-  const serviceCatalog = serviceCatalogRows.map(row => ({ id: row.id, propertyId: row.propertyId, code: row.code, category: row.category, serviceType: row.serviceType ?? undefined, name: row.name, description: row.description ?? undefined, active: row.active, pricingMode: row.pricingMode, defaultPrice: row.defaultPrice ?? undefined, pricingUnit: row.pricingUnit ?? undefined, defaultDurationMinutes: row.defaultDurationMinutes ?? undefined, displayOrder: row.displayOrder, currency: row.currency, metadata: row.metadata ?? undefined }))
+  const serviceCatalog = serviceCatalogRows.map(row => ({ id: row.id, propertyId: row.propertyId, code: row.code, category: row.category, serviceType: row.serviceType ?? undefined, name: row.name, description: row.description ?? undefined, active: row.active, pricingMode: row.pricingMode, defaultPrice: row.defaultPrice ?? undefined, pricingUnit: row.pricingUnit ?? undefined, defaultDurationMinutes: row.defaultDurationMinutes ?? undefined, bookingMode: row.bookingMode, slotIntervalMinutes: row.slotIntervalMinutes, displayOrder: row.displayOrder, currency: row.currency, metadata: row.metadata ?? undefined }))
     .sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0));
   const folios = folioRows.map((row) => ({
     id: row.id, code: row.code, leadId: row.leadId ?? undefined, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined, guestId: row.guestId, propertyId: row.propertyId,
@@ -172,7 +175,7 @@ export const loadCrmDataset = async (db: Database) => {
     })),
   }));
   const serviceReservations = serviceReservationRows.map((row) => ({ id: row.id, propertyId: row.propertyId,
-    customerId: row.customerId, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined,
+    customerId: row.customerId, requestId: row.requestId ?? undefined, reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined,
     catalogItemId: row.catalogItemId, folioId: row.folioId ?? undefined, folioLineId: row.folioLineId ?? undefined,
     entitlementId: row.entitlementId ?? undefined, status: row.status, startAt: row.startAt,
     endAt: row.endAt ?? undefined, participants: row.participants, quantity: row.quantity,
@@ -187,5 +190,21 @@ export const loadCrmDataset = async (db: Database) => {
     channel: row.channel, rating: row.rating, maxRating: row.maxRating, reviewAt: row.reviewAt,
     text: row.text, topic: row.topic, status: row.status, reply: row.reply ?? undefined,
     respondedAt: row.respondedAt ?? undefined, externalUrl: row.externalUrl ?? undefined }));
-  return { serviceCatalog, serviceReservations, packages, packageEntitlements, reviews, folios, organization, properties, employees, guests, stays, reservations, reservationUnits, reservationGuests, reservationNotes, unitTypes, services, payments, notes, guestActivity, leads, offers, tasks, conversations, segments, campaigns, metrics, followUps, rooms, housekeepingTasks, maintenanceTickets, operationalTasks, pmsSnapshots };
+  const serviceResourceGroups = resourceGroupRows.map((row) => ({ id: row.id, propertyId: row.propertyId, code: row.code,
+    name: row.name, allocationMode: row.allocationMode, capacity: row.capacity, active: row.active, metadata: row.metadata ?? undefined }));
+  const serviceResources = resourceRows.map((row) => ({ id: row.id, resourceGroupId: row.resourceGroupId, code: row.code,
+    name: row.name, capacity: row.capacity, status: row.status, active: row.active, metadata: row.metadata ?? undefined }));
+  const serviceResourceRequirements = requirementRows.map((row) => ({ id: row.id, catalogItemId: row.catalogItemId,
+    resourceGroupId: row.resourceGroupId, demandBasis: row.demandBasis, demandQuantity: row.demandQuantity,
+    minCapacityBasis: row.minCapacityBasis }));
+  const serviceResourceAllocations = allocationRows.map((row) => ({ id: row.id, serviceReservationId: row.serviceReservationId,
+    resourceGroupId: row.resourceGroupId, resourceId: row.resourceId ?? undefined, startAt: row.startAt, endAt: row.endAt,
+    quantity: row.quantity, status: row.status }));
+  const serviceResourceBlocks = resourceBlockRows.map((row) => ({ id: row.id, resourceGroupId: row.resourceGroupId,
+    resourceId: row.resourceId ?? undefined, startAt: row.startAt, endAt: row.endAt, reason: row.reason, status: row.status }));
+  return { serviceCatalog, serviceReservations, serviceResourceGroups, serviceResources, serviceResourceRequirements,
+    serviceResourceAllocations, serviceResourceBlocks, packages, packageEntitlements, reviews, folios, organization,
+    properties, employees, guests, stays, reservations, reservationUnits, reservationGuests, reservationNotes,
+    unitTypes, services, payments, notes, guestActivity, leads, offers, tasks, conversations, segments, campaigns,
+    metrics, followUps, rooms, housekeepingTasks, maintenanceTickets, operationalTasks, pmsSnapshots };
 };

@@ -6,6 +6,8 @@ import type { Database } from "./client.js";
 import { createDatabase } from "./client.js";
 import { readConfig, type AppConfig } from "../config.js";
 import * as s from "./schema.js";
+import { lesBorovoeUnitTypes, lesBorovoeLegacyCategoryNames } from "../../shared/les-borovoe-inventory.js";
+import { demoServiceBookingConfig, demoServiceResourceGroups, demoServiceResources, demoServiceRequirements } from "../../shared/service-demo-inventory.js";
 
 const date = (value: string) => new Date(value).toISOString();
 
@@ -87,13 +89,14 @@ interface SeedCatalogEntry {
   pricingUnit?: string;
   defaultDurationMinutes?: number;
   displayOrder: number;
+  active?: boolean;
 }
 
 /** Демонстрационный прайс-лист (rate card) — Les Borovoe. */
 const borovoeCatalog: SeedCatalogEntry[] = [
-  { id: "svc_acc_sky_house", code: "acc_sky_house", category: "accommodation", serviceType: "accommodation", name: "Sky House", description: "Панорамный домик у озера", pricingMode: "per_night_per_unit", defaultPrice: 85000, pricingUnit: "night", displayOrder: 10 },
-  { id: "svc_acc_a_frame", code: "acc_a_frame", category: "accommodation", serviceType: "accommodation", name: "A-Frame", description: "Треугольный домик в лесу", pricingMode: "per_night_per_unit", defaultPrice: 130000, pricingUnit: "night", displayOrder: 11 },
-  { id: "svc_acc_forest_house", code: "acc_forest_house", category: "accommodation", serviceType: "accommodation", name: "Forest House", description: "Большой дом для семьи", pricingMode: "per_night_per_unit", defaultPrice: 195000, pricingUnit: "night", displayOrder: 12 },
+  { id: "svc_acc_sky_house", code: "acc_sky_house", category: "accommodation", serviceType: "accommodation", name: "Sky House", description: "Архивная позиция: не подтверждена на актуальном официальном сайте", pricingMode: "quote", pricingUnit: "night", displayOrder: 9, active: false },
+  ...lesBorovoeUnitTypes.map((unit, index) => ({ id: `svc_${unit.rateCode}`, code: unit.rateCode, category: "accommodation", serviceType: "accommodation", name: unit.name, description: "Демонстрационный тариф; проверьте официальный прайс в каталоге", pricingMode: "per_night_per_unit", defaultPrice: unit.demoNightlyRate, pricingUnit: "night", displayOrder: 10 + index })),
+  { id: "svc_acc_forest_house", code: "acc_forest_house", category: "accommodation", serviceType: "accommodation", name: "Forest House", description: "Архивная позиция целого дома; размещение учитывается по отдельным номерам", pricingMode: "quote", pricingUnit: "night", displayOrder: 16, active: false },
   { id: "svc_restaurant_sova", code: "restaurant_sova", category: "restaurant", serviceType: "restaurant", name: "Ресторан SOVA", description: "Средний чек на гостя", pricingMode: "per_person", defaultPrice: 15000, pricingUnit: "person", displayOrder: 20 },
   { id: "svc_spa_visit", code: "spa_visit", category: "spa", serviceType: "spa", name: "SPA визит", pricingMode: "per_person", defaultPrice: 12000, pricingUnit: "person", displayOrder: 30 },
   { id: "svc_spa_pool", code: "spa_pool", category: "spa", serviceType: "spa", name: "Бассейн", pricingMode: "per_person", defaultPrice: 8000, pricingUnit: "person", displayOrder: 31 },
@@ -137,14 +140,17 @@ const seedServiceCatalog = async (db: Database) => {
       serviceType: entry.serviceType,
       name: entry.name,
       description: entry.description ?? null,
-      active: true,
+      active: entry.active ?? true,
       pricingMode: entry.pricingMode,
       defaultPrice: entry.defaultPrice ?? null,
       pricingUnit: entry.pricingUnit ?? null,
-      defaultDurationMinutes: entry.defaultDurationMinutes ?? null,
+      defaultDurationMinutes: demoServiceBookingConfig[entry.id]?.defaultDurationMinutes ?? entry.defaultDurationMinutes ?? null,
+      bookingMode: demoServiceBookingConfig[entry.id]?.bookingMode ?? "manual",
+      slotIntervalMinutes: demoServiceBookingConfig[entry.id]?.slotIntervalMinutes ?? 60,
       displayOrder: entry.displayOrder,
       currency: "KZT",
-      metadata: { seedManaged: true, demoRate: true },
+      metadata: { seedManaged: true, demoRate: true,
+        ...(demoServiceBookingConfig[entry.id]?.metadata ?? {}), availabilitySeedApplied: true },
     })),
   ).onConflictDoNothing();
 
@@ -159,8 +165,8 @@ const seedServiceCatalog = async (db: Database) => {
       description: entry.description ?? null,
       pricingMode: entry.pricingMode,
       pricingUnit: entry.pricingUnit ?? null,
-      defaultDurationMinutes: entry.defaultDurationMinutes ?? null,
       displayOrder: entry.displayOrder,
+      active: entry.active ?? true,
       updatedAt: new Date().toISOString(),
     }).where(eq(s.serviceCatalog.id, entry.id));
     if (entry.defaultPrice !== undefined) {
@@ -168,9 +174,28 @@ const seedServiceCatalog = async (db: Database) => {
         .set({ defaultPrice: entry.defaultPrice })
         .where(and(eq(s.serviceCatalog.id, entry.id), isNull(s.serviceCatalog.defaultPrice)));
     }
+    const booking = demoServiceBookingConfig[entry.id];
+    if (booking) {
+      const [current] = await db.select().from(s.serviceCatalog).where(eq(s.serviceCatalog.id, entry.id)).limit(1);
+      if (current && current.metadata?.availabilitySeedApplied !== true) {
+        await db.update(s.serviceCatalog).set({ bookingMode: booking.bookingMode,
+          slotIntervalMinutes: booking.slotIntervalMinutes ?? 60,
+          defaultDurationMinutes: current.defaultDurationMinutes ?? booking.defaultDurationMinutes,
+          metadata: { ...(current.metadata ?? {}), ...(booking.metadata ?? {}), availabilitySeedApplied: true },
+          updatedAt: new Date().toISOString() }).where(eq(s.serviceCatalog.id, entry.id));
+      }
+    }
   }
   // Трансфер убран из продаж — исторические позиции не трогаем.
   await db.update(s.serviceCatalog).set({ active: false }).where(eq(s.serviceCatalog.code, "transfer"));
+};
+
+const seedServiceInventory = async (db: Database) => {
+  // DEMO CONFIGURATION. Existing rows are never overwritten: operators can
+  // replace resource counts, capacities, names, and statuses in the database.
+  await db.insert(s.serviceResourceGroups).values(demoServiceResourceGroups).onConflictDoNothing();
+  await db.insert(s.serviceResources).values(demoServiceResources).onConflictDoNothing();
+  await db.insert(s.serviceResourceRequirements).values(demoServiceRequirements).onConflictDoNothing();
 };
 
 export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
@@ -181,9 +206,14 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   }).onConflictDoNothing();
 
   await db.insert(s.properties).values([
-    { id: "les_borovoe", organizationId: "org_les_live", name: "ЛЕС Боровое", shortName: "Боровое", city: "Боровое, Акмолинская область", roomTypes: ["Sky House", "Премиум-домик"] },
+    { id: "les_borovoe", organizationId: "org_les_live", name: "ЛЕС Боровое", shortName: "Боровое", city: "Боровое, Акмолинская область", roomTypes: lesBorovoeUnitTypes.map((unit) => unit.name) },
     { id: "les_astana", organizationId: "org_les_live", name: "ЛЕС Астана", shortName: "Астана", city: "Астана", roomTypes: ["Делюкс-номер", "Люкс"] },
   ]).onConflictDoNothing();
+  const [borovoeProperty] = await db.select().from(s.properties).where(eq(s.properties.id, "les_borovoe")).limit(1);
+  if (borovoeProperty?.roomTypes?.some((name) => lesBorovoeLegacyCategoryNames.includes(name as typeof lesBorovoeLegacyCategoryNames[number]) || name === "Sky House")) {
+    await db.update(s.properties).set({ roomTypes: lesBorovoeUnitTypes.map((unit) => unit.name) })
+      .where(eq(s.properties.id, "les_borovoe"));
+  }
 
   await db.insert(s.employees).values([
     { id: "emp_admin", organizationId: "org_les_live", name: "Администратор Guestra", shortName: "Администратор", initials: "АГ", role: "Администратор CRM", email: "admin@guestra.com", phone: "+7 700 000 00 01" },
@@ -259,7 +289,18 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   await db.insert(s.campaigns).values({ id: "campaign_live_1", organizationId: "org_les_live", name: "Осенние выходные", segmentId: "segment_live_repeat", propertyId: "les_borovoe", status: "scheduled", scheduledAt: date("2026-09-25T09:00:00Z"), channel: "telegram", message: "Персональное предложение для повторных гостей", metrics: { recipients: 1, delivered: 0, opened: 0, responded: 0, bookings: 0, revenue: 0 } }).onConflictDoNothing();
 
   await db.insert(s.rooms).values([
+    // Legacy fixture remains because its housekeeping history still references it.
+    // Sky House is marked inactive below unless a live catalog is configured.
     { id: "room_live_b01", number: "B-01", propertyId: "les_borovoe", category: "Sky House", floor: 1, zone: "Лес", status: "vacant_dirty" },
+    ...lesBorovoeUnitTypes.flatMap((type) => Array.from({ length: type.count }, (_, index) => ({
+      id: `room_seed_les_${type.prefix.toLowerCase().replace(/[^a-z0-9]/g, "")}${type.firstNumber + index}`,
+      number: `${type.prefix}${type.firstNumber + index}`,
+      propertyId: "les_borovoe",
+      category: type.name,
+      floor: 1,
+      zone: "Лес",
+      status: "vacant_clean" as const,
+    }))),
     { id: "room_live_a101", number: "A-101", propertyId: "les_astana", category: "Люкс", floor: 1, zone: "Главный корпус", status: "out_of_order" },
   ]).onConflictDoNothing();
   // Keep legacy property.roomTypes readable, but populate relational categories.
@@ -271,6 +312,11 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   for (const category of categories.values()) {
     const key = `${category.propertyId}:${category.name}`;
     await db.insert(s.unitTypes).values({ id: `ut_${createHash("md5").update(key).digest("hex")}`, ...category }).onConflictDoNothing();
+  }
+  const obsoleteBorovoeCategories = [...lesBorovoeLegacyCategoryNames, "Sky House", "Forest House"];
+  for (const name of obsoleteBorovoeCategories) {
+    await db.update(s.unitTypes).set({ active: false })
+      .where(and(eq(s.unitTypes.propertyId, "les_borovoe"), eq(s.unitTypes.name, name)));
   }
   const existingUnitTypes = await db.select().from(s.unitTypes);
   for (const room of seedRooms) {
@@ -306,6 +352,7 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
 
   
   await seedServiceCatalog(db);
+  await seedServiceInventory(db);
   // A configured LES pilot example: package charge is explicit, entitlement is not free by accident.
   await db.insert(s.packages).values({ id: "package_les_spa_visit", propertyId: "les_borovoe",
     name: "Проживание и SPA", description: "Одно посещение SPA в рамках брони",

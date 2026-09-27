@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, lt, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
@@ -21,7 +21,8 @@ import { findCustomerCandidates, normalizeEmail, normalizePhone } from "../servi
 import { assignReservationUnit, assertRoomAvailable, AvailabilityConflict } from "../services/availability-service.js";
 import { ensureReservationForRequest } from "../services/reservation-service.js";
 import { checkInStay, checkOutStay, StayConflict } from "../services/stay-service.js";
-import { bookService, changeServiceStatus, ServiceConflict } from "../services/service-reservation-service.js";
+import { bookService, changeServiceStatus, rescheduleService, ServiceConflict } from "../services/service-reservation-service.js";
+import { assessServiceSlot, loadServiceCatalogItem, lockServiceGroups, ServiceAvailabilityConflict } from "../services/service-availability-service.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
@@ -33,7 +34,9 @@ const leadPatchSchema = z.object({
 });
 const taskInputSchema = z.object({
   title: z.string().min(1), type: z.string(), priority: z.string(), dueAt: z.string().datetime(), ownerId: z.string(),
-  guestId: z.string().optional(), leadId: z.string().optional(), propertyId: z.string(), description: z.string().optional(),
+  guestId: z.string().optional(), leadId: z.string().optional(), conversationId: z.string().optional(),
+  reservationId: z.string().optional(), stayId: z.string().optional(), roomId: z.string().optional(),
+  propertyId: z.string(), description: z.string().optional(),
 });
 const directionSchema = z.enum(["accommodation", "corporate_event", "wedding_or_banquet", "restaurant", "spa", "massage", "bathhouse", "karaoke", "activities", "transfer", "partnership", "vacancy", "supplier", "spam", "wrong_contact", "other"]);
 const itemTypeSchema = z.enum(["accommodation", "restaurant", "spa", "massage", "bathhouse", "karaoke", "horse_riding", "atv", "activity", "transfer", "corporate_event", "wedding_or_banquet", "other"]);
@@ -136,11 +139,12 @@ export const createCrmRouter = (db: Database) => {
 
   router.post("/service-reservations", async (request, response) => {
     const body = z.object({ customerId: z.string().min(1), propertyId: z.string().min(1),
-      reservationId: z.string().optional(), catalogItemId: z.string().min(1),
+      requestId: z.string().optional(), reservationId: z.string().optional(), catalogItemId: z.string().min(1),
       startAt: z.string().datetime(), endAt: z.string().datetime().optional(),
       participants: z.number().int().positive().default(1), quantity: z.number().int().positive().default(1),
       unitPrice: z.number().int().min(0).optional(), priceOverrideReason: z.string().optional(),
       useEntitlement: z.boolean().optional(), notes: z.string().optional(),
+      preferredResourceIds: z.record(z.string()).optional(),
       idempotencyKey: z.string().min(8),
     }).parse(request.body);
     if (body.endAt && new Date(body.endAt) <= new Date(body.startAt)) return response.status(400).json({ error: "Время окончания должно быть позже начала" });
@@ -150,13 +154,90 @@ export const createCrmRouter = (db: Database) => {
       }));
       response.status(result.duplicate ? 200 : 201).json(result);
     } catch (error) {
-      if (error instanceof ServiceConflict) return response.status(409).json({ error: error.message });
+      if (error instanceof ServiceConflict || error instanceof ServiceAvailabilityConflict) return response.status(409).json({ error: error.message });
       if ((error as { code?: string }).code === "23505") {
         const [existing] = await db.select().from(s.serviceReservations)
           .where(eq(s.serviceReservations.idempotencyKey, body.idempotencyKey)).limit(1);
         if (existing && existing.customerId === body.customerId && existing.catalogItemId === body.catalogItemId &&
-            existing.reservationId === (body.reservationId ?? null)) return response.json({ service: existing, duplicate: true });
+            existing.reservationId === (body.reservationId ?? null) &&
+            existing.requestId === (body.requestId ?? null)) return response.json({ service: existing, duplicate: true });
       }
+      throw error;
+    }
+  });
+
+  router.post("/service-availability", async (request, response) => {
+    const body = z.object({ catalogItemId: z.string().min(1), propertyId: z.string().min(1),
+      startsAt: z.array(z.string().datetime()).min(1).max(48), durationMinutes: z.number().int().positive().max(480).optional(),
+      participants: z.number().int().positive().default(1), quantity: z.number().int().positive().default(1),
+      preferredResourceIds: z.record(z.string()).optional(), excludeServiceReservationId: z.string().optional(),
+    }).parse(request.body);
+    const catalog = await loadServiceCatalogItem(db, body.catalogItemId, body.propertyId);
+    if (!catalog) return response.status(404).json({ error: "Услуга не найдена" });
+    const duration = body.durationMinutes ?? catalog.defaultDurationMinutes ?? 60;
+    const slots = [];
+    for (const startAt of body.startsAt) {
+      const endAt = new Date(new Date(startAt).getTime() + duration * 60_000).toISOString();
+      const availability = await assessServiceSlot(db, { catalog, startAt, endAt,
+        participants: body.participants, quantity: body.quantity, preferredResourceIds: body.preferredResourceIds,
+        excludeServiceReservationId: body.excludeServiceReservationId });
+      slots.push({ startAt, endAt, ...availability });
+    }
+    response.json({ catalogItemId: catalog.id, slots });
+  });
+
+  router.post("/service-resource-blocks", async (request, response) => {
+    const body = z.object({ resourceGroupId: z.string().min(1), resourceId: z.string().optional(),
+      startAt: z.string().datetime(), endAt: z.string().datetime(), reason: z.string().trim().min(2) }).parse(request.body);
+    if (new Date(body.endAt) <= new Date(body.startAt)) return response.status(400).json({ error: "Время окончания должно быть позже начала" });
+    try {
+      const block = await db.transaction(async (tx) => {
+        await lockServiceGroups(tx, [body.resourceGroupId]);
+        const [group] = await tx.select().from(s.serviceResourceGroups)
+          .where(eq(s.serviceResourceGroups.id, body.resourceGroupId)).limit(1);
+        if (!group) throw new ServiceAvailabilityConflict("Группа ресурсов не найдена");
+        if (body.resourceId) {
+          const [resource] = await tx.select().from(s.serviceResources).where(and(
+            eq(s.serviceResources.id, body.resourceId), eq(s.serviceResources.resourceGroupId, group.id))).limit(1);
+          if (!resource) throw new ServiceAvailabilityConflict("Ресурс не найден в группе");
+        }
+        const existing = await tx.select({ id: s.serviceResourceAllocations.id }).from(s.serviceResourceAllocations)
+          .where(and(eq(s.serviceResourceAllocations.resourceGroupId, group.id),
+            eq(s.serviceResourceAllocations.status, "active"),
+            lt(s.serviceResourceAllocations.startAt, body.endAt), gt(s.serviceResourceAllocations.endAt, body.startAt),
+            ...(body.resourceId ? [eq(s.serviceResourceAllocations.resourceId, body.resourceId)] : []))).limit(1);
+        if (existing.length) throw new ServiceAvailabilityConflict("На это время уже есть подтверждённая услуга");
+        const [created] = await tx.insert(s.serviceResourceBlocks).values({ id: id("service_block"),
+          resourceGroupId: group.id, resourceId: body.resourceId, startAt: body.startAt, endAt: body.endAt,
+          reason: body.reason, createdBy: (request as AuthenticatedRequest).authUser?.employeeId }).returning();
+        return created;
+      });
+      response.status(201).json(block);
+    } catch (error) {
+      if (error instanceof ServiceAvailabilityConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.patch("/service-resource-blocks/:id", async (request, response) => {
+    const { status } = z.object({ status: z.literal("cancelled") }).parse(request.body);
+    const [block] = await db.update(s.serviceResourceBlocks).set({ status, updatedAt: now() })
+      .where(eq(s.serviceResourceBlocks.id, request.params.id)).returning();
+    if (!block) return response.status(404).json({ error: "Блокировка не найдена" });
+    response.json(block);
+  });
+
+  router.post("/service-reservations/:id/reschedule", async (request, response) => {
+    const body = z.object({ startAt: z.string().datetime(), endAt: z.string().datetime().optional(),
+      preferredResourceIds: z.record(z.string()).optional() }).parse(request.body);
+    try {
+      const result = await db.transaction((tx) => rescheduleService(tx, request.params.id, {
+        ...body, employeeId: (request as AuthenticatedRequest).authUser?.employeeId ?? undefined }));
+      if (!result) return response.status(404).json({ error: "Услуга не найдена" });
+      response.json(result);
+    } catch (error) {
+      if (error instanceof ServiceConflict || error instanceof ServiceAvailabilityConflict)
+        return response.status(409).json({ error: error.message });
       throw error;
     }
   });
@@ -375,6 +456,11 @@ export const createCrmRouter = (db: Database) => {
           await tx.update(s.guestStays).set({ roomId: input.roomId, reservationUnitId: allocation.id, updatedAt })
             .where(eq(s.guestStays.reservationId, reservation.id));
         }
+        const [linkedStay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservation.id)).limit(1);
+        await tx.update(s.tasks).set({ reservationId: reservation.id, stayId: linkedStay?.id ?? null, updatedAt })
+          .where(eq(s.tasks.leadId, lead.id));
+        await tx.update(s.conversations).set({ reservationId: reservation.id, stayId: linkedStay?.id ?? null, updatedAt })
+          .where(eq(s.conversations.leadId, lead.id));
         await tx.update(s.leads).set({ stage: "confirmed", requestStatus: "won", bookingReference,
           probability: 100, updatedAt }).where(eq(s.leads.id, lead.id));
         await tx.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: "confirmed", changedAt: updatedAt });
@@ -825,7 +911,50 @@ export const createCrmRouter = (db: Database) => {
   router.patch("/tasks/:id", async (request, response) => {
     const patch = z.object({ status: z.string().optional(), priority: z.string().optional(), dueAt: z.string().datetime().optional(), ownerId: z.string().optional(), completedAt: z.string().datetime().nullable().optional() }).parse(request.body);
     const [task] = await db.update(s.tasks).set({ ...patch, updatedAt: now() }).where(eq(s.tasks.id, request.params.id)).returning();
+    if (task?.source?.startsWith("legacy_follow_up:")) {
+      const followUpId = task.source.slice("legacy_follow_up:".length);
+      const timestamp = now();
+      const followUpPatch = {
+        ...(patch.dueAt ? { dueAt: patch.dueAt } : {}),
+        ...(patch.ownerId ? { ownerId: patch.ownerId } : {}),
+        ...(patch.status === "done" ? { status: "done", queue: "done", completedAt: timestamp } : {}),
+        ...(patch.status && patch.status !== "done" ? { status: "open", queue: "today", completedAt: null } : {}),
+        updatedAt: timestamp,
+      };
+      await db.update(s.followUps).set(followUpPatch).where(eq(s.followUps.id, followUpId));
+    }
     response.json(task);
+  });
+
+  router.post("/conversations/:id/messages", async (request, response) => {
+    const { text, asNote = false } = z.object({ text: z.string().trim().min(1), asNote: z.boolean().default(false) }).parse(request.body);
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
+    const timestamp = now();
+    const result = await db.transaction(async (tx) => {
+      const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.id, request.params.id)).limit(1);
+      if (!conversation) return null;
+      const [message] = await tx.insert(s.messages).values({ id: id("message"), conversationId: conversation.id,
+        direction: asNote ? "note" : "out", employeeId, text, sentAt: timestamp }).returning();
+      const [updated] = await tx.update(s.conversations).set({
+        unreadCount: 0,
+        lastMessageAt: timestamp,
+        ...(!asNote ? { status: "pending", firstResponseAt: conversation.firstResponseAt ?? timestamp } : {}),
+        updatedAt: timestamp,
+      }).where(eq(s.conversations.id, conversation.id)).returning();
+      return { message, conversation: updated };
+    });
+    if (!result) return response.status(404).json({ error: "Диалог не найден" });
+    response.status(201).json(result);
+  });
+
+  router.patch("/conversations/:id", async (request, response) => {
+    const patch = z.object({ status: z.enum(["open", "pending", "closed"]).optional(),
+      assigneeId: z.string().nullable().optional(), unreadCount: z.number().int().min(0).optional() }).parse(request.body);
+    const [conversation] = await db.update(s.conversations).set({ ...patch, updatedAt: now() })
+      .where(eq(s.conversations.id, request.params.id)).returning();
+    if (!conversation) return response.status(404).json({ error: "Диалог не найден" });
+    response.json(conversation);
   });
 
   router.post("/guests/:id/notes", async (request, response) => {

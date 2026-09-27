@@ -191,8 +191,8 @@ export const channelLabels: Record<Channel, string> = {
 };
 
 export const conversationStatusLabels: Record<"open" | "pending" | "closed", string> = {
-  open: "В работе",
-  pending: "Ожидает ответа",
+  open: "Нужен ответ",
+  pending: "Ждём гостя",
   closed: "Закрыт",
 };
 

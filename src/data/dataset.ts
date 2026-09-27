@@ -7,6 +7,8 @@ import {
   propertyById,
   serviceCatalog,
 } from "@/data/reference";
+import { lesBorovoeUnitTypes } from "@shared/les-borovoe-inventory";
+import { demoServiceBookingConfig, demoServiceResourceGroups, demoServiceResources, demoServiceRequirements } from "@shared/service-demo-inventory";
 import { addDays, startOfDay } from "@/lib/format";
 import { classify, slaMinutesFor } from "@/lib/classification";
 import { generateFollowUps } from "@/lib/followup";
@@ -538,11 +540,74 @@ const messageScripts: Record<Channel, { in: string[]; out: string[] }> = {
   },
 };
 
-const internalNotes = [
-  "Внутренняя заметка: гость просит тишину, не селить рядом с зоной анимации.",
-  "Внутренняя заметка: постоянный гость, согласована скидка 5%.",
-  "Внутренняя заметка: оплата ожидается до конца дня, держим бронь.",
-];
+const conversationFlowForLead = (lead: Lead, guest: Guest): Array<{ direction: "in" | "out"; text: string }> => {
+  const direction = lead.classification.primaryDirection ?? lead.classification.direction;
+  const dates = formatStayRangeLocal(new Date(lead.checkIn), new Date(lead.checkOut));
+  const category = lead.roomType ?? "размещение";
+  const guests = `${lead.adults} ${lead.adults === 1 ? "взрослый" : "взрослых"}${lead.children ? ` и ${lead.children} ${lead.children === 1 ? "ребёнок" : "детей"}` : ""}`;
+  const price = `${lead.totalAmount.toLocaleString("ru-RU")} ₸`;
+  const accommodation = direction === "accommodation";
+
+  if (["supplier", "vacancy", "spam", "wrong_contact", "partnership"].includes(direction)) return [
+    { direction: "in", text: direction === "supplier" ? "Здравствуйте. Подскажите, пожалуйста, как отправить вам коммерческое предложение?" : direction === "vacancy" ? "Добрый день, подскажите, куда можно направить резюме?" : "Здравствуйте, хочу уточнить, куда попало это сообщение." },
+    { direction: "out", text: "Добрый день! Спасибо за сообщение. Передала его коллеге, который занимается этим вопросом." },
+    { direction: "in", text: "Хорошо, буду ждать обратную связь. Спасибо." },
+  ];
+  if (["corporate_event", "wedding_or_banquet"].includes(direction)) return [
+    { direction: "in", text: `Здравствуйте! Планируем ${direction === "corporate_event" ? "корпоративную встречу" : "семейное торжество"} ${dates}. Нас будет ${guests}.` },
+    { direction: "out", text: "Добрый день! Подготовим размещение и площадку. Подскажите, пожалуйста, нужен ли общий зал и питание?" },
+    { direction: "in", text: "Зал нужен, а питание можно включить отдельной строкой в расчёт." },
+    { direction: "out", text: `Принято. Зафиксировала состав группы и подготовлю варианты по размещению ${category}.` },
+    { direction: "in", text: "Спасибо, пришлите расчёт на почту, пожалуйста." },
+  ];
+  if (["spa", "massage", "bathhouse", "karaoke", "restaurant", "activities"].includes(direction)) {
+    const service = direction === "spa" || direction === "massage" ? "SPA-программу" : direction === "bathhouse" ? "баню" : direction === "karaoke" ? "караоке" : direction === "restaurant" ? "столик в ресторане" : "активность";
+    return [
+      { direction: "in", text: `Здравствуйте! Хотим ${service} ${dates}. Подскажите, есть свободное время вечером?` },
+      { direction: "out", text: "Добрый день! Проверю расписание. Сколько будет гостей и на какое время ориентироваться?" },
+      { direction: "in", text: `Нас ${guests}. Подойдёт время после 18:00.` },
+      { direction: "out", text: `Спасибо, записала пожелания. Уточню ближайший свободный слот и стоимость ${price}.` },
+    ];
+  }
+  if (lead.stage === "cancelled" || lead.stage === "lost") return [
+    { direction: "in", text: `Здравствуйте. Изменились планы, хотим отменить поездку ${dates}.` },
+    { direction: "out", text: "Добрый день! Поняла запрос, сейчас проверю условия отмены по вашему бронированию." },
+    { direction: "in", text: "Спасибо. Если можно, сообщите также, когда вернётся предоплата." },
+    { direction: "out", text: "Запрос на отмену принят. Условия возврата направила отдельным сообщением." },
+  ];
+  if (lead.stage === "payment_pending") return [
+    { direction: "out", text: `Напоминаю: для подтверждения брони ${category} на ${dates} нужна предоплата ${lead.deposit.toLocaleString("ru-RU")} ₸.` },
+    { direction: "in", text: "Здравствуйте! Предложение подходит. Можно оплатить переводом от компании?" },
+    { direction: "out", text: "Добрый день! Да, подготовлю реквизиты для оплаты от компании." },
+    { direction: "in", text: "Хорошо, пришлите реквизиты, пожалуйста." },
+  ];
+  if (lead.stage === "confirmed" || lead.stage === "completed") return [
+    { direction: "out", text: `Бронирование ${category} на ${dates} подтверждено. В поездке будут ${guests}.` },
+    { direction: "in", text: "Спасибо! Подскажите, во сколько можно заехать и где получить ключи?" },
+    { direction: "out", text: "Заезд с 15:00. Накануне пришлю адрес и короткую памятку по дороге." },
+    { direction: "in", text: "Отлично, будем ждать сообщение накануне." },
+  ];
+  if (guest.staysCount > 0) return [
+    { direction: "in", text: `Здравствуйте! Мы уже отдыхали у вас и хотим вернуться ${dates}. Есть свободный ${category}?` },
+    { direction: "out", text: "Добрый день! Рады снова вас видеть. Проверю доступность и учту ваши прошлые пожелания." },
+    { direction: "in", text: "Спасибо. Нас будет ${guests}, предпочтения по размещению не изменились." },
+    { direction: "out", text: `Записала ${guests}. Проверяю варианты и стоимость на ${dates}.` },
+    { direction: "in", text: "Хорошо, пришлите, пожалуйста, что найдёте." },
+  ];
+  if (lead.stage === "offer" || lead.stage === "planning") return [
+    { direction: "in", text: `Здравствуйте! Смотрим размещение ${category} на ${dates}, нас ${guests}. Сколько будет стоить?` },
+    { direction: "out", text: `Добрый день! На эти даты подготовила расчёт: ${price} за ${lead.nights} ночи. SPA входит в пакет.` },
+    { direction: "in", text: "Спасибо, посмотрим предложение и обсудим дома." },
+    { direction: "out", text: "Конечно. Предложение сохраню, напишите, если нужно будет изменить состав гостей или даты." },
+  ];
+  return [
+    { direction: "in", text: `Здравствуйте! Хотим приехать ${dates}, двое взрослых${lead.children ? ` и ${lead.children} ребёнок` : ""}. Есть ${category}?` },
+    { direction: "out", text: `Добрый день! Проверяю размещение на ${dates}. Подскажите, пожалуйста, возраст ребёнка и пожелания по домику.` },
+    { direction: "in", text: `Ребёнку ${lead.children ? "7 лет" : "детей не будет"}. Хотим заранее понять итоговую стоимость.` },
+    { direction: "out", text: `На выбранные даты подготовлю наличие и полный расчёт для ${guests}.` },
+    { direction: "in", text: "Хорошо, будем ждать ответ." },
+  ];
+};
 
 const channelForSource = (source: LeadSource): Channel => {
   if (source === "telegram") return "telegram";
@@ -1036,38 +1101,21 @@ leadPlan.forEach(({ stage, count }) => {
     });
 
     // Conversation for the majority of active leads.
-    if (stage !== "cancelled" && (stage !== "lost" || chance(0.5)) && conversations.length < 26) {
+    if (stage !== "cancelled" && (stage !== "lost" || chance(0.5)) && conversations.length < 15) {
       const channel = channelForSource(source);
-      const script = messageScripts[channel];
-      const messageCount = int(4, 8);
       const conversationId = `conv_${String(conversations.length + 1).padStart(3, "0")}`;
-      const messages: Message[] = [];
-      let cursor = new Date(createdAt).getTime();
-      for (let messageIndex = 0; messageIndex < messageCount; messageIndex += 1) {
-        cursor += int(4, 180) * 60_000;
-        const isInbound = messageIndex % 2 === 0;
-        messages.push({
-          id: `${conversationId}_m${messageIndex}`,
-          conversationId,
-          direction: isInbound ? "in" : "out",
-          employeeId: isInbound ? undefined : owner.id,
-          text: isInbound ? pick(script.in) : pick(script.out),
-          at: new Date(cursor).toISOString(),
-          attachmentName: !isInbound && messageIndex === messageCount - 2 && reachedOffer ? `Предложение_${code}.pdf` : undefined,
-        });
-      }
-      if (chance(0.4)) {
-        cursor += 12 * 60_000;
-        messages.push({
-          id: `${conversationId}_note`,
-          conversationId,
-          direction: "note",
-          employeeId: owner.id,
-          text: pick(internalNotes),
-          at: new Date(cursor).toISOString(),
-        });
-      }
-      const unreadCount = stage === "new" || chance(0.3) ? int(1, 3) : 0;
+      const flow = conversationFlowForLead(lead, guest);
+      const messages: Message[] = flow.map((entry, messageIndex) => ({
+        id: `${conversationId}_m${messageIndex + 1}`,
+        conversationId,
+        direction: entry.direction,
+        employeeId: entry.direction === "out" ? owner.id : undefined,
+        text: entry.text,
+        at: minutesAgo((flow.length - messageIndex) * 4),
+        attachmentName: entry.direction === "out" && messageIndex === flow.length - 2 && reachedOffer ? `Предложение_${code}.pdf` : undefined,
+      }));
+      const lastExternalMessage = [...messages].reverse().find((message) => message.direction !== "note");
+      const unreadCount = lastExternalMessage?.direction === "in" ? 1 : 0;
       const firstOutMessage = messages.find((message) => message.direction === "out");
       const convSummary: ConversationSummary = {
         text: `${guest.fullName} интересуется ${roomType} на ${nights} ноч.`,
@@ -1086,7 +1134,7 @@ leadPlan.forEach(({ stage, count }) => {
         channel,
         propertyId,
         assigneeId: chance(0.85) ? owner.id : undefined,
-        status: stage === "confirmed" ? "closed" : unreadCount > 0 ? "open" : chance(0.5) ? "pending" : "open",
+        status: stage === "confirmed" || stage === "completed" ? "closed" : lastExternalMessage?.direction === "in" ? "open" : "pending",
         unreadCount,
         lastMessageAt: messages[messages.length - 1].at,
         messages,
@@ -1424,12 +1472,7 @@ guests.forEach((guest) => {
 // ---------------------------------------------------------------------------
 
 const roomCategoriesByProperty: Record<PropertyId, { category: string; floors: number; perFloor: number }[]> = {
-  les_borovoe: [
-    { category: "Премиум-домик", floors: 1, perFloor: 6 },
-    { category: "Стандартный домик", floors: 1, perFloor: 8 },
-    { category: "Семейный коттедж", floors: 1, perFloor: 5 },
-    { category: "Люкс-шале", floors: 1, perFloor: 4 },
-  ],
+  les_borovoe: lesBorovoeUnitTypes.map((unit) => ({ category: unit.name, floors: 1, perFloor: unit.count })),
   les_astana: [
     { category: "Делюкс-номер", floors: 3, perFloor: 6 },
     { category: "Стандартный номер", floors: 3, perFloor: 8 },
@@ -1446,10 +1489,13 @@ const rooms: Room[] = [];
 properties.forEach((property) => {
   const layout = roomCategoriesByProperty[property.id];
   layout.forEach((block) => {
+    const lesType = property.id === "les_borovoe" ? lesBorovoeUnitTypes.find((unit) => unit.name === block.category) : undefined;
     for (let floor = 1; floor <= block.floors; floor += 1) {
       for (let index = 0; index < block.perFloor; index += 1) {
-        const roomNumber = `${floor}${String(index + 1).padStart(2, "0")}`;
-        const roomId = `room_${property.id}_${roomNumber}`;
+        const roomNumber = lesType
+          ? `${lesType.prefix}${lesType.firstNumber + index}`
+          : `${floor}${String(index + 1).padStart(2, "0")}`;
+        const roomId = `room_${property.id}_${block.category.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_${roomNumber}`;
         const status: RoomStatus = pick([
           "occupied",
           "occupied",
@@ -1732,9 +1778,9 @@ for (let dayOffset = 30; dayOffset >= 0; dayOffset -= 1) {
 }
 
 const mockServiceCatalog: ServiceCatalogEntry[] = [
-  { id: "svc_acc_sky_house", propertyId: "les_borovoe", code: "acc_sky_house", category: "accommodation", serviceType: "accommodation", name: "Sky House", description: "Панорамный домик у озера", pricingMode: "per_night_per_unit", defaultPrice: 85000, pricingUnit: "night", displayOrder: 10, currency: "KZT", active: true },
-  { id: "svc_acc_a_frame", propertyId: "les_borovoe", code: "acc_a_frame", category: "accommodation", serviceType: "accommodation", name: "A-Frame", description: "Треугольный домик в лесу", pricingMode: "per_night_per_unit", defaultPrice: 130000, pricingUnit: "night", displayOrder: 11, currency: "KZT", active: true },
-  { id: "svc_acc_forest_house", propertyId: "les_borovoe", code: "acc_forest_house", category: "accommodation", serviceType: "accommodation", name: "Forest House", description: "Большой дом для семьи", pricingMode: "per_night_per_unit", defaultPrice: 195000, pricingUnit: "night", displayOrder: 12, currency: "KZT", active: true },
+  { id: "svc_acc_sky_house", propertyId: "les_borovoe", code: "acc_sky_house", category: "accommodation", serviceType: "accommodation", name: "Sky House", description: "Историческая позиция каталога: не подтверждена на актуальном сайте", pricingMode: "quote", pricingUnit: "night", displayOrder: 9, currency: "KZT", active: false },
+  ...lesBorovoeUnitTypes.map((unit, index) => ({ id: `svc_${unit.rateCode}`, propertyId: "les_borovoe", code: unit.rateCode, category: "accommodation", serviceType: "accommodation" as const, name: unit.name, description: "Демонстрационный тариф; проверьте и настройте официальный прайс в каталоге", pricingMode: "per_night_per_unit" as const, defaultPrice: unit.demoNightlyRate, pricingUnit: "night", displayOrder: 10 + index, currency: "KZT", active: true, metadata: { demoRate: true } })),
+  { id: "svc_acc_forest_house", propertyId: "les_borovoe", code: "acc_forest_house", category: "accommodation", serviceType: "accommodation", name: "Forest House", description: "Архивная позиция общего дома; продаваемые единицы заданы отдельно", pricingMode: "quote", pricingUnit: "night", displayOrder: 16, currency: "KZT", active: false },
   { id: "svc_restaurant_sova", propertyId: "les_borovoe", code: "restaurant_sova", category: "restaurant", serviceType: "restaurant", name: "Ресторан SOVA", description: "Средний чек на гостя", pricingMode: "per_person", defaultPrice: 15000, pricingUnit: "person", displayOrder: 20, currency: "KZT", active: true },
   { id: "svc_spa_visit", propertyId: "les_borovoe", code: "spa_visit", category: "spa", serviceType: "spa", name: "SPA визит", pricingMode: "per_person", defaultPrice: 12000, pricingUnit: "person", displayOrder: 30, currency: "KZT", active: true },
   { id: "svc_spa_pool", propertyId: "les_borovoe", code: "spa_pool", category: "spa", serviceType: "spa", name: "Бассейн", pricingMode: "per_person", defaultPrice: 8000, pricingUnit: "person", displayOrder: 31, currency: "KZT", active: true },
@@ -1749,6 +1795,10 @@ const mockServiceCatalog: ServiceCatalogEntry[] = [
   // transfer остаётся в каталоге как историческая позиция, но не активен для выбора
   { id: "svc_transfer", propertyId: "les_borovoe", code: "transfer", category: "transfer", name: "Трансфер", pricingMode: "fixed", defaultPrice: 35000, pricingUnit: "unit", currency: "KZT", active: false },
 ];
+for (const item of mockServiceCatalog) {
+  const booking = demoServiceBookingConfig[item.id];
+  if (booking) Object.assign(item, { ...booking, metadata: { ...(item.metadata ?? {}), ...(booking.metadata ?? {}) } });
+}
 
 // Demo mode uses the same Customer → Request → Reservation → Stay links as PostgreSQL.
 const demoReservations: Reservation[] = [];
@@ -1781,6 +1831,94 @@ stays.filter((stay) => stay.status === "upcoming" && stay.id.startsWith("stay_le
   }
 });
 
+// One linked, in-house conversation makes the demo cover the full guest lifecycle.
+const inHouseStart = addDays(TODAY, -1);
+inHouseStart.setHours(15, 0, 0, 0);
+const inHouseEnd = addDays(TODAY, 1);
+inHouseEnd.setHours(12, 0, 0, 0);
+const inHouseReservation = demoReservations.find((reservation) => {
+  const stay = stays.find((item) => item.reservationId === reservation.id);
+  return Boolean(stay && conversations.some((conversation) => conversation.leadId === reservation.requestId) && rooms.some((room) => room.propertyId === reservation.propertyId && room.category === reservation.roomTypeSnapshot &&
+    ["vacant_clean", "inspected", "guest_ready", "clean"].includes(room.status) &&
+    !demoReservationUnits.some((unit) => unit.reservationId !== reservation.id && unit.roomId === room.id &&
+      unit.arrivalAt < inHouseEnd.toISOString() && inHouseStart.toISOString() < unit.departureAt)));
+});
+if (inHouseReservation) {
+  const inHouseStay = stays.find((item) => item.reservationId === inHouseReservation.id)!;
+  const inHouseRoom = rooms.find((room) => room.propertyId === inHouseReservation.propertyId && room.category === inHouseReservation.roomTypeSnapshot &&
+    ["vacant_clean", "inspected", "guest_ready", "clean"].includes(room.status) &&
+    !demoReservationUnits.some((unit) => unit.reservationId !== inHouseReservation.id && unit.roomId === room.id &&
+      unit.arrivalAt < inHouseEnd.toISOString() && inHouseStart.toISOString() < unit.departureAt));
+  inHouseReservation.arrivalAt = inHouseStart.toISOString();
+  inHouseReservation.departureAt = inHouseEnd.toISOString();
+  inHouseStay.checkIn = inHouseStart.toISOString();
+  inHouseStay.checkOut = inHouseEnd.toISOString();
+  inHouseStay.nights = 2;
+  inHouseStay.operationalStatus = "in_house";
+  inHouseStay.roomId = inHouseRoom?.id;
+  if (inHouseRoom) {
+    demoReservationUnits.splice(0, demoReservationUnits.length, ...demoReservationUnits.filter((unit) => unit.reservationId !== inHouseReservation.id));
+    demoReservationUnits.push({ id: `allocation_${inHouseReservation.id}`, reservationId: inHouseReservation.id,
+      roomId: inHouseRoom.id, arrivalAt: inHouseReservation.arrivalAt, departureAt: inHouseReservation.departureAt,
+      status: "active", assignedAt: minutesAgo(60) });
+    inHouseRoom.status = "occupied";
+    inHouseRoom.occupiedByGuestId = inHouseReservation.bookerCustomerId;
+    inHouseRoom.checkOutAt = inHouseReservation.departureAt;
+  }
+  if (inHouseReservation.requestId) {
+    const linkedRequest = leads.find((item) => item.id === inHouseReservation.requestId);
+    if (linkedRequest) { linkedRequest.checkIn = inHouseReservation.arrivalAt; linkedRequest.checkOut = inHouseReservation.departureAt; linkedRequest.nights = 2; }
+  }
+  const existingConversation = conversations.find((item) => item.leadId === inHouseReservation.requestId);
+  if (existingConversation) {
+    const atMessage = minutesAgo(2);
+    existingConversation.status = "open";
+    existingConversation.unreadCount = 1;
+    existingConversation.lastMessageAt = atMessage;
+    existingConversation.messages.push({ id: `${existingConversation.id}_inhouse_request`, conversationId: existingConversation.id,
+      direction: "in", text: "Добрый день! Можно принести в домик ещё два полотенца?", at: atMessage });
+    tasks.push({ id: "task_demo_inhouse_request", title: "Принести дополнительные полотенца", type: "guest_request",
+      status: "todo", priority: "medium", dueAt: minutesAgo(-15), ownerId: inHouseReservation.requestId ?
+        (leads.find((item) => item.id === inHouseReservation.requestId)?.ownerId ?? employees[0].id) : employees[0].id,
+      guestId: inHouseReservation.bookerCustomerId, leadId: inHouseReservation.requestId ?? undefined,
+      conversationId: existingConversation.id, reservationId: inHouseReservation.id, stayId: inHouseStay.id,
+      roomId: inHouseRoom?.id, propertyId: inHouseReservation.propertyId, description: "Запрос из WhatsApp во время проживания." });
+  }
+}
+
+const demoConversations = conversations.map((conversation) => {
+  const reservation = demoReservations.find((item) => item.requestId === conversation.leadId);
+  const stay = reservation ? stays.find((item) => item.reservationId === reservation.id) : undefined;
+  return { ...conversation, reservationId: conversation.reservationId ?? reservation?.id,
+    stayId: conversation.stayId ?? stay?.id };
+});
+const legacyFollowUpTasks: Task[] = followUps.filter((followUp) =>
+  !tasks.some((task) => task.type === "follow_up" && task.leadId === followUp.leadId && task.guestId === followUp.guestId),
+).map((followUp) => ({
+  id: `task_legacy_followup_${followUp.id}`,
+  title: followUp.recommendedAction,
+  type: "follow_up",
+  status: followUp.status !== "open" ? "done" : new Date(followUp.dueAt) < NOW ? "overdue" : "todo",
+  priority: followUp.temperature === "hot" ? "high" : "medium",
+  dueAt: followUp.dueAt,
+  ownerId: followUp.ownerId,
+  guestId: followUp.guestId,
+  leadId: followUp.leadId,
+  propertyId: followUp.propertyId,
+  source: `legacy_follow_up:${followUp.id}`,
+  description: followUp.context,
+  completedAt: followUp.completedAt,
+}));
+const demoTasks = [...tasks, ...legacyFollowUpTasks].map((task) => {
+  const conversation = demoConversations.find((item) => item.id === task.conversationId ||
+    Boolean(task.leadId && item.leadId === task.leadId));
+  const reservation = demoReservations.find((item) => item.id === task.reservationId ||
+    Boolean(task.leadId && item.requestId === task.leadId));
+  const stay = stays.find((item) => item.id === task.stayId || Boolean(reservation && item.reservationId === reservation.id));
+  return { ...task, conversationId: task.conversationId ?? conversation?.id,
+    reservationId: task.reservationId ?? reservation?.id, stayId: task.stayId ?? stay?.id, roomId: task.roomId ?? stay?.roomId };
+});
+
 export const crmDataset: CrmDataset = {
   organization,
   properties,
@@ -1794,6 +1932,11 @@ export const crmDataset: CrmDataset = {
   unitTypes: [],
   services,
   serviceReservations: [],
+  serviceResourceGroups: demoServiceResourceGroups,
+  serviceResources: demoServiceResources,
+  serviceResourceRequirements: demoServiceRequirements,
+  serviceResourceAllocations: [],
+  serviceResourceBlocks: [],
   packages: [],
   packageEntitlements: [],
   reviews: [],
@@ -1802,8 +1945,8 @@ export const crmDataset: CrmDataset = {
   guestActivity,
   leads,
   offers,
-  tasks,
-  conversations,
+  tasks: demoTasks,
+  conversations: demoConversations,
   segments,
   campaigns,
   metrics,

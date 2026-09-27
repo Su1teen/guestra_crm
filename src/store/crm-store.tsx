@@ -46,6 +46,9 @@ import type {
   TaskType,
 } from "@/types/crm";
 import { folioForLead, journeyForLead } from "@/lib/journey";
+import { bookDemoService, changeDemoServiceStatus, demoServiceAvailability, rescheduleDemoService,
+  type ServiceBookingInput } from "@/lib/service-demo-booking";
+import type { ServiceAvailabilityResult } from "@shared/service-availability";
 
 export type PropertyFilter = PropertyId | "all";
 
@@ -61,6 +64,10 @@ interface CreateTaskInput {
   ownerId: string;
   guestId?: string;
   leadId?: string;
+  conversationId?: string;
+  reservationId?: string;
+  stayId?: string;
+  roomId?: string;
   propertyId: PropertyId;
   description?: string;
 }
@@ -156,9 +163,15 @@ interface CrmContextValue {
   addReservationNote: (reservationId: string, text: string) => Promise<void>;
   checkInReservation: (reservationId: string, input?: { readinessOverride?: boolean; overrideReason?: string }) => Promise<void>;
   checkOutReservation: (reservationId: string, input?: { acknowledgeBalance?: boolean; acknowledgeOpenServices?: boolean }) => Promise<void>;
-  bookService: (input: { customerId: string; propertyId: string; reservationId?: string; catalogItemId: string;
-    startAt: string; endAt?: string; participants: number; quantity: number; unitPrice?: number;
-    priceOverrideReason?: string; useEntitlement?: boolean; notes?: string; idempotencyKey: string }) => Promise<void>;
+  bookService: (input: ServiceBookingInput) => Promise<void>;
+  getServiceAvailability: (input: { catalogItemId: string; propertyId: string; startsAt: string[];
+    durationMinutes?: number; participants: number; quantity: number; preferredResourceIds?: Record<string, string>;
+    excludeServiceReservationId?: string }) => Promise<Array<ServiceAvailabilityResult & { startAt: string; endAt: string }>>;
+  rescheduleService: (serviceId: string, input: { startAt: string; endAt?: string;
+    preferredResourceIds?: Record<string, string> }) => Promise<void>;
+  createServiceResourceBlock: (input: { resourceGroupId: string; resourceId?: string; startAt: string;
+    endAt: string; reason: string }) => Promise<void>;
+  cancelServiceResourceBlock: (blockId: string) => Promise<void>;
   changeServiceStatus: (serviceId: string, status: "completed" | "cancelled") => Promise<void>;
   assignPackage: (reservationId: string, packageId: string) => Promise<void>;
   createGuestRequest: (reservationId: string, input: { title: string; description?: string; priority: "low" | "medium" | "high"; department: string; ownerId?: string; dueAt: string }) => Promise<void>;
@@ -175,13 +188,13 @@ interface CrmContextValue {
   addLeadActivity: (leadId: string, title: string, description?: string) => void;
   updateLead: (leadId: string, patch: UpdateLeadInput) => void;
   createOfferFromLead: (leadId: string) => Promise<string | undefined>;
-  createTask: (input: CreateTaskInput) => void;
-  updateTask: (taskId: string, patch: Partial<Pick<Task, "status" | "priority" | "dueAt" | "ownerId">>) => void;
-  toggleTaskDone: (taskId: string) => void;
-  sendMessage: (conversationId: string, text: string, asNote?: boolean) => void;
-  markConversationRead: (conversationId: string) => void;
-  setConversationStatus: (conversationId: string, status: Conversation["status"]) => void;
-  assignConversation: (conversationId: string, employeeId: string) => void;
+  createTask: (input: CreateTaskInput) => Promise<void>;
+  updateTask: (taskId: string, patch: Partial<Pick<Task, "status" | "priority" | "dueAt" | "ownerId">>) => Promise<void>;
+  toggleTaskDone: (taskId: string) => Promise<void>;
+  sendMessage: (conversationId: string, text: string, asNote?: boolean) => Promise<void>;
+  markConversationRead: (conversationId: string) => Promise<void>;
+  setConversationStatus: (conversationId: string, status: Conversation["status"]) => Promise<void>;
+  assignConversation: (conversationId: string, employeeId: string | null) => Promise<void>;
   setOfferStatus: (offerId: string, status: OfferStatus) => void;
   duplicateOffer: (offerId: string) => Promise<string>;
   addGuestNote: (guestId: string, text: string) => void;
@@ -314,7 +327,9 @@ const emptyDatabaseDataset: CrmDataset = {
   properties: [], employees: [], guests: [], stays: [], reservations: [], reservationUnits: [], reservationGuests: [], reservationNotes: [], unitTypes: [], services: [], payments: [], notes: [], guestActivity: [],
   leads: [], offers: [], tasks: [], conversations: [], segments: [], campaigns: [], metrics: [], followUps: [], rooms: [],
   housekeepingTasks: [], maintenanceTickets: [], operationalTasks: [], pmsSnapshots: [],
-  serviceCatalog: [], serviceReservations: [], packages: [], packageEntitlements: [], reviews: [],
+  serviceCatalog: [], serviceReservations: [], serviceResourceGroups: [], serviceResources: [],
+  serviceResourceRequirements: [], serviceResourceAllocations: [], serviceResourceBlocks: [],
+  packages: [], packageEntitlements: [], reviews: [],
   folios: [],
 };
 
@@ -422,6 +437,12 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         checkOut: input.departureAt, nights: Math.max(1, Math.ceil((new Date(input.departureAt).getTime() - new Date(input.arrivalAt).getTime()) / 86_400_000)),
         adults: input.adults, children: input.children, amount: input.totalAmount ?? request.totalAmount, bookingReference,
         status: "confirmed", operationalStatus: "upcoming", serviceNames: [] }],
+      conversations: previous.conversations.map((item) => item.leadId === requestId ? {
+        ...item, reservationId, stayId: `stay_${reservationId}`,
+      } : item),
+      tasks: previous.tasks.map((item) => item.leadId === requestId ? {
+        ...item, reservationId, stayId: `stay_${reservationId}`,
+      } : item),
       leads: previous.leads.map((item) => item.id === requestId ? { ...item, stage: "confirmed", requestStatus: "won", bookingReference,
         roomType: input.roomType, checkIn: input.arrivalAt, checkOut: input.departureAt, adults: input.adults, children: input.children,
         totalAmount: input.totalAmount ?? item.totalAmount, deposit: input.depositRequired ?? item.deposit } : item),
@@ -587,38 +608,58 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, [data, dataMode, persist]);
 
-  const bookService = useCallback(async (input: { customerId: string; propertyId: string; reservationId?: string; catalogItemId: string;
-    startAt: string; endAt?: string; participants: number; quantity: number; unitPrice?: number;
-    priceOverrideReason?: string; useEntitlement?: boolean; notes?: string; idempotencyKey: string }) => {
+  const bookService = useCallback(async (input: ServiceBookingInput) => {
     if (dataMode === "database") {
       await persist("/api/crm/service-reservations", { method: "POST", body: JSON.stringify(input) });
       return;
     }
-    if (data.serviceReservations.some((item) => item.id === input.idempotencyKey)) return;
-    const catalog = data.serviceCatalog.find((item) => item.id === input.catalogItemId && item.propertyId === input.propertyId);
-    if (!catalog) throw new Error("Услуга не найдена");
-    const reservation = data.reservations.find((item) => item.id === input.reservationId);
-    const entitlement = input.useEntitlement ? data.packageEntitlements.find((item) => item.packageId === reservation?.packageId && item.catalogItemId === catalog.id) : undefined;
-    if (input.useEntitlement && !entitlement) throw new Error("Услуга не включена в пакет");
-    const unitPrice = entitlement ? 0 : input.unitPrice ?? catalog.defaultPrice;
-    if (unitPrice === undefined) throw new Error("Укажите цену услуги");
-    const stayId = data.stays.find((item) => item.reservationId === input.reservationId)?.id;
-    setData((previous) => ({ ...previous, serviceReservations: [{ id: input.idempotencyKey,
-      propertyId: input.propertyId, customerId: input.customerId, reservationId: input.reservationId,
-      stayId, catalogItemId: catalog.id, status: "scheduled", startAt: input.startAt, endAt: input.endAt,
-      participants: input.participants, quantity: input.quantity, unitPrice, totalAmount: unitPrice * input.quantity,
-      currency: catalog.currency, notes: input.notes, entitlementId: entitlement?.id }, ...previous.serviceReservations] }));
+    setData(bookDemoService(data, input));
   }, [data, dataMode, persist]);
+
+  const getServiceAvailability = useCallback(async (input: { catalogItemId: string; propertyId: string; startsAt: string[];
+    durationMinutes?: number; participants: number; quantity: number; preferredResourceIds?: Record<string, string>;
+    excludeServiceReservationId?: string }) => {
+    if (dataMode === "database") {
+      const result = await apiRequest<{ slots: Array<ServiceAvailabilityResult & { startAt: string; endAt: string }> }>(
+        "/api/crm/service-availability", { method: "POST", body: JSON.stringify(input) });
+      return result.slots;
+    }
+    return input.startsAt.map((startAt) => { const endAt = new Date(new Date(startAt).getTime() +
+      (input.durationMinutes ?? data.serviceCatalog.find((item) => item.id === input.catalogItemId)?.defaultDurationMinutes ?? 60) * 60_000).toISOString();
+      return { startAt, endAt, ...demoServiceAvailability(data, { ...input, startAt, endAt }) }; });
+  }, [data, dataMode]);
+
+  const rescheduleService = useCallback(async (serviceId: string, input: { startAt: string; endAt?: string;
+    preferredResourceIds?: Record<string, string> }) => {
+    if (dataMode === "database") { await persist(`/api/crm/service-reservations/${serviceId}/reschedule`,
+      { method: "POST", body: JSON.stringify(input) }); return; }
+    setData(rescheduleDemoService(data, serviceId, input));
+  }, [data, dataMode, persist]);
+
+  const createServiceResourceBlock = useCallback(async (input: { resourceGroupId: string; resourceId?: string;
+    startAt: string; endAt: string; reason: string }) => {
+    if (dataMode === "database") { await persist("/api/crm/service-resource-blocks", { method: "POST", body: JSON.stringify(input) }); return; }
+    if (data.serviceResourceAllocations.some((item) => item.status === "active" && item.resourceGroupId === input.resourceGroupId &&
+      (!input.resourceId || item.resourceId === input.resourceId) && item.startAt < input.endAt && item.endAt > input.startAt))
+      throw new Error("На это время уже есть подтверждённая услуга");
+    setData({ ...data, serviceResourceBlocks: [{ id: `service_block_${crypto.randomUUID()}`, ...input, status: "active" },
+      ...data.serviceResourceBlocks] });
+  }, [data, dataMode, persist]);
+
+  const cancelServiceResourceBlock = useCallback(async (blockId: string) => {
+    if (dataMode === "database") { await persist(`/api/crm/service-resource-blocks/${blockId}`,
+      { method: "PATCH", body: JSON.stringify({ status: "cancelled" }) }); return; }
+    setData((previous) => ({ ...previous, serviceResourceBlocks: previous.serviceResourceBlocks.map((item) =>
+      item.id === blockId ? { ...item, status: "cancelled" } : item) }));
+  }, [dataMode, persist]);
 
   const changeServiceStatus = useCallback(async (serviceId: string, serviceStatus: "completed" | "cancelled") => {
     if (dataMode === "database") {
       await persist(`/api/crm/service-reservations/${serviceId}`, { method: "PATCH", body: JSON.stringify({ status: serviceStatus }) });
       return;
     }
-    setData((previous) => ({ ...previous, serviceReservations: previous.serviceReservations.map((item) => item.id === serviceId ?
-      { ...item, status: serviceStatus, completedAt: serviceStatus === "completed" ? new Date().toISOString() : undefined,
-        cancelledAt: serviceStatus === "cancelled" ? new Date().toISOString() : undefined } : item) }));
-  }, [dataMode, persist]);
+    setData(changeDemoServiceStatus(data, serviceId, serviceStatus));
+  }, [data, dataMode, persist]);
 
   const assignPackage = useCallback(async (reservationId: string, packageId: string) => {
     if (dataMode === "database") {
@@ -1148,8 +1189,8 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     return offerId;
   }, [actorId, dataMode, persist]);
 
-  const createTask = useCallback((input: CreateTaskInput) => {
-    if (dataMode === "database") { void persist("/api/crm/tasks", { method: "POST", body: JSON.stringify(input) }); return; }
+  const createTask = useCallback(async (input: CreateTaskInput) => {
+    if (dataMode === "database") { await persist("/api/crm/tasks", { method: "POST", body: JSON.stringify(input) }); return; }
     setData((previous) => ({
       ...previous,
       tasks: [
@@ -1163,18 +1204,18 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, [dataMode, persist]);
 
-  const updateTask = useCallback((taskId: string, patch: Partial<Pick<Task, "status" | "priority" | "dueAt" | "ownerId">>) => {
-    if (dataMode === "database") { void persist(`/api/crm/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(patch) }); return; }
+  const updateTask = useCallback(async (taskId: string, patch: Partial<Pick<Task, "status" | "priority" | "dueAt" | "ownerId">>) => {
+    if (dataMode === "database") { await persist(`/api/crm/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(patch) }); return; }
     setData((previous) => ({
       ...previous,
       tasks: previous.tasks.map((task) => (task.id === taskId ? overdueAdjusted({ ...task, ...patch }) : task)),
     }));
   }, [dataMode, persist]);
 
-  const toggleTaskDone = useCallback((taskId: string) => {
+  const toggleTaskDone = useCallback(async (taskId: string) => {
     if (dataMode === "database") {
       const task = data.tasks.find((item) => item.id === taskId);
-      if (task) void persist(`/api/crm/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify({ status: task.status === "done" ? "todo" : "done", completedAt: task.status === "done" ? null : nowIso() }) });
+      if (task) await persist(`/api/crm/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify({ status: task.status === "done" ? "todo" : "done", completedAt: task.status === "done" ? null : nowIso() }) });
       return;
     }
     setData((previous) => ({
@@ -1189,7 +1230,11 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, [data.tasks, dataMode, persist]);
 
-  const sendMessage = useCallback((conversationId: string, text: string, asNote = false) => {
+  const sendMessage = useCallback(async (conversationId: string, text: string, asNote = false) => {
+    if (dataMode === "database") {
+      await persist(`/api/crm/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text, asNote }) });
+      return;
+    }
     setData((previous) => ({
       ...previous,
       conversations: previous.conversations.map((conversation) => {
@@ -1198,7 +1243,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         return {
           ...conversation,
           unreadCount: 0,
-          status: asNote ? conversation.status : "open",
+          status: asNote ? conversation.status : "pending",
           lastMessageAt: timestamp,
           messages: [
             ...conversation.messages,
@@ -1214,34 +1259,46 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         };
       }),
     }));
-  }, [actorId]);
+  }, [actorId, dataMode, persist]);
 
-  const markConversationRead = useCallback((conversationId: string) => {
+  const markConversationRead = useCallback(async (conversationId: string) => {
+    if (dataMode === "database") {
+      await persist(`/api/crm/conversations/${conversationId}`, { method: "PATCH", body: JSON.stringify({ unreadCount: 0 }) });
+      return;
+    }
     setData((previous) => ({
       ...previous,
       conversations: previous.conversations.map((conversation) =>
         conversation.id === conversationId ? { ...conversation, unreadCount: 0 } : conversation,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
-  const setConversationStatus = useCallback((conversationId: string, conversationStatus: Conversation["status"]) => {
+  const setConversationStatus = useCallback(async (conversationId: string, conversationStatus: Conversation["status"]) => {
+    if (dataMode === "database") {
+      await persist(`/api/crm/conversations/${conversationId}`, { method: "PATCH", body: JSON.stringify({ status: conversationStatus }) });
+      return;
+    }
     setData((previous) => ({
       ...previous,
       conversations: previous.conversations.map((conversation) =>
         conversation.id === conversationId ? { ...conversation, status: conversationStatus } : conversation,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
-  const assignConversation = useCallback((conversationId: string, employeeId: string) => {
+  const assignConversation = useCallback(async (conversationId: string, employeeId: string | null) => {
+    if (dataMode === "database") {
+      await persist(`/api/crm/conversations/${conversationId}`, { method: "PATCH", body: JSON.stringify({ assigneeId: employeeId }) });
+      return;
+    }
     setData((previous) => ({
       ...previous,
       conversations: previous.conversations.map((conversation) =>
-        conversation.id === conversationId ? { ...conversation, assigneeId: employeeId } : conversation,
+        conversation.id === conversationId ? { ...conversation, assigneeId: employeeId ?? undefined } : conversation,
       ),
     }));
-  }, []);
+  }, [dataMode, persist]);
 
   const setOfferStatus = useCallback((offerId: string, offerStatus: OfferStatus) => {
     if (dataMode === "database") { void persist(`/api/crm/offers/${offerId}/status`, { method: "PATCH", body: JSON.stringify({ status: offerStatus }) }); return; }
@@ -2187,6 +2244,10 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       checkInReservation,
       checkOutReservation,
       bookService,
+      getServiceAvailability,
+      rescheduleService,
+      createServiceResourceBlock,
+      cancelServiceResourceBlock,
       changeServiceStatus,
       assignPackage,
       createGuestRequest,
@@ -2256,6 +2317,10 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       assignPackage,
       addReservationNote,
       bookService,
+      getServiceAvailability,
+      rescheduleService,
+      createServiceResourceBlock,
+      cancelServiceResourceBlock,
       changeServiceStatus,
       checkInReservation,
       checkOutReservation,

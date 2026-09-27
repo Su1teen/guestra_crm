@@ -28,10 +28,14 @@ interface CreateTaskDialogProps {
   propertyId: PropertyId;
   leadId?: string;
   guestId?: string;
+  conversationId?: string;
+  reservationId?: string;
+  stayId?: string;
+  roomId?: string;
   defaultTitle?: string;
 }
 
-export const CreateTaskDialog = ({ trigger, propertyId, leadId, guestId, defaultTitle }: CreateTaskDialogProps) => {
+export const CreateTaskDialog = ({ trigger, propertyId, leadId, guestId, conversationId, reservationId, stayId, roomId, defaultTitle }: CreateTaskDialogProps) => {
   const { createTask, currentEmployee, data } = useCrm();
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
@@ -46,24 +50,25 @@ export const CreateTaskDialog = ({ trigger, propertyId, leadId, guestId, default
     return toLocalInput(date);
   });
   const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  const submit = () => {
+  const submit = async () => {
     if (!title.trim()) return;
-    createTask({
-      title: title.trim(),
-      type,
-      priority,
-      ownerId,
-      dueAt: new Date(dueAt).toISOString(),
-      propertyId,
-      leadId,
-      guestId,
-      description: description.trim() || undefined,
-    });
-    toast({ title: "Задача создана", description: title.trim() });
-    setOpen(false);
-    setTitle(defaultTitle ?? "");
-    setDescription("");
+    setSaving(true);
+    try {
+      await createTask({
+        title: title.trim(), type, priority, ownerId,
+        dueAt: new Date(dueAt).toISOString(), propertyId, leadId, guestId,
+        conversationId, reservationId, stayId, roomId,
+        description: description.trim() || undefined,
+      });
+      toast({ title: "Задача создана", description: title.trim() });
+      setOpen(false);
+      setTitle(defaultTitle ?? "");
+      setDescription("");
+    } catch (error) {
+      toast({ title: "Не удалось создать задачу", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    } finally { setSaving(false); }
   };
 
   return (
@@ -150,8 +155,8 @@ export const CreateTaskDialog = ({ trigger, propertyId, leadId, guestId, default
           <Button variant="outline" onClick={() => setOpen(false)}>
             Отмена
           </Button>
-          <Button onClick={submit} disabled={!title.trim()}>
-            Создать задачу
+          <Button onClick={() => void submit()} disabled={!title.trim() || saving}>
+            {saving ? "Создаём…" : "Создать задачу"}
           </Button>
         </DialogFooter>
       </DialogContent>

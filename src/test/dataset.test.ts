@@ -95,6 +95,24 @@ describe("Dataset consistency", () => {
     });
   });
 
+  it("номерной фонд ЛЕС Боровое имеет неповторяющиеся физические домики и номера", () => {
+    const borovoeRooms = crmDataset.rooms.filter((room) => room.propertyId === "les_borovoe");
+    expect(new Set(borovoeRooms.map((room) => room.id)).size).toBe(borovoeRooms.length);
+    expect(new Set(borovoeRooms.map((room) => room.number)).size).toBe(borovoeRooms.length);
+    expect(borovoeRooms.map((room) => room.category)).toContain("A-Frame");
+    expect(borovoeRooms.map((room) => room.category)).toContain("Nest House");
+    expect(borovoeRooms.some((room) => room.category === "Sky House")).toBe(false);
+  });
+
+  it("каждая mock-бронь привязана только к существующему physical unit", () => {
+    const roomIds = new Set(crmDataset.rooms.map((room) => room.id));
+    crmDataset.reservationUnits.forEach((allocation) => expect(roomIds.has(allocation.roomId)).toBe(true));
+    crmDataset.reservations.forEach((reservation) => {
+      const allocatedRooms = crmDataset.reservationUnits.filter((allocation) => allocation.reservationId === reservation.id);
+      expect(new Set(allocatedRooms.map((allocation) => allocation.roomId)).size).toBe(allocatedRooms.length);
+    });
+  });
+
   it("PMS-снимки имеют валидные объекты", () => {
     const propertyIds = new Set(properties.map((property) => property.id));
     crmDataset.pmsSnapshots.forEach((snapshot) => {

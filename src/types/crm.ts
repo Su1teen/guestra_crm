@@ -286,6 +286,7 @@ export interface ServiceReservation {
   id: string;
   propertyId: string;
   customerId: string;
+  requestId?: string;
   reservationId?: string;
   stayId?: string;
   catalogItemId: string;
@@ -547,6 +548,8 @@ export interface ServiceCatalogEntry {
   pricingUnit?: string;
   /** Длительность по умолчанию (например массаж 60 минут). */
   defaultDurationMinutes?: number;
+  bookingMode?: ServiceBookingMode;
+  slotIntervalMinutes?: number;
   displayOrder?: number;
   currency: string;
   metadata?: Record<string, unknown>;
@@ -735,8 +738,10 @@ export interface Task {
   ownerId: string;
   guestId?: string;
   leadId?: string;
+  conversationId?: string;
   reservationId?: string;
   stayId?: string;
+  roomId?: string;
   source?: string;
   department?: string;
   propertyId: PropertyId;
@@ -1137,6 +1142,11 @@ export interface CrmDataset {
   unitTypes: UnitType[];
   services: GuestService[];
   serviceReservations: ServiceReservation[];
+  serviceResourceGroups: ServiceResourceGroup[];
+  serviceResources: ServiceResource[];
+  serviceResourceRequirements: ServiceResourceRequirement[];
+  serviceResourceAllocations: ServiceResourceAllocation[];
+  serviceResourceBlocks: ServiceResourceBlock[];
   packages: ServicePackage[];
   packageEntitlements: PackageEntitlement[];
   reviews: GuestReview[];
@@ -1159,3 +1169,5 @@ export interface CrmDataset {
   serviceCatalog: ServiceCatalogEntry[];
   folios: Folio[];
 }
+import type { ServiceResourceGroup, ServiceResource, ServiceResourceRequirement, ServiceResourceAllocation, ServiceResourceBlock, ServiceBookingMode } from "@shared/service-availability";
+export type { ServiceResourceGroup, ServiceResource, ServiceResourceRequirement, ServiceResourceAllocation, ServiceResourceBlock, ServiceBookingMode } from "@shared/service-availability";

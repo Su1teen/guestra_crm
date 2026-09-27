@@ -26,6 +26,8 @@ import { CreateReservationDialog } from "@/components/crm/CreateReservationDialo
 import { JourneyCard } from "@/components/crm/JourneyCard";
 import { FolioCard } from "@/components/crm/FolioCard";
 import { ServicePicker } from "@/components/crm/ServicePicker";
+import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
+import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -122,6 +124,8 @@ const LeadDetail = () => {
   const [editOpen, setEditOpen] = useState(false);
   const [advancing, setAdvancing] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [serviceOpen, setServiceOpen] = useState(false);
+  const [selectedServiceId, setSelectedServiceId] = useState<string>();
 
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentForm, setPaymentForm] = useState({
@@ -184,6 +188,8 @@ const LeadDetail = () => {
   const journey = journeyFor(lead.id);
   const folio = folioByLeadId(lead.id);
   const reservation = data.reservations.find((item) => item.requestId === lead.id);
+  const bookedServices = data.serviceReservations.filter((item) => item.requestId === lead.id || item.reservationId === reservation?.id)
+    .sort((a, b) => a.startAt.localeCompare(b.startAt));
   const terminal = lead.stage === "completed" || lead.stage === "lost" || lead.stage === "cancelled";
   const accommodationInterest = lead.interests.find((interest) => interest.direction === "accommodation");
   const accommodationItem = lead.items.find((item) => item.type === "accommodation");
@@ -393,6 +399,7 @@ const LeadDetail = () => {
           <>
             {reservation ? <Button onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
               : !terminal && (accommodationInterest || accommodationItem || lead.roomType) ? <CreateReservationDialog request={lead} /> : null}
+            {!terminal && <Button variant="outline" onClick={() => setServiceOpen(true)}>Забронировать услугу</Button>}
             <Button variant="outline" className="gap-2" onClick={openEdit}>
               <Pencil className="h-4 w-4" />
               Изменить
@@ -427,6 +434,10 @@ const LeadDetail = () => {
             <StatusPill tone="neutral">{qualityLabels[lead.classification.quality]}</StatusPill></div>
         </div>
       </SectionCard>
+      {bookedServices.length > 0 && <SectionCard title="Забронированные услуги"><div className="space-y-2">{bookedServices.map((service) =>
+        <button type="button" key={service.id} className="flex w-full items-center justify-between rounded-lg border p-3 text-left text-sm hover:bg-secondary" onClick={() => setSelectedServiceId(service.id)}>
+          <span>{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"} · {formatDateTime(service.startAt)}</span>
+          <span>{service.status === "scheduled" ? "Запланирована" : service.status === "completed" ? "Оказана" : "Отменена"}</span></button>)}</div></SectionCard>}
 
       {journey && (
         <details className="rounded-xl border border-border bg-card p-3">
@@ -1140,6 +1151,9 @@ const LeadDetail = () => {
         accommodationDates={lead.interests.find((interest) => interest.direction === "accommodation")?.details}
         onSubmit={submitItem}
       />
+      <ServiceBookingDialog reservation={reservation} customerId={guest.id} propertyId={lead.propertyId} requestId={lead.id}
+        open={serviceOpen} onOpenChange={setServiceOpen} />
+      <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
     </div>
   );
 };

@@ -14,10 +14,11 @@ import { customerContext, effectiveStayStatus, operationalStatusLabels, reservat
 import { formatDateNumeric, formatTenge, occupancyLabel } from "@/lib/format";
 import { sourceLabels } from "@/lib/labels";
 import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
+import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDialog";
 import { GuestRequestDialog } from "@/components/crm/GuestRequestDialog";
 
 export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: string | null; onClose: () => void }) => {
-  const { data, assignReservationRoom, checkInReservation, checkOutReservation, changeServiceStatus, assignPackage, updateReservationContext, addReservationNote, propertyById } = useCrm();
+  const { data, assignReservationRoom, checkInReservation, checkOutReservation, assignPackage, updateReservationContext, addReservationNote, propertyById } = useCrm();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
@@ -26,6 +27,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
   const [overrideReason, setOverrideReason] = useState("");
   const [acknowledgeBalance, setAcknowledgeBalance] = useState(false);
   const [acknowledgeServices, setAcknowledgeServices] = useState(false);
+  const [selectedServiceId, setSelectedServiceId] = useState<string>();
   const [etaDraft, setEtaDraft] = useState("");
   const [specialDraft, setSpecialDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
@@ -53,7 +55,8 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
   const conversation = reservation ? data.conversations.find((item) => item.reservationId === reservation.id) ??
     data.conversations.find((item) => item.guestId === reservation.bookerCustomerId && item.leadId === reservation.requestId) : null;
   const tasks = reservation ? data.tasks.filter((item) => item.reservationId === reservation.id && item.status !== "done") : [];
-  const services = reservation ? data.serviceReservations.filter((item) => item.reservationId === reservation.id) : [];
+  const services = reservation ? data.serviceReservations.filter((item) => item.reservationId === reservation.id)
+    .sort((a, b) => (a.status === "scheduled" ? 0 : 1) - (b.status === "scheduled" ? 0 : 1) || a.startAt.localeCompare(b.startAt)) : [];
   const reservationNotes = reservation ? data.reservationNotes.filter((item) => item.reservationId === reservation.id) : [];
   const readiness = reservation ? reservationReadiness(data, reservation) : null;
   const stayStatus = stay ? effectiveStayStatus(stay) : null;
@@ -94,16 +97,6 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
     } finally { setSaving(false); }
   };
 
-  const updateService = async (serviceId: string, status: "completed" | "cancelled") => {
-    setSaving(true);
-    try {
-      await changeServiceStatus(serviceId, status);
-      toast({ title: status === "completed" ? "Услуга оказана" : "Услуга отменена, счёт пересчитан" });
-    } catch (error) {
-      toast({ title: "Не удалось изменить услугу", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
-    } finally { setSaving(false); }
-  };
-
   const saveContext = async () => {
     if (!reservation) return;
     setSaving(true);
@@ -139,7 +132,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
     } finally { setSaving(false); }
   };
 
-  return <Sheet open={Boolean(reservationId)} onOpenChange={(open) => !open && onClose()}>
+  return <><Sheet open={Boolean(reservationId)} onOpenChange={(open) => !open && onClose()}>
     <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
       {reservation ? <div className="space-y-5 pb-6">
         <SheetHeader className="space-y-2 text-left">
@@ -186,7 +179,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
         <SectionCard title="Заметки к брони"><ul className="space-y-1 text-sm">{reservationNotes.map((note) => <li key={note.id} className="rounded-lg bg-secondary p-2">{note.text}</li>)}</ul><div className="mt-2 flex gap-2"><Input aria-label="Заметка к брони" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder="Деталь только для этого приезда" /><Button size="sm" disabled={saving || noteDraft.trim().length < 2} onClick={() => void saveNote()}>Добавить</Button></div></SectionCard>
         {tasks.length > 0 && <SectionCard title="Ближайшие задачи"><ul className="space-y-2 text-sm">{tasks.slice(0, 3).map((task) => <li key={task.id}>{task.title}</li>)}</ul></SectionCard>}
         <SectionCard title="Услуги" description="Запланированные и оказанные услуги связаны со счётом и историей гостя.">
-          {services.length ? <ul className="space-y-2">{services.map((service) => { const item = data.serviceCatalog.find((catalog) => catalog.id === service.catalogItemId); return <li key={service.id} className="rounded-lg border p-2 text-sm"><div className="flex items-center justify-between gap-2"><span className="font-medium">{item?.name ?? "Услуга"}</span><span>{service.status === "scheduled" ? "Запланирована" : service.status === "completed" ? "Оказана" : "Отменена"}</span></div><p className="text-xs text-muted-foreground">{formatDateNumeric(service.startAt)} · {service.entitlementId ? "Включено в пакет" : formatTenge(service.totalAmount)}</p>{service.status === "scheduled" && <div className="mt-2 flex gap-2"><Button size="sm" variant="outline" disabled={saving} onClick={() => void updateService(service.id, "completed")}>Отметить оказанной</Button><Button size="sm" variant="ghost" disabled={saving} onClick={() => void updateService(service.id, "cancelled")}>Отменить</Button></div>}</li>; })}</ul> : <p className="text-sm text-muted-foreground">Услуги пока не запланированы.</p>}
+          {services.length ? <ul className="space-y-2">{services.map((service) => { const item = data.serviceCatalog.find((catalog) => catalog.id === service.catalogItemId); return <li key={service.id} className="rounded-lg border p-2 text-sm"><div className="flex items-center justify-between gap-2"><span className="font-medium">{item?.name ?? "Услуга"}</span><span>{service.status === "scheduled" ? "Запланирована" : service.status === "completed" ? "Оказана" : "Отменена"}</span></div><p className="text-xs text-muted-foreground">{formatDateNumeric(service.startAt)} · {service.entitlementId ? "Включено в пакет" : formatTenge(service.totalAmount)}</p><Button size="sm" variant="outline" className="mt-2" onClick={() => setSelectedServiceId(service.id)}>Открыть · перенести</Button></li>; })}</ul> : <p className="text-sm text-muted-foreground">Услуги пока не запланированы.</p>}
           {!["cancelled", "no_show"].includes(reservation.status) && <Button className="mt-3" variant="outline" onClick={() => setServiceOpen(true)}>Добавить услугу</Button>}
         </SectionCard>
         {packageName && <SectionCard title={`Включено в проживание · ${packageName}`}><ul className="space-y-1 text-sm">{entitlements.map((entitlement) => { const used = services.filter((item) => item.entitlementId === entitlement.id && item.status !== "cancelled").reduce((sum, item) => sum + item.quantity, 0); return <li key={entitlement.id}>{data.serviceCatalog.find((item) => item.id === entitlement.catalogItemId)?.name ?? "Услуга"}: {used} из {entitlement.includedQuantity}</li>; })}</ul></SectionCard>}
@@ -200,7 +193,9 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
           <Button variant="outline" onClick={() => { onClose(); navigate("/reservations"); }} className="gap-2"><Home className="h-4 w-4" />Календарь</Button>
         </div>
       </div> : <p className="py-8 text-sm text-muted-foreground">Бронирование не найдено.</p>}
-      {reservation && <><ServiceBookingDialog reservation={reservation} customerId={stay?.guestId ?? reservation.bookerCustomerId} open={serviceOpen} onOpenChange={setServiceOpen} /><GuestRequestDialog reservationId={reservation.id} open={requestOpen} onOpenChange={setRequestOpen} /></>}
     </SheetContent>
-  </Sheet>;
+  </Sheet>
+    {reservation && <><ServiceBookingDialog reservation={reservation} customerId={stay?.guestId ?? reservation.bookerCustomerId} open={serviceOpen} onOpenChange={setServiceOpen} /><GuestRequestDialog reservationId={reservation.id} open={requestOpen} onOpenChange={setRequestOpen} /></>}
+    <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
+  </>;
 };
