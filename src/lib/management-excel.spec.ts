@@ -13,7 +13,7 @@ describe('management workbook', () => {
     expect(summary.getCell('D5').value).toBe(600_000_000);
     expect(summary.getCell('D6').value).toBe(420_000_000);
     expect(summary.getCell('D7').value).toBe(180_000_000);
-    expect(book.getWorksheet('Объекты')!.rowCount).toBe(7);
+    expect(book.getWorksheet('Объекты')!.rowCount).toBe(6);
     expect(book.getWorksheet('Доходы')!.autoFilter).toBeTruthy();
     expect(book.getWorksheet('Доходы')!.getCell('G5').value).toBe(600_000_000);
     expect(book.getWorksheet('Расходы')!.getCell('G5').value).toBe(420_000_000);
@@ -60,9 +60,9 @@ describe('management workbook', () => {
         articlePlan += plan;
       }
     }
-    expect(hotels).toBe(3);
-    expect(directions).toBe(9);
-    expect(articles).toBe(45);
+    expect(hotels).toBe(2);
+    expect(directions).toBe(6);
+    expect(articles).toBe(30);
     expect(network).toBe(model.revenueTotal.plan);
     expect(hotelPlan).toBe(network);
     expect(directionPlan).toBe(network);
@@ -71,7 +71,7 @@ describe('management workbook', () => {
 
     const expense = book.getWorksheet('Расходы')!;
     expect(expense.getCell('G5').value).toBe(model.expenseTotal.plan);
-    expect(expense.rowCount).toBe(4 + 1 + 3 * 19);
+    expect(expense.rowCount).toBe(4 + 1 + 2 * 19);
 
     const view = revenue.views[0] as { xSplit?: number; ySplit?: number };
     expect(view.xSplit).toBe(4);

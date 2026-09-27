@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ClipboardCheck, AlertTriangle, Clock, CheckCircle2, Sparkles } from "lucide-react";
+import { ClipboardCheck, AlertTriangle, Clock, CheckCircle2, Sparkles, Plus } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { SectionCard } from "@/components/common/SectionCard";
 import { StatCard } from "@/components/common/StatCard";
@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
@@ -49,6 +50,7 @@ const Housekeeping = () => {
     reopenHousekeepingTask,
     skipHousekeepingTask,
     toggleChecklistItem,
+    createHousekeepingTask,
     createMaintenanceTicket,
     data,
   } = useCrm();
@@ -59,6 +61,16 @@ const Housekeeping = () => {
   const [selectedTask, setSelectedTask] = useState<HousekeepingTask | null>(null);
   const [skipDialog, setSkipDialog] = useState<HousekeepingTask | null>(null);
   const [skipReason, setSkipReason] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newRoomId, setNewRoomId] = useState("");
+  const [newType, setNewType] = useState<HousekeepingTaskType>("stayover");
+  const [newDueAt, setNewDueAt] = useState(() => {
+    const due = new Date(); due.setMinutes(0, 0, 0); due.setHours(due.getHours() + 1);
+    return new Date(due.getTime() - due.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  });
+  const [newNotes, setNewNotes] = useState("");
+  const [newGuestWishes, setNewGuestWishes] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const tasks = useMemo(
     () => scoped.housekeepingTasks.filter((task) => typeFilter === "all" || task.type === typeFilter),
@@ -138,6 +150,23 @@ const Housekeeping = () => {
     toast({ title: "Заявка на ремонт создана" });
   };
 
+  const handleCreateHousekeepingTask = async () => {
+    if (!newRoomId || !newDueAt) return;
+    setCreating(true);
+    try {
+      await createHousekeepingTask({ roomId: newRoomId, type: newType, dueAt: new Date(newDueAt).toISOString(),
+        notes: newNotes.trim() || undefined, guestWishes: newGuestWishes.trim() || undefined });
+      toast({ title: "Задача уборки создана" });
+      setCreateOpen(false);
+      setNewNotes("");
+      setNewGuestWishes("");
+    } catch (error) {
+      toast({ title: "Не удалось создать задачу", description: error instanceof Error ? error.message : "Повторите попытку", variant: "destructive" });
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const checklistProgress = (task: HousekeepingTask) => {
     if (task.checklist.length === 0) return 0;
     return Math.round((task.checklist.filter((item) => item.checked).length / task.checklist.length) * 100);
@@ -148,6 +177,7 @@ const Housekeeping = () => {
       <PageHeader
         title="Уборка"
         description="Доска уборки, чек-листы, инспекция и готовность номеров"
+        actions={<Button onClick={() => { setNewRoomId(scoped.rooms[0]?.id ?? ""); setCreateOpen(true); }}><Plus className="mr-1.5 h-4 w-4" />Создать уборку</Button>}
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -434,6 +464,45 @@ const Housekeeping = () => {
             <Button onClick={handleSkip} disabled={!skipReason.trim()}>
               Пропустить
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Создать задачу уборки</DialogTitle>
+            <DialogDescription>Выберите номер, тип и срок выполнения. Задача появится в доске уборки.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="housekeeping-room">Номер</Label>
+              <Select value={newRoomId} onValueChange={setNewRoomId}>
+                <SelectTrigger id="housekeeping-room" className="mt-1"><SelectValue placeholder="Выберите номер" /></SelectTrigger>
+                <SelectContent>
+                  {scoped.rooms.map((room) => <SelectItem key={room.id} value={room.id}>№ {room.number} · {room.category}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="housekeeping-type">Тип уборки</Label>
+                <Select value={newType} onValueChange={(value) => setNewType(value as HousekeepingTaskType)}>
+                  <SelectTrigger id="housekeeping-type" className="mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>{Object.entries(housekeepingTaskTypeLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label htmlFor="housekeeping-due">Срок выполнения</Label>
+                <Input id="housekeeping-due" className="mt-1" type="datetime-local" value={newDueAt} onChange={(event) => setNewDueAt(event.target.value)} />
+              </div>
+            </div>
+            <div><Label htmlFor="housekeeping-notes">Заметка</Label><Textarea id="housekeeping-notes" className="mt-1" rows={2} value={newNotes} onChange={(event) => setNewNotes(event.target.value)} placeholder="Дополнительные указания для сотрудника" /></div>
+            <div><Label htmlFor="housekeeping-wishes">Пожелания гостя</Label><Textarea id="housekeeping-wishes" className="mt-1" rows={2} value={newGuestWishes} onChange={(event) => setNewGuestWishes(event.target.value)} placeholder="Например: не использовать ароматизаторы" /></div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateOpen(false)}>Отмена</Button>
+            <Button onClick={() => void handleCreateHousekeepingTask()} disabled={!newRoomId || !newDueAt || creating}>{creating ? "Создаём…" : "Создать задачу"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

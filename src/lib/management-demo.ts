@@ -1,5 +1,5 @@
 /** Deterministic presentation ledger. No API or database writes. Amounts are KZT. */
-export type DemoPropertyId = 'les_borovoe' | 'les_astana' | 'les_alakol';
+export type DemoPropertyId = 'les_borovoe' | 'les_astana';
 export type ReportKind = 'revenue' | 'expense';
 export type ReportFilters = { year: 2025 | 2026; month: number | null; day: number | null; propertyId: DemoPropertyId | 'all' };
 export type Metrics = { plan: number; planToDate: number; actual: number; ly: number; lytd: number; forecast: number; remaining: number; requiredPerDay: number };
@@ -9,7 +9,6 @@ export const DEMO_AS_OF = new Date(2026, 8, 18);
 export const DEMO_PROPERTIES: { id: DemoPropertyId; name: string; shortName: string }[] = [
   { id: 'les_borovoe', name: 'ЛЕС Боровое', shortName: 'Боровое' },
   { id: 'les_astana', name: 'ЛЕС Астана', shortName: 'Астана' },
-  { id: 'les_alakol', name: 'ЛЕС Алаколь', shortName: 'Алаколь' },
 ];
 
 type DemoLine = { id: string; label: string; group: string; annual: number; shares: [number, number, number]; season: 'leisure' | 'city' | 'steady' | 'banquet'; account?: string; actualFactor?: number };
@@ -90,7 +89,8 @@ const dayCount = (start: Date, end: Date) => Math.max(0, Math.round((dateNumber(
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 function annualFor(line: DemoLine, propertyIndex: number, year: number, mode: 'plan' | 'actual'): number {
-  const share = allocate(line.annual, line.shares)[propertyIndex];
+  const twoPropertyShares = [line.shares[0] + line.shares[2] / 2, line.shares[1] + line.shares[2] / 2];
+  const share = allocate(line.annual, twoPropertyShares)[propertyIndex];
   const factor = mode === 'plan' ? (year === 2025 ? 0.9 : 1) : year === 2024 ? 0.84 : year === 2025 ? 0.92 : (line.actualFactor ?? 1);
   return Math.round(share * factor);
 }

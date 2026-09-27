@@ -161,7 +161,7 @@ export function buildManagementWorkbook(model: ManagementModel): ExcelJS.Workboo
   workbook.creator = 'Guestra Management Demo';
   workbook.created = DEMO_AS_OF;
   const period = filters.month ? `${String(filters.month).padStart(2, '0')}.${filters.year}` : String(filters.year);
-  const selected = filters.propertyId === 'all' ? 'Вся сеть (3 отеля)' : model.revenueRows[0]?.label ?? 'Отель';
+  const selected = filters.propertyId === 'all' ? 'Вся сеть (2 объекта)' : model.revenueRows[0]?.label ?? 'Отель';
   const note = `Период: ${period}${filters.day ? `, срез на ${filters.day} число` : ''} · Объект: ${selected} · Суммы в тенге (KZT) · ДЕМО: моделируемые суммы`;
 
   sheet(workbook, 'Сводка', 'Управленческая картина', note, [

@@ -223,7 +223,7 @@ interface CrmContextValue {
     guestWishes?: string;
     leadId?: string;
     guestId?: string;
-  }) => void;
+  }) => Promise<void>;
   // Maintenance actions
   createMaintenanceTicket: (input: {
     roomId?: string;
@@ -1545,8 +1545,8 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
   }, [dataMode, persist]);
 
   const createHousekeepingTask = useCallback(
-    (input: { roomId: string; type: HousekeepingTaskType; priority?: number; dueAt: string; notes?: string; guestWishes?: string; leadId?: string; guestId?: string }) => {
-      if (dataMode === "database") { void persist("/api/crm/housekeeping", { method: "POST", body: JSON.stringify(input) }); return; }
+    async (input: { roomId: string; type: HousekeepingTaskType; priority?: number; dueAt: string; notes?: string; guestWishes?: string; leadId?: string; guestId?: string }) => {
+      if (dataMode === "database") { await persist("/api/crm/housekeeping", { method: "POST", body: JSON.stringify(input) }); return; }
       const taskId = `hk_new_${Date.now()}`;
       setData((previous) => {
         const room = previous.rooms.find((item) => item.id === input.roomId);

@@ -165,7 +165,7 @@ export default function ManagementReport({ initialPropertyId = 'all' }: { initia
         <label>День / срез<select value={filters.day ?? 'all'} disabled={!filters.month} onChange={(event) => update({ day: event.target.value === 'all' ? null : Number(event.target.value) })}><option value="all">Весь месяц</option>{Array.from({ length: daysInMonth }, (_, index) => <option key={index} value={index + 1}>{index + 1} число</option>)}</select></label>
         <div className="mrr-filter-divider" />
         <span className="mrr-filter-label">Объект</span>
-        <div className="mrr-property-list"><button className={filters.propertyId === 'all' ? 'active' : ''} onClick={() => update({ propertyId: 'all' })}><Landmark size={16} /> Вся сеть <small>3 отеля</small></button>{DEMO_PROPERTIES.map((property) => <button key={property.id} className={filters.propertyId === property.id ? 'active' : ''} onClick={() => update({ propertyId: property.id })}><span className="mrr-property-dot" />{property.name}</button>)}</div>
+        <div className="mrr-property-list"><button className={filters.propertyId === 'all' ? 'active' : ''} onClick={() => update({ propertyId: 'all' })}><Landmark size={16} /> Вся сеть <small>2 объекта</small></button>{DEMO_PROPERTIES.map((property) => <button key={property.id} className={filters.propertyId === property.id ? 'active' : ''} onClick={() => update({ propertyId: property.id })}><span className="mrr-property-dot" />{property.name}</button>)}</div>
         <div className="mrr-filter-note"><strong>Бюджет {filters.year} · v1</strong><span>Годовой план сети — {filters.year === 2026 ? '600' : '540'} млн ₸. Суммы показываются в тенге, без смешения с оплатами.</span></div>
       </aside>
 

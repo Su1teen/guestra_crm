@@ -988,13 +988,16 @@ export const createCrmRouter = (db: Database) => {
   });
 
   router.post("/housekeeping", async (request, response) => {
-    const body = z.object({ roomId: z.string(), type: z.string(), priority: z.number().int().optional(), dueAt: z.string().datetime(), notes: z.string().optional(), guestWishes: z.string().optional(), leadId: z.string().optional(), guestId: z.string().optional() }).parse(request.body);
+    const body = z.object({ roomId: z.string(), type: z.enum(["checkout", "stayover", "deep_clean", "touch_up", "inspection", "special_request"]), priority: z.number().int().min(1).max(5).optional(), dueAt: z.string().datetime(), notes: z.string().optional(), guestWishes: z.string().optional(), leadId: z.string().optional(), guestId: z.string().optional() }).parse(request.body);
     const [room] = await db.select().from(s.rooms).where(eq(s.rooms.id, body.roomId)).limit(1);
     if (!room) return response.status(404).json({ error: "Номер не найден" });
     const taskId = id("housekeeping");
-    const [task] = await db.insert(s.housekeepingTasks).values({ id: taskId, roomId: room.id, propertyId: room.propertyId, type: body.type, status: "pending", priority: body.priority ?? 3, dueAt: body.dueAt, serviceDate: now(), notes: body.notes, guestWishes: body.guestWishes, leadId: body.leadId, guestId: body.guestId, estimatedMinutes: body.type === "deep_clean" ? 90 : body.type === "checkout" ? 45 : 30 }).returning();
     const labels = body.type === "checkout" ? ["Смена постельного белья", "Замена полотенец", "Уборка санузла"] : ["Подготовка номера", "Проверка комплектации"];
-    await db.insert(s.housekeepingChecklistItems).values(labels.map((label, position) => ({ id: id("check"), taskId, label, checked: false, position })));
+    const task = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(s.housekeepingTasks).values({ id: taskId, roomId: room.id, propertyId: room.propertyId, type: body.type, status: "pending", priority: body.priority ?? 3, dueAt: body.dueAt, serviceDate: now(), notes: body.notes, guestWishes: body.guestWishes, leadId: body.leadId, guestId: body.guestId, estimatedMinutes: body.type === "deep_clean" ? 90 : body.type === "checkout" ? 45 : 30 }).returning();
+      await tx.insert(s.housekeepingChecklistItems).values(labels.map((label, position) => ({ id: id("check"), taskId, label, checked: false, position })));
+      return created;
+    });
     response.status(201).json(task);
   });
   router.patch("/housekeeping/:id", async (request, response) => {

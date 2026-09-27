@@ -3,6 +3,17 @@ import { crmDataset } from "@/data/dataset";
 import { properties, employees } from "@/data/reference";
 
 describe("Dataset consistency", () => {
+  it("contains only the two active properties and a short standalone demo conversation", () => {
+    expect(crmDataset.properties.map((property) => property.id)).toEqual(["les_borovoe", "les_astana"]);
+    const guest = crmDataset.guests.find((item) => item.fullName === "Султан Советов");
+    const conversation = crmDataset.conversations.find((item) => item.id === "conv_sultan_sovetov");
+    expect(guest).toBeTruthy();
+    expect(conversation).toMatchObject({ guestId: guest?.id, propertyId: "les_borovoe", status: "open" });
+    expect(conversation?.messages).toHaveLength(3);
+    expect(conversation?.summary?.dates).toBe("29–30 сентября");
+    expect(conversation?.reservationId).toBeUndefined();
+  });
+
   it("каждый лид ссылается на существующего гостя", () => {
     const guestIds = new Set(crmDataset.guests.map((guest) => guest.id));
     crmDataset.leads.forEach((lead) => {

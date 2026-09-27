@@ -6,7 +6,7 @@ export const organization: Organization = {
   name: "ЛЕС",
   legalName: 'Сеть загородных отелей ЛЕС',
   currency: "KZT",
-  propertyIds: ["les_borovoe", "les_astana", "les_alakol"],
+  propertyIds: ["les_borovoe", "les_astana"],
 };
 
 export const properties: Property[] = [
@@ -23,13 +23,6 @@ export const properties: Property[] = [
     shortName: "Астана",
     city: "Астана",
     roomTypes: ["Делюкс-номер", "Стандартный номер", "Люкс", "Апартаменты"],
-  },
-  {
-    id: "les_alakol",
-    name: "ЛЕС Алаколь",
-    shortName: "Алаколь",
-    city: "Алаколь, Алматинская область",
-    roomTypes: ["Пляжный домик", "Стандартный номер"],
   },
 ];
 
@@ -64,7 +57,7 @@ export const employees: Employee[] = [
     role: "Руководитель отдела продаж",
     email: "sultan@les.kz",
     phone: "+7 701 244 18 90",
-    propertyIds: ["les_borovoe", "les_astana", "les_alakol"],
+    propertyIds: ["les_borovoe", "les_astana"],
   },
   {
     id: "emp_aigerim",
@@ -84,7 +77,7 @@ export const employees: Employee[] = [
     role: "Менеджер по продажам",
     email: "daniyar@les.kz",
     phone: "+7 702 118 76 03",
-    propertyIds: ["les_borovoe", "les_alakol"],
+    propertyIds: ["les_borovoe"],
   },
   {
     id: "emp_aliya",
@@ -124,7 +117,7 @@ export const employees: Employee[] = [
     role: "Менеджер по продажам",
     email: "erzhan@les.kz",
     phone: "+7 747 810 33 76",
-    propertyIds: ["les_astana", "les_alakol"],
+    propertyIds: ["les_astana"],
   },
   {
     id: "emp_dinara",

@@ -603,6 +603,37 @@ describe("operational guest journey", () => {
     return agent;
   };
 
+  it("creates a housekeeping task with its checklist and returns it after reload", async () => {
+    const agent = await admin();
+    await db.insert(s.rooms).values({ id: "room_create_housekeeping_test", number: "TEST-HK-1",
+      propertyId: "les_borovoe", category: "Sky House", floor: 1, zone: "Тестовая зона", status: "vacant_clean" });
+    const dueAt = new Date(Date.now() + 3_600_000).toISOString();
+    const created = await agent.post("/api/crm/housekeeping").send({
+      roomId: "room_create_housekeeping_test", type: "deep_clean", priority: 2,
+      dueAt, notes: "TEST: генеральная уборка",
+    }).expect(201);
+
+    expect(created.body).toMatchObject({ roomId: "room_create_housekeeping_test", propertyId: "les_borovoe",
+      type: "deep_clean", status: "pending", priority: 2, notes: "TEST: генеральная уборка" });
+    expect(await db.select().from(s.housekeepingChecklistItems).where(eq(s.housekeepingChecklistItems.taskId, created.body.id))).toHaveLength(2);
+    const refreshed = await agent.get("/api/crm/bootstrap").expect(200);
+    expect(refreshed.body.housekeepingTasks.find((task: { id: string }) => task.id === created.body.id))
+      .toMatchObject({ roomId: "room_create_housekeeping_test", type: "deep_clean", notes: "TEST: генеральная уборка" });
+  });
+
+  it("does not return the retired Alakol property from bootstrap", async () => {
+    const agent = await admin();
+    await db.insert(s.properties).values({ id: "les_alakol", organizationId: "org_les_live",
+      name: "ЛЕС Алаколь", shortName: "Алаколь", city: "Алаколь", roomTypes: [] });
+    try {
+      const response = await agent.get("/api/crm/bootstrap").expect(200);
+      expect(response.body.properties.map((property: { id: string }) => property.id)).toEqual(["les_borovoe", "les_astana"]);
+      expect(response.body.organization.propertyIds).toEqual(["les_borovoe", "les_astana"]);
+    } finally {
+      await db.delete(s.properties).where(eq(s.properties.id, "les_alakol"));
+    }
+  });
+
   it("checks in once, tracks requests and services, then checks out into housekeeping once", async () => {
     const agent = await admin();
     const arrivalAt = new Date(Date.now() - 3_600_000).toISOString();

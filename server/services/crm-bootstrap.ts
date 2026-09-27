@@ -61,8 +61,9 @@ export const loadCrmDataset = async (db: Database) => {
   const activeMaintenanceByRoom = new Map(maintenanceRows.filter((row) => row.roomId && !["verified", "cancelled"].includes(row.status)).map((row) => [row.roomId!, row.id]));
   const maintenanceByHousekeeping = new Map(maintenanceRows.filter((row) => row.housekeepingTaskId).map((row) => [row.housekeepingTaskId!, row.id]));
 
-  const organization = { id: org.id, name: org.name, legalName: org.legalName, currency: "KZT", propertyIds: propertyRows.map((row) => row.id) };
-  const properties = propertyRows.map((row) => ({ id: row.id, name: row.name, shortName: row.shortName, city: row.city, roomTypes: row.roomTypes ?? [] }));
+  const activePropertyRows = propertyRows.filter((row) => row.id !== "les_alakol");
+  const organization = { id: org.id, name: org.name, legalName: org.legalName, currency: "KZT", propertyIds: activePropertyRows.map((row) => row.id) };
+  const properties = activePropertyRows.map((row) => ({ id: row.id, name: row.name, shortName: row.shortName, city: row.city, roomTypes: row.roomTypes ?? [] }));
   const employees = employeeRows.map((row) => ({ id: row.id, name: row.name, shortName: row.shortName, initials: row.initials, role: row.role, email: row.email, phone: row.phone, propertyIds: (employeePropertiesByEmployee.get(row.id) ?? []).map((item) => item.propertyId) }));
   const guests = guestRows.map((row) => {
     const identity = (row.identityMetadata ?? {}) as Record<string, unknown>;

@@ -142,7 +142,7 @@ const guestSeeds: GuestSeed[] = [
   { first: "Гульмира", last: "Абдрахманова", stays: 3, homeProperty: "les_astana", lastStayDaysAgo: 205 },
   { first: "Азамат", last: "Оспанов", stays: 0 },
   { first: "Сабина", last: "Ибраева", stays: 2, homeProperty: "les_borovoe", lastStayDaysAgo: 73 },
-  { first: "Данияр", last: "Ахметжанов", stays: 1, homeProperty: "les_alakol", lastStayDaysAgo: 240 },
+  { first: "Данияр", last: "Ахметжанов", stays: 1, homeProperty: "les_astana", lastStayDaysAgo: 240 },
   { first: "Алия", last: "Ниязова", stays: 6, vip: true, homeProperty: "les_borovoe", lastStayDaysAgo: 8 },
   { first: "Бекзат", last: "Сагинтаев", stays: 1, homeProperty: "les_astana", lastStayDaysAgo: 96 },
   { first: "Жанна", last: "Каиржанова", stays: 2, homeProperty: "les_borovoe", lastStayDaysAgo: 33 },
@@ -154,7 +154,7 @@ const guestSeeds: GuestSeed[] = [
   { first: "Раушан", last: "Ермекова", stays: 1, homeProperty: "les_borovoe", lastStayDaysAgo: 152 },
   { first: "Санжар", last: "Дуйсенов", stays: 0 },
   { first: "Татьяна", last: "Мельникова", stays: 2, homeProperty: "les_borovoe", lastStayDaysAgo: 88 },
-  { first: "Улан", last: "Абишев", stays: 1, homeProperty: "les_alakol", lastStayDaysAgo: 310 },
+  { first: "Улан", last: "Абишев", stays: 1, homeProperty: "les_borovoe", lastStayDaysAgo: 310 },
   { first: "Фарида", last: "Хамитова", stays: 3, vip: true, homeProperty: "les_astana", lastStayDaysAgo: 22 },
   { first: "Чингиз", last: "Аскаров", stays: 1, company: "Kaspi.kz", homeProperty: "les_astana", lastStayDaysAgo: 66 },
   { first: "Шолпан", last: "Байсеитова", stays: 2, homeProperty: "les_borovoe", lastStayDaysAgo: 129 },
@@ -1479,10 +1479,6 @@ const roomCategoriesByProperty: Record<PropertyId, { category: string; floors: n
     { category: "Люкс", floors: 3, perFloor: 3 },
     { category: "Апартаменты", floors: 3, perFloor: 2 },
   ],
-  les_alakol: [
-    { category: "Пляжный домик", floors: 1, perFloor: 8 },
-    { category: "Стандартный номер", floors: 2, perFloor: 6 },
-  ],
 };
 
 const rooms: Room[] = [];
@@ -1530,7 +1526,6 @@ properties.forEach((property) => {
 const housekeepingStaffByProperty: Record<PropertyId, string[]> = {
   les_borovoe: ["emp_aigerim", "emp_daniyar", "emp_dinara"],
   les_astana: ["emp_aliya", "emp_kamila", "emp_erzhan"],
-  les_alakol: ["emp_daniyar", "emp_erzhan"],
 };
 
 const checklistTemplates: Record<HousekeepingTaskType, ChecklistItem[]> = {
@@ -1885,6 +1880,53 @@ if (inHouseReservation) {
       roomId: inHouseRoom?.id, propertyId: inHouseReservation.propertyId, description: "Запрос из WhatsApp во время проживания." });
   }
 }
+
+// Короткий пример нового диалога о бронировании для демо-входа.
+const sultanSeedGuest = guests.find((guest) => guest.staysCount === 0) ?? guests[0];
+const sultanGuest: Guest = {
+  ...sultanSeedGuest,
+  id: "guest_sultan_sovetov",
+  firstName: "Султан",
+  lastName: "Советов",
+  fullName: "Султан Советов",
+  phone: null,
+  email: null,
+  normalizedPhone: null,
+  normalizedEmail: null,
+  profileStatus: "stub",
+  staysCount: 0,
+  propertyIds: [],
+  preferredPropertyId: "les_borovoe",
+  lifetimeValue: 0,
+  createdAt: minutesAgo(14),
+};
+guests.push(sultanGuest);
+const sultanConversationId = "conv_sultan_sovetov";
+const sultanConversationTime = minutesAgo(2);
+const sultanConversationBase = conversations[0];
+conversations.push({
+  ...sultanConversationBase,
+  id: sultanConversationId,
+  guestId: sultanGuest.id,
+  leadId: undefined,
+  offerId: undefined,
+  reservationId: undefined,
+  stayId: undefined,
+  channel: "whatsapp",
+  propertyId: "les_borovoe",
+  assigneeId: employees[0].id,
+  status: "open",
+  unreadCount: 1,
+  lastMessageAt: sultanConversationTime,
+  messages: [
+    { id: sultanConversationId + "_m1", conversationId: sultanConversationId, direction: "in", text: "Здравствуйте! Хочу забронировать номер на 29–30 сентября.", at: minutesAgo(12) },
+    { id: sultanConversationId + "_m2", conversationId: sultanConversationId, direction: "out", employeeId: employees[0].id, text: "Добрый день, Султан! Подскажите, пожалуйста, сколько будет гостей?", at: minutesAgo(7) },
+    { id: sultanConversationId + "_m3", conversationId: sultanConversationId, direction: "in", text: "Нас двое взрослых.", at: sultanConversationTime },
+  ],
+  summary: { text: "Бронирование номера на 29–30 сентября", dates: "29–30 сентября", guests: 2, category: "Номер", wishes: [], nextAction: "Подобрать свободный номер" },
+  firstResponseAt: minutesAgo(7),
+  closeResult: undefined,
+});
 
 const demoConversations = conversations.map((conversation) => {
   const reservation = demoReservations.find((item) => item.requestId === conversation.leadId);
