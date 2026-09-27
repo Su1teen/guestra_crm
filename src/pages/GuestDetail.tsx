@@ -11,6 +11,7 @@ import { SegmentedTabs } from "@/components/common/Filters";
 import { CreateTaskDialog } from "@/components/crm/CreateTaskDialog";
 import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
 import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDialog";
+import { CreateQuickReservationDialog } from "@/components/crm/CreateQuickReservationDialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useCrm } from "@/store/crm-store";
@@ -51,6 +52,7 @@ const GuestDetail = () => {
   const [note, setNote] = useState("");
   const [serviceOpen, setServiceOpen] = useState(false);
   const [selectedServiceId, setSelectedServiceId] = useState<string>();
+  const [reservationOpen, setReservationOpen] = useState(false);
 
   const guest = guestById(guestId);
 
@@ -145,6 +147,7 @@ const GuestDetail = () => {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => setServiceOpen(true)}>Забронировать услугу</Button>
+          <Button variant="outline" onClick={() => setReservationOpen(true)}>+ Добавить проживание</Button>
           <CreateTaskDialog
             trigger={
               <Button variant="outline" className="gap-2">
@@ -489,6 +492,8 @@ const GuestDetail = () => {
         </div>
       )}
       <ServiceBookingDialog customerId={guest.id} propertyId={guest.preferredPropertyId} open={serviceOpen} onOpenChange={setServiceOpen} />
+      <CreateQuickReservationDialog open={reservationOpen} onOpenChange={setReservationOpen}
+        initialGuestId={guest.id} initialPropertyId={guest.preferredPropertyId} />
       <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
     </div>
   );

@@ -1,20 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useCrm } from "@/store/crm-store";
 import { useToast } from "@/hooks/use-toast";
 import type { ServiceAvailabilityResult } from "@shared/service-availability";
 import { formatTenge } from "@/lib/format";
 import { propertyDate, propertyDateTimeIso, propertyTime } from "@/lib/service-time";
+import { CreateQuickReservationDialog } from "@/components/crm/CreateQuickReservationDialog";
 
 type Slot = ServiceAvailabilityResult & { startAt: string; endAt: string };
 const formatAt = (iso: string, timeZone: string) => new Date(iso).toLocaleString("ru-RU", { timeZone,
   day: "2-digit", month: "long", hour: "2-digit", minute: "2-digit" });
 
 export const ServiceReservationDialog = ({ serviceId, onOpenChange }: { serviceId?: string; onOpenChange: (open: boolean) => void }) => {
-  const { data, getServiceAvailability, rescheduleService, changeServiceStatus } = useCrm();
+  const { data, getServiceAvailability, rescheduleService, changeServiceStatus, linkServiceToReservation } = useCrm();
   const { toast } = useToast();
   const service = data.serviceReservations.find((item) => item.id === serviceId);
   const catalog = data.serviceCatalog.find((item) => item.id === service?.catalogItemId);
@@ -25,7 +26,11 @@ export const ServiceReservationDialog = ({ serviceId, onOpenChange }: { serviceI
   const [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [quickReservationOpen, setQuickReservationOpen] = useState(false);
+  const [newReservationId, setNewReservationId] = useState<string>();
+  const [linkBusy, setLinkBusy] = useState(false);
   const activeAllocations = data.serviceResourceAllocations.filter((item) => item.serviceReservationId === serviceId && item.status === "active");
+  const newReservation = data.reservations.find((item) => item.id === newReservationId);
   const window = catalog?.metadata?.bookingWindow as { start?: string; end?: string; timeZone?: string } | undefined;
   const timeZone = window?.timeZone ?? "Asia/Qyzylorda";
   const startsAt = useMemo(() => {
@@ -64,7 +69,7 @@ export const ServiceReservationDialog = ({ serviceId, onOpenChange }: { serviceI
     } catch (error) { toast({ title: "Не удалось изменить услугу", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); }
     finally { setBusy(false); }
   };
-  return <Dialog open={Boolean(serviceId)} onOpenChange={onOpenChange}><DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto">
+  return <><Dialog open={Boolean(serviceId)} onOpenChange={onOpenChange}><DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto">
     <DialogHeader><DialogTitle>{catalog?.name ?? "Услуга"}</DialogTitle><DialogDescription>{customer?.fullName ?? "Гость"} · {service?.status === "scheduled" ? "Запланирована" : service?.status === "completed" ? "Оказана" : "Отменена"}</DialogDescription></DialogHeader>
     {service && <div className="space-y-4 text-sm">
       <div className="rounded-lg bg-secondary p-3"><p className="font-medium">{formatAt(service.startAt, timeZone)}{service.endAt ? ` — ${propertyTime(service.endAt, timeZone)}` : ""}</p>
@@ -77,6 +82,7 @@ export const ServiceReservationDialog = ({ serviceId, onOpenChange }: { serviceI
       <div className="flex flex-wrap gap-3 text-xs"><Link className="text-brand-700 underline" to={`/guests/${service.customerId}`} onClick={() => onOpenChange(false)}>Профиль гостя</Link>
         {service.requestId && <Link className="text-brand-700 underline" to={`/requests/${service.requestId}`} onClick={() => onOpenChange(false)}>Обращение</Link>}
         {service.reservationId && <Link className="text-brand-700 underline" to={`/reservations?reservation=${service.reservationId}`} onClick={() => onOpenChange(false)}>Бронь проживания</Link>}</div>
+      {!service.reservationId && <Button size="sm" variant="outline" onClick={() => setQuickReservationOpen(true)}>+ Добавить проживание</Button>}
       {service.status === "scheduled" && <>
         <div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => { setMoving((value) => !value); setDate(propertyDate(service.startAt, timeZone)); }}>Перенести</Button>
           <Button size="sm" variant="outline" disabled={busy} onClick={() => void run("completed")}>Отметить оказанной</Button>
@@ -87,5 +93,18 @@ export const ServiceReservationDialog = ({ serviceId, onOpenChange }: { serviceI
           <Button size="sm" disabled={!selected || busy} onClick={() => void run("move")}>Сохранить перенос</Button></div>}
       </>}
     </div>}
-  </DialogContent></Dialog>;
+  </DialogContent></Dialog>
+    <CreateQuickReservationDialog open={quickReservationOpen} onOpenChange={setQuickReservationOpen}
+      initialGuestId={service?.customerId} initialPropertyId={service?.propertyId}
+      initialDate={service ? propertyDate(service.startAt, timeZone) : undefined}
+      navigateOnCreated={false}
+      onCreated={setNewReservationId} />
+    <Dialog open={Boolean(newReservationId)} onOpenChange={(open) => !open && setNewReservationId(undefined)}><DialogContent>
+      <DialogHeader><DialogTitle>Связать услугу с проживанием?</DialogTitle><DialogDescription>{customer?.fullName ?? "Клиент"} уже записан на эту услугу. Связывание сохранит бронь в контексте проживания. Объединение счёта перенесёт строку услуги и связанные с отдельным счётом платежи без повторного начисления.</DialogDescription></DialogHeader>
+      <p className="rounded-lg bg-secondary p-3 text-sm">{catalog?.name ?? "Услуга"} · {service ? formatAt(service.startAt, timeZone) : ""}<br />Проживание · {newReservation?.code ?? "новая бронь"}</p>
+      <DialogFooter className="flex-wrap sm:justify-between"><Button variant="ghost" disabled={linkBusy} onClick={() => setNewReservationId(undefined)}>Позже</Button>
+        <Button variant="outline" disabled={linkBusy || !service || !newReservation} onClick={() => void (async () => { if (!service || !newReservation) return; setLinkBusy(true); try { await linkServiceToReservation(service.id, newReservation.id, false); toast({ title: "Услуга связана, счёт оставлен отдельно" }); setNewReservationId(undefined); } catch (error) { toast({ title: "Не удалось связать услугу", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); } finally { setLinkBusy(false); } })()}>Связать, оставить счёт отдельно</Button>
+        <Button disabled={linkBusy || !service || !newReservation} onClick={() => void (async () => { if (!service || !newReservation) return; setLinkBusy(true); try { await linkServiceToReservation(service.id, newReservation.id, true); toast({ title: "Услуга перенесена в счёт проживания" }); setNewReservationId(undefined); } catch (error) { toast({ title: "Не удалось объединить счета", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); } finally { setLinkBusy(false); } })()}>{linkBusy ? "Связываем…" : "Связать и перенести счёт"}</Button>
+      </DialogFooter>
+    </DialogContent></Dialog></>;
 };

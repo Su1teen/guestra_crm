@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { crmDataset } from "@/data/dataset";
 import { synthesizeFolio } from "./journey";
-import { bookDemoService, changeDemoServiceStatus } from "./service-demo-booking";
+import { bookDemoService, changeDemoServiceStatus, linkDemoServiceToReservation } from "./service-demo-booking";
+import { propertyDate, propertyDateTimeIso } from "@/lib/service-time";
 
 describe("demo service booking", () => {
   it("adds a service to the existing accommodation total and restores it on cancel", () => {
@@ -33,5 +34,23 @@ describe("demo service booking", () => {
     expect(service.stayId).toBeUndefined();
     expect(service.folioId).toBe(original.id);
     expect(booked.folios.find((item) => item.id === original.id)?.totalAmount).toBe(original.totalAmount + 12_000);
+  });
+
+  it("links a service-only guest into a stay and transfers the charge once", () => {
+    const reservation = crmDataset.reservations.find((item) => item.propertyId === "les_borovoe" && item.requestId)!;
+    const request = crmDataset.leads.find((item) => item.id === reservation.requestId)!;
+    const original = synthesizeFolio(request, crmDataset.payments);
+    const startAt = propertyDateTimeIso(propertyDate(reservation.arrivalAt, "Asia/Qyzylorda"), "16:00", "Asia/Qyzylorda");
+    const standalone = bookDemoService(crmDataset, { customerId: reservation.bookerCustomerId, propertyId: reservation.propertyId,
+      catalogItemId: "svc_spa_visit", startAt, participants: 1, quantity: 1, idempotencyKey: "TEST-DEMO-LINK-SPA" });
+    const service = standalone.serviceReservations.find((item) => item.id === "TEST-DEMO-LINK-SPA")!;
+    const linked = linkDemoServiceToReservation(standalone, service.id, reservation.id, true);
+    const linkedService = linked.serviceReservations.find((item) => item.id === service.id)!;
+    const destination = linked.folios.find((item) => item.reservationId === reservation.id)!;
+    expect(linkedService).toMatchObject({ reservationId: reservation.id, stayId: linked.stays.find((stay) => stay.reservationId === reservation.id)?.id,
+      folioId: destination.id });
+    expect(destination.totalAmount).toBe(original.totalAmount + 12_000);
+    expect(destination.lines.filter((line) => line.id === service.folioLineId)).toHaveLength(1);
+    expect(linked.folios.find((item) => item.id === service.folioId)?.status).toBe("closed");
   });
 });

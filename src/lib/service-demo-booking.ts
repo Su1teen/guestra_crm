@@ -37,6 +37,53 @@ const recalc = (folio: CrmDataset["folios"][number]) => {
     updatedAt: new Date().toISOString() };
 };
 
+export const linkDemoServiceToReservation = (data: CrmDataset, serviceId: string, reservationId: string, mergeFolio: boolean): CrmDataset => {
+  const service = data.serviceReservations.find((item) => item.id === serviceId);
+  const reservation = data.reservations.find((item) => item.id === reservationId);
+  if (!service || !reservation) throw new Error("Услуга или бронь не найдена");
+  if (service.reservationId === reservation.id && (!mergeFolio || service.folioId === data.folios.find((item) => item.reservationId === reservation.id)?.id)) return data;
+  if (["cancelled", "no_show", "completed"].includes(reservation.status)) throw new Error("Завершённую бронь нельзя изменить");
+  if (service.status === "cancelled") throw new Error("Отменённую услугу нельзя связать с проживанием");
+  if (service.customerId !== reservation.bookerCustomerId && !data.reservationGuests.some((item) => item.reservationId === reservation.id && item.customerId === service.customerId))
+    throw new Error("Услуга принадлежит другому клиенту");
+  if (service.propertyId !== reservation.propertyId) throw new Error("Услуга и бронь относятся к разным объектам");
+  const dateKey = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
+  if (dateKey(service.startAt) < dateKey(reservation.arrivalAt) || dateKey(service.startAt) >= dateKey(reservation.departureAt))
+    throw new Error("Услуга не попадает в даты проживания");
+  const stay = data.stays.find((item) => item.reservationId === reservation.id);
+  let folios = data.folios;
+  let payments = data.payments;
+  let target = data.folios.find((item) => item.reservationId === reservation.id);
+  if (mergeFolio) {
+    if (!target) {
+      const timestamp = new Date().toISOString();
+      const request = reservation.requestId ? data.leads.find((item) => item.id === reservation.requestId) : undefined;
+      target = request ? { ...synthesizeFolio(request, payments), reservationId: reservation.id, stayId: stay?.id,
+        code: `F-${reservation.code}` } : { id: `folio_${crypto.randomUUID()}`, code: `F-${reservation.code}`, reservationId: reservation.id,
+        stayId: stay?.id, guestId: reservation.bookerCustomerId, propertyId: reservation.propertyId,
+        status: "open", currency: reservation.currency, subtotal: 0, discountAmount: 0, totalAmount: 0,
+        depositRequired: 0, paidAmount: 0, balance: 0, createdAt: timestamp, updatedAt: timestamp, lines: [] };
+      folios = [target, ...folios];
+    }
+    const source = data.folios.find((item) => item.id === service.folioId);
+    if (source && source.id !== target.id) {
+      const active = source.lines.filter((line) => line.status === "active");
+      if (active.some((line) => line.id !== service.folioLineId)) throw new Error("В отдельном счёте есть другие услуги. Оставьте его отдельным или сначала свяжите услуги отдельно.");
+      const moved = source.lines.filter((line) => line.id === service.folioLineId).map((line) => ({ ...line, folioId: target!.id }));
+      const paymentsToMove = payments.filter((payment) => payment.folioId === source.id);
+      payments = payments.map((payment) => payment.folioId === source.id ? { ...payment, folioId: target!.id,
+        reservationId: reservation.id, stayId: stay?.id } : payment);
+      folios = folios.map((folio) => folio.id === source.id ? recalc({ ...folio, paidAmount: 0,
+        status: "closed", lines: folio.lines.filter((line) => line.id !== service.folioLineId) }) : folio.id === target!.id ?
+        recalc({ ...folio, paidAmount: folio.paidAmount + paymentsToMove.filter((payment) => payment.status === "paid").reduce((sum, payment) => sum + payment.amount, 0),
+          lines: [...folio.lines, ...moved] }) : folio);
+    }
+  }
+  return { ...data, payments, folios, serviceReservations: data.serviceReservations.map((item) => item.id === service.id ? {
+    ...item, reservationId: reservation.id, stayId: stay?.id, ...(mergeFolio ? { folioId: target?.id } : {}),
+  } : item) };
+};
+
 export const bookDemoService = (data: CrmDataset, input: ServiceBookingInput): CrmDataset => {
   if (data.serviceReservations.some((item) => item.id === input.idempotencyKey)) return data;
   const catalog = data.serviceCatalog.find((item) => item.id === input.catalogItemId && item.propertyId === input.propertyId && item.active);

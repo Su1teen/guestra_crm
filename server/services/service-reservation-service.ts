@@ -175,6 +175,54 @@ export const changeServiceStatus = async (tx: Tx, serviceId: string, status: "co
   return { service: updated, duplicate: false };
 };
 
+/** Link an existing standalone service to a stay; optional folio transfer is explicit and atomic. */
+export const linkServiceToReservation = async (tx: Tx, serviceId: string, reservationId: string, mergeFolio: boolean, employeeId?: string) => {
+  await tx.execute(sql`SELECT id FROM reservations WHERE id = ${reservationId} FOR UPDATE`);
+  const [reservation] = await tx.select().from(s.reservations).where(eq(s.reservations.id, reservationId)).limit(1);
+  if (!reservation) throw new ServiceConflict("Бронь проживания не найдена");
+  await tx.execute(sql`SELECT id FROM service_reservations WHERE id = ${serviceId} FOR UPDATE`);
+  const [service] = await tx.select().from(s.serviceReservations).where(eq(s.serviceReservations.id, serviceId)).limit(1);
+  if (!service) return null;
+  if (service.reservationId === reservation.id && (!mergeFolio || !service.folioId)) return { service, duplicate: true };
+  if (["cancelled", "no_show", "completed"].includes(reservation.status)) throw new ServiceConflict("Завершённую бронь нельзя изменить");
+  if (service.status === "cancelled") throw new ServiceConflict("Отменённую услугу нельзя связать с проживанием");
+  if (service.propertyId !== reservation.propertyId) throw new ServiceConflict("Услуга и бронь относятся к разным объектам");
+  if (service.customerId !== reservation.bookerCustomerId) {
+    const [participant] = await tx.select({ id: s.reservationGuests.id }).from(s.reservationGuests).where(and(
+      eq(s.reservationGuests.reservationId, reservation.id), eq(s.reservationGuests.customerId, service.customerId))).limit(1);
+    if (!participant) throw new ServiceConflict("Услуга принадлежит другому клиенту");
+  }
+  const stayDay = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
+  const serviceDay = stayDay(service.startAt);
+  if (serviceDay < stayDay(reservation.arrivalAt) || serviceDay >= stayDay(reservation.departureAt)) {
+    throw new ServiceConflict("Услуга не попадает в даты проживания");
+  }
+  const [stay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservation.id)).limit(1);
+  const [destination] = await tx.select().from(s.folios).where(eq(s.folios.reservationId, reservation.id)).limit(1);
+  if (service.reservationId === reservation.id && (!mergeFolio || service.folioId === destination?.id)) return { service, duplicate: true };
+  const targetFolio = destination ?? (mergeFolio ? (await tx.insert(s.folios).values({ id: id("folio"), code: `F-${reservation.code}`,
+    reservationId: reservation.id, stayId: stay?.id, leadId: reservation.requestId, guestId: reservation.bookerCustomerId,
+    propertyId: reservation.propertyId, currency: reservation.currency }).returning())[0] : undefined);
+  if (mergeFolio && !targetFolio) throw new ServiceConflict("Не удалось открыть счёт проживания");
+  if (mergeFolio && service.folioId && service.folioId !== targetFolio.id) {
+    const source = await tx.select().from(s.folioLines).where(and(eq(s.folioLines.folioId, service.folioId), eq(s.folioLines.status, "active")));
+    if (source.some((line) => line.id !== service.folioLineId)) throw new ServiceConflict("В отдельном счёте есть другие услуги. Сначала свяжите их отдельно или оставьте счёт отдельным.");
+    if (service.folioLineId) await tx.update(s.folioLines).set({ folioId: targetFolio.id, updatedAt: now() })
+      .where(eq(s.folioLines.id, service.folioLineId));
+    await tx.update(s.guestPayments).set({ folioId: targetFolio.id, reservationId: reservation.id, stayId: stay?.id ?? null })
+      .where(eq(s.guestPayments.folioId, service.folioId));
+    await recalcFolio(tx, service.folioId);
+    await recalcFolio(tx, targetFolio.id);
+    await tx.update(s.folios).set({ status: "closed", closedAt: now(), updatedAt: now() })
+      .where(and(eq(s.folios.id, service.folioId), eq(s.folios.balance, 0)));
+  }
+  const [updated] = await tx.update(s.serviceReservations).set({ reservationId: reservation.id, stayId: stay?.id ?? null, requestId: reservation.requestId,
+    ...(mergeFolio ? { folioId: targetFolio.id } : {}), updatedAt: now() }).where(eq(s.serviceReservations.id, service.id)).returning();
+  await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: service.customerId, propertyId: service.propertyId,
+    employeeId, type: "service_linked", title: "Услуга связана с проживанием", description: reservation.code, occurredAt: now() });
+  return { service: updated, duplicate: false, folioId: mergeFolio ? targetFolio.id : service.folioId };
+};
+
 export const rescheduleService = async (tx: Tx, serviceId: string, input: {
   startAt: string; endAt?: string; preferredResourceIds?: Record<string, string>; employeeId?: string;
 }) => {

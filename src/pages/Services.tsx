@@ -30,6 +30,7 @@ const Services = () => {
   const [customerId, setCustomerId] = useState("");
   const [bookingOpen, setBookingOpen] = useState(false);
   const [selectedServiceId, setSelectedServiceId] = useState<string>();
+  const [slotSelection, setSlotSelection] = useState<{ date: string; startAt: string; resourceId?: string } | null>(null);
   const [blockOpen, setBlockOpen] = useState(false);
   const [blockResourceId, setBlockResourceId] = useState("");
   const [blockStart, setBlockStart] = useState("10:00");
@@ -55,7 +56,6 @@ const Services = () => {
   const allocations = data.serviceResourceAllocations.filter((item) => item.status === "active" && serviceIdsForDate.has(item.serviceReservationId));
   const activeBlocks = data.serviceResourceBlocks.filter((item) => item.status === "active" && propertyDate(item.startAt, timeZone) === date);
   const book = () => {
-    if (!customerId) { toast({ title: "Выберите гостя перед бронированием", variant: "destructive" }); return; }
     setBookingOpen(true);
   };
   const saveBlock = async () => {
@@ -93,7 +93,11 @@ const Services = () => {
                 const block = activeBlocks.find((item) => item.resourceGroupId === group.id &&
                   (!item.resourceId || item.resourceId === resource.id) && overlapsHour(item.startAt, item.endAt, date, hour, timeZone));
                 const booked = matching[0] && data.serviceReservations.find((item) => item.id === matching[0].serviceReservationId);
-                return <button key={hour} type="button" disabled={Boolean(block)} onClick={() => booked ? setSelectedServiceId(booked.id) : book()}
+                return <button key={hour} type="button" disabled={Boolean(block)} onClick={() => {
+                  if (booked) { setSelectedServiceId(booked.id); return; }
+                  setSlotSelection({ date, startAt: propertyDateTimeIso(date, `${String(hour).padStart(2, "0")}:00`, timeZone), resourceId: group.allocationMode === "unit" ? resource.id : undefined });
+                  book();
+                }}
                   className={`min-h-9 rounded border px-1 text-center text-[11px] ${block ? "bg-slate-200 text-slate-600" : used ? "border-brand-200 bg-brand-50 text-brand-900" : "hover:bg-secondary"}`}
                   title={block ? block.reason : booked ? `${data.guests.find((item) => item.id === booked.customerId)?.fullName ?? "Гость"} · ${used}` : "Свободно · нажмите для бронирования"}>
                   {block ? "Блок" : used ? group.allocationMode === "capacity" ? `${used}/${group.capacity}` : "Занято" : "·"}</button>; })}
@@ -109,8 +113,9 @@ const Services = () => {
         <span>{propertyTime(service.startAt, timeZone)} · {data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"} · {data.guests.find((item) => item.id === service.customerId)?.fullName ?? "Гость"}</span>
         <span>{service.status === "scheduled" ? "Запланирована" : service.status === "completed" ? "Оказана" : "Отменена"} · {formatTenge(service.totalAmount)}</span></button>)}</div> : <p className="text-sm text-muted-foreground">На этот день услуг нет.</p>}</div>}
     <p className="text-xs text-muted-foreground">Вместимость и состав ресурсов настроены как демонстрационная конфигурация ЛЕС Боровое. <Link to="/reservations" className="underline">Брони проживания</Link> ведутся отдельно.</p>
-    {customerId && <ServiceBookingDialog key={`${customerId}_${selected?.id}`} customerId={customerId} propertyId={selected?.propertyId}
-      initialCatalogItemId={selected?.id} open={bookingOpen} onOpenChange={setBookingOpen} />}
+    <ServiceBookingDialog key={`${customerId}_${selected?.id}`} customerId={customerId || undefined} propertyId={selected?.propertyId}
+      initialCatalogItemId={selected?.id} initialDate={slotSelection?.date} initialStartAt={slotSelection?.startAt} initialResourceId={slotSelection?.resourceId}
+      open={bookingOpen} onOpenChange={(open) => { setBookingOpen(open); if (!open) setSlotSelection(null); }} />
     <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
     <Dialog open={blockOpen} onOpenChange={setBlockOpen}><DialogContent><DialogHeader><DialogTitle>Блокировать ресурс</DialogTitle></DialogHeader>
       <div className="space-y-3"><Select value={blockResourceId} onValueChange={setBlockResourceId}><SelectTrigger><SelectValue placeholder="Ресурс" /></SelectTrigger><SelectContent>{groups.filter((item) => item.allocationMode === "unit").flatMap((group) => data.serviceResources.filter((item) => item.resourceGroupId === group.id)).map((item) =>

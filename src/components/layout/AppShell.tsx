@@ -14,6 +14,8 @@ import {
   Users,
   Wrench,
   LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -46,6 +48,7 @@ interface NavGroup {
 
 export const AppShell = () => {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem("guestra-sidebar-collapsed") === "true");
   const location = useLocation();
   const { currentEmployee } = useCrm();
   const { user, logout } = useAuth();
@@ -89,23 +92,23 @@ export const AppShell = () => {
     [overdueTasks.length, unread],
   );
 
-  const sidebar = (
+  const sidebar = (isMobile = false) => (
     <div className="flex h-full flex-col bg-sidebar">
-      <div className="flex h-16 items-center gap-3 border-b border-border px-5">
+      <div className={cn("flex h-16 items-center gap-3 border-b border-border", collapsed && !isMobile ? "justify-center px-2" : "px-5")}>
         <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-500 text-sm font-semibold text-white">
           G
         </span>
-        <div className="leading-tight">
+        <div className={cn("leading-tight", collapsed && !isMobile && "hidden")}>
           <p className="text-sm font-semibold tracking-tight text-foreground">GUESTRA</p>
           <p className="text-xs text-muted-foreground">для сети отелей ЛЕС</p>
         </div>
       </div>
 
-      <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
+      <nav className={cn("flex-1 space-y-5 overflow-y-auto py-4", collapsed && !isMobile ? "px-2" : "px-3")}>
         {groups.map((group, index) => (
           <div key={group.title ?? index} className="space-y-1">
             {group.title && (
-              <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <p className={cn("px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground", collapsed && !isMobile && "sr-only")}>
                 {group.title}
               </p>
             )}
@@ -114,18 +117,20 @@ export const AppShell = () => {
                 key={item.to}
                 to={item.to}
                 end={item.end}
+                title={collapsed && !isMobile ? item.label : undefined}
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
                   cn(
-                    "flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-medium transition-colors",
+                    "flex items-center rounded-xl py-2 text-sm font-medium transition-colors",
+                    collapsed && !isMobile ? "justify-center px-2" : "gap-2.5 px-3",
                     isActive
                       ? "bg-brand-50 text-brand-700"
                       : "text-muted-foreground hover:bg-secondary hover:text-foreground",
                   )
                 }
               >
-                <item.icon className="h-4 w-4" />
-                <span className="flex-1">{item.label}</span>
+                <item.icon className="h-4 w-4 shrink-0" />
+                <span className={cn("flex-1", collapsed && !isMobile && "sr-only")}>{item.label}</span>
                 {!!item.badge && item.badge > 0 && (
                   <span className="rounded-md bg-brand-500 px-1.5 py-0.5 text-[10px] font-semibold text-white tabular-nums">
                     {item.badge}
@@ -138,13 +143,13 @@ export const AppShell = () => {
       </nav>
 
       <div className="border-t border-border p-4">
-        <div className="flex items-center gap-3">
+        <div className={cn("flex items-center gap-3", collapsed && !isMobile && "flex-col")}>
           <InitialsAvatar name={currentEmployee.name} initials={currentEmployee.initials} />
-          <div className="min-w-0 flex-1">
+          <div className={cn("min-w-0 flex-1", collapsed && !isMobile && "hidden")}>
             <p className="truncate text-sm font-medium text-foreground">{currentEmployee.name}</p>
             <p className="truncate text-xs text-muted-foreground">{currentEmployee.role} · {user?.dataMode === "database" ? "База данных" : "Демо"}</p>
           </div>
-          <Button variant="ghost" size="icon" onClick={() => void logout()} aria-label="Выйти"><LogOut className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="icon" onClick={() => void logout()} aria-label="Выйти" title="Выйти"><LogOut className="h-4 w-4" /></Button>
         </div>
       </div>
     </div>
@@ -152,10 +157,14 @@ export const AppShell = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-[248px] border-r border-border lg:block">{sidebar}</aside>
+      <aside className={cn("fixed inset-y-0 left-0 z-30 hidden border-r border-border transition-[width] lg:block", collapsed ? "w-[68px]" : "w-[248px]")}>{sidebar()}</aside>
 
-      <div className="lg:pl-[248px]">
+      <div className={cn("transition-[padding]", collapsed ? "lg:pl-[68px]" : "lg:pl-[248px]")}>
         <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border bg-background/85 px-4 backdrop-blur lg:px-6">
+          <Button variant="ghost" size="icon" className="hidden lg:inline-flex" aria-label={collapsed ? "Развернуть меню" : "Свернуть меню"} title={collapsed ? "Развернуть меню" : "Свернуть меню"}
+            onClick={() => setCollapsed((value) => { localStorage.setItem("guestra-sidebar-collapsed", String(!value)); return !value; })}>
+            {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          </Button>
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Открыть меню">
@@ -163,7 +172,7 @@ export const AppShell = () => {
               </Button>
             </SheetTrigger>
             <SheetContent side="left" className="w-[264px] p-0">
-              {sidebar}
+              {sidebar(true)}
             </SheetContent>
           </Sheet>
 

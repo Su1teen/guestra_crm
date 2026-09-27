@@ -46,7 +46,7 @@ import type {
   TaskType,
 } from "@/types/crm";
 import { folioForLead, journeyForLead } from "@/lib/journey";
-import { bookDemoService, changeDemoServiceStatus, demoServiceAvailability, rescheduleDemoService,
+import { bookDemoService, changeDemoServiceStatus, demoServiceAvailability, linkDemoServiceToReservation, rescheduleDemoService,
   type ServiceBookingInput } from "@/lib/service-demo-booking";
 import type { ServiceAvailabilityResult } from "@shared/service-availability";
 
@@ -169,6 +169,7 @@ interface CrmContextValue {
     excludeServiceReservationId?: string }) => Promise<Array<ServiceAvailabilityResult & { startAt: string; endAt: string }>>;
   rescheduleService: (serviceId: string, input: { startAt: string; endAt?: string;
     preferredResourceIds?: Record<string, string> }) => Promise<void>;
+  linkServiceToReservation: (serviceId: string, reservationId: string, mergeFolio: boolean) => Promise<void>;
   createServiceResourceBlock: (input: { resourceGroupId: string; resourceId?: string; startAt: string;
     endAt: string; reason: string }) => Promise<void>;
   cancelServiceResourceBlock: (blockId: string) => Promise<void>;
@@ -634,6 +635,15 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     if (dataMode === "database") { await persist(`/api/crm/service-reservations/${serviceId}/reschedule`,
       { method: "POST", body: JSON.stringify(input) }); return; }
     setData(rescheduleDemoService(data, serviceId, input));
+  }, [data, dataMode, persist]);
+
+  const linkServiceToReservation = useCallback(async (serviceId: string, reservationId: string, mergeFolio: boolean) => {
+    if (dataMode === "database") {
+      await persist(`/api/crm/service-reservations/${serviceId}/link-reservation`, { method: "POST",
+        body: JSON.stringify({ reservationId, mergeFolio }) });
+      return;
+    }
+    setData(linkDemoServiceToReservation(data, serviceId, reservationId, mergeFolio));
   }, [data, dataMode, persist]);
 
   const createServiceResourceBlock = useCallback(async (input: { resourceGroupId: string; resourceId?: string;
@@ -2246,6 +2256,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       bookService,
       getServiceAvailability,
       rescheduleService,
+      linkServiceToReservation,
       createServiceResourceBlock,
       cancelServiceResourceBlock,
       changeServiceStatus,
@@ -2319,6 +2330,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       bookService,
       getServiceAvailability,
       rescheduleService,
+      linkServiceToReservation,
       createServiceResourceBlock,
       cancelServiceResourceBlock,
       changeServiceStatus,

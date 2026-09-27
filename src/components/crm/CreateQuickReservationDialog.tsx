@@ -16,8 +16,9 @@ const dateValue = (date: Date) => `${date.getFullYear()}-${String(date.getMonth(
 const dateTime = (date: string, time: string) => new Date(`${date}T${time}:00`).toISOString();
 const defaultPropertyId = (items: { id: string; name: string }[]) => items.find((item) => /боровое/i.test(item.name))?.id ?? items[0]?.id ?? "";
 
-export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId, initialDate, initialDeparture }: {
+export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId, initialDate, initialDeparture, initialGuestId, initialPropertyId, onCreated, navigateOnCreated = true }: {
   open: boolean; onOpenChange: (open: boolean) => void; initialRoomId?: string; initialDate?: string; initialDeparture?: string;
+  initialGuestId?: string; initialPropertyId?: string; onCreated?: (reservationId: string) => void; navigateOnCreated?: boolean;
 }) => {
   const { data, createQuickReservation, property } = useCrm();
   const dataRef = useRef(data);
@@ -44,8 +45,8 @@ export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId
     const firstNight = initialDate ?? dateValue(new Date());
     const nextNight = new Date(`${firstNight}T12:00:00`);
     nextNight.setDate(nextNight.getDate() + 1);
-    setGuestId((current) => current || initialGuestIdRef.current);
-    setPropertyId(property === "all" ? defaultPropertyId(dataRef.current.properties) : property);
+    setGuestId(initialGuestId ?? initialGuestIdRef.current);
+    setPropertyId(initialPropertyId ?? (property === "all" ? defaultPropertyId(dataRef.current.properties) : property));
     setArrival(firstNight);
     setDeparture(initialDeparture && initialDeparture > firstNight ? initialDeparture : dateValue(nextNight));
     setRoomType(initialRoomId ? dataRef.current.rooms.find((room) => room.id === initialRoomId)?.category ?? "" : "");
@@ -55,7 +56,7 @@ export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId
     setAmount("");
     setAmountEdited(false);
     setDeposit(0);
-  }, [open, initialDate, initialDeparture, initialRoomId, property]);
+  }, [open, initialDate, initialDeparture, initialGuestId, initialPropertyId, initialRoomId, property]);
 
   const nightlyRate = accommodationNightlyRate(data.serviceCatalog, propertyId, roomType);
   useEffect(() => {
@@ -97,8 +98,9 @@ export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId
         departureAt: dateTime(departure, "12:00"), roomType, roomId: roomId === "none" ? undefined : roomId,
         adults, children, totalAmount: Number(amount), depositRequired: deposit });
       onOpenChange(false);
+      onCreated?.(reservationId);
       toast({ title: "Бронирование создано" });
-      navigate(`/reservations?reservation=${reservationId}`);
+      if (navigateOnCreated) navigate(`/reservations?reservation=${reservationId}`);
     } catch (error) {
       toast({ title: "Не удалось создать бронь", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
     } finally { setBusy(false); }

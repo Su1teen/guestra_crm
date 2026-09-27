@@ -21,7 +21,7 @@ import { findCustomerCandidates, normalizeEmail, normalizePhone } from "../servi
 import { assignReservationUnit, assertRoomAvailable, AvailabilityConflict } from "../services/availability-service.js";
 import { ensureReservationForRequest } from "../services/reservation-service.js";
 import { checkInStay, checkOutStay, StayConflict } from "../services/stay-service.js";
-import { bookService, changeServiceStatus, rescheduleService, ServiceConflict } from "../services/service-reservation-service.js";
+import { bookService, changeServiceStatus, linkServiceToReservation, rescheduleService, ServiceConflict } from "../services/service-reservation-service.js";
 import { assessServiceSlot, loadServiceCatalogItem, lockServiceGroups, ServiceAvailabilityConflict } from "../services/service-availability-service.js";
 
 const now = () => new Date().toISOString();
@@ -238,6 +238,19 @@ export const createCrmRouter = (db: Database) => {
     } catch (error) {
       if (error instanceof ServiceConflict || error instanceof ServiceAvailabilityConflict)
         return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.post("/service-reservations/:id/link-reservation", async (request, response) => {
+    const body = z.object({ reservationId: z.string().min(1), mergeFolio: z.boolean().default(false) }).parse(request.body);
+    try {
+      const result = await db.transaction((tx) => linkServiceToReservation(tx, request.params.id, body.reservationId,
+        body.mergeFolio, (request as AuthenticatedRequest).authUser?.employeeId ?? undefined));
+      if (!result) return response.status(404).json({ error: "Услуга не найдена" });
+      response.status(result.duplicate ? 200 : 201).json(result);
+    } catch (error) {
+      if (error instanceof ServiceConflict) return response.status(409).json({ error: error.message });
       throw error;
     }
   });

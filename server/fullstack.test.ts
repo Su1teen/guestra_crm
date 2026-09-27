@@ -244,6 +244,28 @@ describe("service resource scheduling", () => {
     expect((await db.select().from(s.guestStays).where(eq(s.guestStays.guestId, base.customerId))).filter((item) => item.bookingReference === "TEST-SPA-ONLY")).toHaveLength(0);
   });
 
+  it("links a standalone service into an accommodation stay and transfers its folio line once", async () => {
+    const agent = await admin();
+    const service = await agent.post("/api/crm/service-reservations").send({ ...base, catalogItemId: "svc_spa_visit",
+      startAt: "2027-10-10T07:00:00.000Z", idempotencyKey: "TEST-LINK-SPA" }).expect(201);
+    const sourceFolioId = service.body.service.folioId;
+    const created = await agent.post("/api/crm/reservations").send({ guestId: base.customerId, propertyId: base.propertyId,
+      arrivalAt: "2027-10-10T10:00:00.000Z", departureAt: "2027-10-12T07:00:00.000Z", roomType: "Sky House",
+      adults: 2, children: 0, totalAmount: 180000, depositRequired: 0 }).expect(201);
+    const linked = await agent.post(`/api/crm/service-reservations/${service.body.service.id}/link-reservation`)
+      .send({ reservationId: created.body.reservationId, mergeFolio: true }).expect(201);
+    expect(linked.body.service).toMatchObject({ reservationId: created.body.reservationId, stayId: created.body.stayId });
+    const [source] = await db.select().from(s.folios).where(eq(s.folios.id, sourceFolioId));
+    expect(source.status).toBe("closed");
+    expect(source.totalAmount).toBe(0);
+    const [target] = await db.select().from(s.folios).where(eq(s.folios.reservationId, created.body.reservationId));
+    const targetLines = await db.select().from(s.folioLines).where(eq(s.folioLines.folioId, target.id));
+    expect(targetLines.filter((line) => line.id === service.body.service.folioLineId)).toHaveLength(1);
+    expect(targetLines.reduce((sum, line) => sum + (line.status === "cancelled" ? 0 : line.lineTotal), 0)).toBe(192000);
+    const snapshot = await agent.get("/api/crm/bootstrap").expect(200);
+    expect(snapshot.body.serviceReservations.find((item: { id: string }) => item.id === service.body.service.id).folioId).toBe(target.id);
+  });
+
   it("serializes physical units, frees them on cancel and reschedule, and honors blocks", async () => {
     const agent = await admin();
     const firstTime = "2027-10-03T05:00:00.000Z";

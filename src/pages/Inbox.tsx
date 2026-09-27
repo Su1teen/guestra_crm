@@ -16,6 +16,7 @@ import { CreateReservationDialog } from "@/components/crm/CreateReservationDialo
 import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
 import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDialog";
 import { GuestRequestDialog } from "@/components/crm/GuestRequestDialog";
+import { CreateQuickReservationDialog } from "@/components/crm/CreateQuickReservationDialog";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import { formatDateLong, formatRelative, formatStayRange, formatTenge, formatTime, occupancyLabel } from "@/lib/format";
@@ -36,6 +37,7 @@ const quickFilters = [
   { key: "unread", label: "Непрочитанные" },
 ] as const;
 type QuickFilter = typeof quickFilters[number]["key"];
+type InboxQueue = "all" | ConversationQueueState;
 
 const localDateTime = (value: string) => {
   const date = new Date(value);
@@ -54,9 +56,9 @@ const Inbox = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [params, setParams] = useSearchParams();
-  const [queue, setQueue] = useState<ConversationQueueState>(() => {
+  const [queue, setQueue] = useState<InboxQueue>(() => {
     const value = params.get("tab");
-    return value === "closed" ? "closed" : value === "pending" || value === "waiting_guest" ? "waiting_guest" : "needs_answer";
+    return value === "closed" ? "closed" : value === "pending" || value === "waiting_guest" ? "waiting_guest" : value === "needs_answer" ? "needs_answer" : "all";
   });
   const [channel, setChannel] = useState("all");
   const [search, setSearch] = useState("");
@@ -66,6 +68,7 @@ const Inbox = () => {
   const [selectedId, setSelectedId] = useState<string | null>(params.get("conversation"));
   const [busy, setBusy] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  const [quickReservationOpen, setQuickReservationOpen] = useState(false);
   const [serviceOpen, setServiceOpen] = useState(false);
   const [selectedServiceId, setSelectedServiceId] = useState<string>();
   const [requestOpen, setRequestOpen] = useState(false);
@@ -85,7 +88,7 @@ const Inbox = () => {
     const query = search.trim().toLowerCase();
     return scoped.conversations.filter((conversation) => {
       if (channel !== "all" && conversation.channel !== channel) return false;
-      if (conversationQueueState(conversation) !== queue) return false;
+      if (queue !== "all" && conversationQueueState(conversation) !== queue) return false;
       if (quick.mine && conversation.assigneeId !== currentEmployee.id) return false;
       if (quick.unassigned && conversation.assigneeId) return false;
       if (quick.unread && conversation.unreadCount === 0) return false;
@@ -120,7 +123,8 @@ const Inbox = () => {
   if (status === "error") return <ErrorState onRetry={reload} />;
   if (status === "loading") return <LoadingScreen />;
 
-  const queueCounts: Record<ConversationQueueState, number> = {
+  const queueCounts: Record<InboxQueue, number> = {
+    all: scoped.conversations.length,
     needs_answer: scoped.conversations.filter((item) => conversationQueueState(item) === "needs_answer").length,
     waiting_guest: scoped.conversations.filter((item) => conversationQueueState(item) === "waiting_guest").length,
     closed: scoped.conversations.filter((item) => conversationQueueState(item) === "closed").length,
@@ -157,10 +161,10 @@ const Inbox = () => {
   const paidAmount = folio?.paidAmount ?? request?.paidAmount ?? 0;
   const balance = folio?.balance ?? Math.max(0, totalAmount - paidAmount);
 
-  const writeQueueToUrl = (nextQueue: ConversationQueueState) => {
+  const writeQueueToUrl = (nextQueue: InboxQueue) => {
     setQueue(nextQueue);
     const next = new URLSearchParams(params);
-    if (nextQueue === "needs_answer") next.delete("tab");
+    if (nextQueue === "all") next.delete("tab");
     else next.set("tab", nextQueue === "waiting_guest" ? "waiting_guest" : "closed");
     setParams(next, { replace: true });
   };
@@ -348,6 +352,7 @@ const Inbox = () => {
           <p className="text-xs">Язык: {guest.language || "не указан"}</p>
           <p className="text-xs">Предпочтение: {guest.preferences.roomPreference || "не указано"}</p>
           <p className="text-xs">Телефон: {guest.phone}</p>
+          {!reservation && <Button size="sm" variant="outline" className="w-full" onClick={() => setQuickReservationOpen(true)}>+ Добавить проживание</Button>}
           <Link to={`/guests/${guest.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline">Открыть профиль <ArrowRight className="h-3 w-3" /></Link>
         </section>
 
@@ -369,10 +374,10 @@ const Inbox = () => {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
-        <Tabs value={queue} onValueChange={(value) => writeQueueToUrl(value as ConversationQueueState)}>
+        <Tabs value={queue} onValueChange={(value) => writeQueueToUrl(value as InboxQueue)}>
           <TabsList className="h-9 bg-transparent p-0">
-            {(["needs_answer", "waiting_guest", "closed"] as const).map((value) => <TabsTrigger key={value} value={value} className="h-9 rounded-none border-b-2 border-transparent px-3 text-xs data-[state=active]:border-brand-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground">
-              {conversationQueueLabel[value]} <span className="ml-1.5 text-[10px] text-muted-foreground">{queueCounts[value]}</span>
+            {(["all", "needs_answer", "waiting_guest", "closed"] as const).map((value) => <TabsTrigger key={value} value={value} className="h-9 rounded-none border-b-2 border-transparent px-3 text-xs data-[state=active]:border-brand-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground">
+              {value === "all" ? "Все" : conversationQueueLabel[value]} <span className="ml-1.5 text-[10px] text-muted-foreground">{queueCounts[value]}</span>
             </TabsTrigger>)}
           </TabsList>
         </Tabs>
@@ -438,6 +443,8 @@ const Inbox = () => {
       <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent className="sm:max-w-sm"><DialogHeader><DialogTitle>Зарегистрировать оплату</DialogTitle><DialogDescription>Оплата будет записана в существующее фолио обращения.</DialogDescription></DialogHeader><div className="space-y-3"><div className="space-y-1.5"><Label htmlFor="inbox-payment-amount">Сумма, ₸</Label><Input id="inbox-payment-amount" type="number" min={1} max={balance} value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} /></div><div className="space-y-1.5"><Label>Способ</Label><FilterSelect value={paymentMethod} onChange={(value) => setPaymentMethod(value as typeof paymentMethod)} options={[{ value: "card", label: "Карта" }, { value: "transfer", label: "Перевод" }, { value: "cash", label: "Наличные" }]} className="w-full" /></div></div><DialogFooter><Button variant="outline" onClick={() => setPaymentOpen(false)}>Отмена</Button><Button onClick={() => void savePayment()} disabled={busy || Number(paymentAmount) <= 0 || Number(paymentAmount) > balance}>Сохранить оплату</Button></DialogFooter></DialogContent></Dialog>
       <Dialog open={factsOpen} onOpenChange={setFactsOpen}><DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Данные обращения</DialogTitle><DialogDescription>Ключевые сведения можно уточнить, не закрывая диалог.</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-3"><div className="space-y-1.5"><Label htmlFor="inbox-arrival">Заезд</Label><Input id="inbox-arrival" type="date" value={arrivalDraft} onChange={(event) => setArrivalDraft(event.target.value)} /></div><div className="space-y-1.5"><Label htmlFor="inbox-departure">Выезд</Label><Input id="inbox-departure" type="date" value={departureDraft} onChange={(event) => setDepartureDraft(event.target.value)} /></div><div className="col-span-2 space-y-1.5"><Label htmlFor="inbox-room-type">Категория размещения</Label><Input id="inbox-room-type" value={roomTypeDraft} onChange={(event) => setRoomTypeDraft(event.target.value)} placeholder="Например, A-Frame" /></div><div className="space-y-1.5"><Label htmlFor="inbox-adults">Взрослые</Label><Input id="inbox-adults" type="number" min={1} value={adultsDraft} onChange={(event) => setAdultsDraft(Number(event.target.value))} /></div><div className="space-y-1.5"><Label htmlFor="inbox-children">Дети</Label><Input id="inbox-children" type="number" min={0} value={childrenDraft} onChange={(event) => setChildrenDraft(Number(event.target.value))} /></div></div><DialogFooter><Button variant="outline" onClick={() => setFactsOpen(false)}>Отмена</Button><Button onClick={saveFacts} disabled={!arrivalDraft || !departureDraft || departureDraft <= arrivalDraft}>Сохранить</Button></DialogFooter></DialogContent></Dialog>
       {guest && <ServiceBookingDialog reservation={reservation} customerId={stay?.guestId ?? guest.id} propertyId={selected?.propertyId} requestId={request?.id} open={serviceOpen} onOpenChange={setServiceOpen} />}
+      {guest && <CreateQuickReservationDialog open={quickReservationOpen} onOpenChange={setQuickReservationOpen} initialGuestId={guest.id}
+        initialPropertyId={selected?.propertyId ?? guest.preferredPropertyId} />}
       {reservation && <GuestRequestDialog reservationId={reservation.id} open={requestOpen} onOpenChange={setRequestOpen} />}
       <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
     </div>
