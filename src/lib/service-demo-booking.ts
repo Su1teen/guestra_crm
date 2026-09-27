@@ -89,7 +89,18 @@ export const bookDemoService = (data: CrmDataset, input: ServiceBookingInput): C
   const catalog = data.serviceCatalog.find((item) => item.id === input.catalogItemId && item.propertyId === input.propertyId && item.active);
   if (!catalog) throw new Error("Услуга не найдена");
   if (!data.guests.some((item) => item.id === input.customerId)) throw new Error("Клиент не найден");
-  const reservation = data.reservations.find((item) => item.id === input.reservationId);
+  const serviceDay = new Date(input.startAt).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
+  const matchingReservations = data.reservations.filter((item) => item.propertyId === input.propertyId &&
+    !["cancelled", "no_show", "completed"].includes(item.status) &&
+    (!input.requestId || item.requestId === input.requestId) &&
+    serviceDay >= new Date(item.arrivalAt).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" }) &&
+    serviceDay < new Date(item.departureAt).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" }) &&
+    (item.bookerCustomerId === input.customerId ||
+      data.stays.some((stay) => stay.reservationId === item.id && stay.guestId === input.customerId &&
+        !["checked_out", "cancelled", "no_show"].includes(stay.operationalStatus)) ||
+      data.reservationGuests.some((participant) => participant.reservationId === item.id && participant.customerId === input.customerId)));
+  const reservation = input.reservationId ? data.reservations.find((item) => item.id === input.reservationId) :
+    matchingReservations.length === 1 ? matchingReservations[0] : undefined;
   if (input.reservationId && (!reservation || reservation.propertyId !== input.propertyId)) throw new Error("Бронь не найдена");
   if (input.requestId && !data.leads.some((item) => item.id === input.requestId && item.guestId === input.customerId && item.propertyId === input.propertyId))
     throw new Error("Обращение не связано с клиентом");
@@ -122,7 +133,7 @@ export const bookDemoService = (data: CrmDataset, input: ServiceBookingInput): C
     totalAmount: 0, depositRequired: 0, paidAmount: 0, balance: 0, createdAt: now, updatedAt: now, lines: [] } : undefined;
   const lineId = folio ? `service_line_${crypto.randomUUID()}` : undefined;
   const service: ServiceReservation = { id: input.idempotencyKey, propertyId: input.propertyId, customerId: input.customerId,
-    requestId: input.requestId, reservationId: reservation?.id, stayId, catalogItemId: catalog.id, folioId: folio?.id,
+    requestId, reservationId: reservation?.id, stayId, catalogItemId: catalog.id, folioId: folio?.id,
     folioLineId: lineId, entitlementId: entitlement?.id, status: "scheduled", startAt: input.startAt, endAt,
     participants: input.participants, quantity: input.quantity, unitPrice: price, totalAmount, currency: catalog.currency, notes: input.notes };
   const nextFolio = folio && lineId ? recalc({ ...folio, lines: [...folio.lines, { id: lineId, folioId: folio.id,

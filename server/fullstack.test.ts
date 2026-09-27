@@ -244,6 +244,22 @@ describe("service resource scheduling", () => {
     expect((await db.select().from(s.guestStays).where(eq(s.guestStays.guestId, base.customerId))).filter((item) => item.bookingReference === "TEST-SPA-ONLY")).toHaveLength(0);
   });
 
+  it("automatically links a service booked inside a guest's unique stay and posts it to that folio", async () => {
+    const agent = await admin();
+    const created = await agent.post("/api/crm/reservations").send({ guestId: base.customerId, propertyId: base.propertyId,
+      arrivalAt: "2027-10-20T06:00:00.000Z", departureAt: "2027-10-22T06:00:00.000Z", roomType: "Sky House",
+      adults: 2, children: 0, totalAmount: 90000, depositRequired: 0 }).expect(201);
+    const payload = { ...base, catalogItemId: "svc_spa_visit", startAt: "2027-10-20T07:00:00.000Z",
+      idempotencyKey: "TEST-AUTO-STAY-SPA" };
+    const result = await agent.post("/api/crm/service-reservations").send(payload).expect(201);
+    expect(result.body.service).toMatchObject({ reservationId: created.body.reservationId, stayId: created.body.stayId });
+    expect((await agent.post("/api/crm/service-reservations").send(payload).expect(200)).body.duplicate).toBe(true);
+    const [folio] = await db.select().from(s.folios).where(eq(s.folios.reservationId, created.body.reservationId));
+    expect(result.body.service.folioId).toBe(folio.id);
+    const lines = await db.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
+    expect(lines.reduce((sum, line) => sum + (line.status === "cancelled" ? 0 : line.lineTotal), 0)).toBe(102000);
+  });
+
   it("links a standalone service into an accommodation stay and transfers its folio line once", async () => {
     const agent = await admin();
     const service = await agent.post("/api/crm/service-reservations").send({ ...base, catalogItemId: "svc_spa_visit",

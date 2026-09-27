@@ -22,6 +22,21 @@ describe("demo service booking", () => {
     expect(cancelled.serviceResourceAllocations.every((item) => item.status === "released")).toBe(true);
   });
 
+  it("automatically links a service booked during the guest's unique stay", () => {
+    const reservation = crmDataset.reservations.find((item) => item.propertyId === "les_borovoe" && item.requestId)!;
+    const startAt = propertyDateTimeIso(propertyDate(reservation.arrivalAt, "Asia/Qyzylorda"), "16:00", "Asia/Qyzylorda");
+    const existingFolio = crmDataset.folios.find((item) => item.reservationId === reservation.id);
+    const startingTotal = existingFolio?.totalAmount ?? synthesizeFolio(crmDataset.leads.find((item) => item.id === reservation.requestId)!, crmDataset.payments).totalAmount;
+    const booked = bookDemoService(crmDataset, { customerId: reservation.bookerCustomerId,
+      propertyId: reservation.propertyId, catalogItemId: "svc_spa_visit", startAt, participants: 1, quantity: 1,
+      idempotencyKey: "TEST-DEMO-AUTO-LINK-SPA" });
+    const service = booked.serviceReservations.find((item) => item.id === "TEST-DEMO-AUTO-LINK-SPA")!;
+    const folio = booked.folios.find((item) => item.reservationId === reservation.id)!;
+    expect(service).toMatchObject({ reservationId: reservation.id, stayId: booked.stays.find((stay) => stay.reservationId === reservation.id)?.id,
+      folioId: folio.id, requestId: reservation.requestId });
+    expect(folio.totalAmount).toBe(startingTotal + 12_000);
+  });
+
   it("uses the request folio for a standalone service and creates no stay", () => {
     const request = crmDataset.leads.find((item) => item.propertyId === "les_borovoe" &&
       !crmDataset.reservations.some((reservation) => reservation.requestId === item.id))!;
@@ -41,7 +56,9 @@ describe("demo service booking", () => {
     const request = crmDataset.leads.find((item) => item.id === reservation.requestId)!;
     const original = synthesizeFolio(request, crmDataset.payments);
     const startAt = propertyDateTimeIso(propertyDate(reservation.arrivalAt, "Asia/Qyzylorda"), "16:00", "Asia/Qyzylorda");
-    const standalone = bookDemoService(crmDataset, { customerId: reservation.bookerCustomerId, propertyId: reservation.propertyId,
+    const ambiguousData = { ...crmDataset, reservations: [...crmDataset.reservations,
+      { ...reservation, id: "TEST-DEMO-AMBIGUOUS", code: "TEST-DEMO-AMBIGUOUS" }] };
+    const standalone = bookDemoService(ambiguousData, { customerId: reservation.bookerCustomerId, propertyId: reservation.propertyId,
       catalogItemId: "svc_spa_visit", startAt, participants: 1, quantity: 1, idempotencyKey: "TEST-DEMO-LINK-SPA" });
     const service = standalone.serviceReservations.find((item) => item.id === "TEST-DEMO-LINK-SPA")!;
     const linked = linkDemoServiceToReservation(standalone, service.id, reservation.id, true);

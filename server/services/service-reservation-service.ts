@@ -13,6 +13,32 @@ export class ServiceConflict extends Error {
   constructor(message: string) { super(message); }
 }
 
+const propertyDay = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
+
+const findUniqueStayReservation = async (tx: Tx, input: ServiceBookingInput) => {
+  const serviceDay = propertyDay(input.startAt);
+  const reservations = await tx.select().from(s.reservations).where(eq(s.reservations.propertyId, input.propertyId));
+  const possible = reservations.filter((reservation) => !["cancelled", "no_show", "completed"].includes(reservation.status) &&
+    (!input.requestId || reservation.requestId === input.requestId) &&
+    serviceDay >= propertyDay(reservation.arrivalAt) && serviceDay < propertyDay(reservation.departureAt));
+  if (!possible.length) return undefined;
+  const reservationIds = possible.map((reservation) => reservation.id);
+  const [stays, participants] = await Promise.all([
+    tx.select().from(s.guestStays).where(inArray(s.guestStays.reservationId, reservationIds)),
+    tx.select().from(s.reservationGuests).where(and(inArray(s.reservationGuests.reservationId, reservationIds),
+      eq(s.reservationGuests.customerId, input.customerId))),
+  ]);
+  const stayByReservation = new Map(stays.map((stay) => [stay.reservationId, stay]));
+  const participantReservations = new Set(participants.map((participant) => participant.reservationId));
+  const matches = possible.filter((reservation) => {
+    const stay = stayByReservation.get(reservation.id);
+    if (stay && ["checked_out", "cancelled", "no_show"].includes(stay.operationalStatus)) return false;
+    return reservation.bookerCustomerId === input.customerId || stay?.guestId === input.customerId ||
+      participantReservations.has(reservation.id);
+  });
+  return matches.length === 1 ? matches[0] : undefined;
+};
+
 export interface ServiceBookingInput {
   customerId: string;
   propertyId: string;
@@ -37,10 +63,11 @@ export const bookService = async (tx: Tx, input: ServiceBookingInput) => {
     .where(eq(s.serviceReservations.idempotencyKey, input.idempotencyKey)).limit(1);
   if (existing) {
     if (existing.customerId !== input.customerId || existing.catalogItemId !== input.catalogItemId ||
-        existing.reservationId !== (input.reservationId ?? null) ||
-        existing.requestId !== (input.requestId ?? null)) throw new ServiceConflict("Ключ запроса уже использован для другой услуги");
+        (input.reservationId !== undefined && existing.reservationId !== input.reservationId) ||
+        (input.requestId !== undefined && existing.requestId !== input.requestId)) throw new ServiceConflict("Ключ запроса уже использован для другой услуги");
     return { service: existing, duplicate: true };
   }
+  const reservationId = input.reservationId ?? (await findUniqueStayReservation(tx, input))?.id;
   const [catalog] = await tx.select().from(s.serviceCatalog).where(and(
     eq(s.serviceCatalog.id, input.catalogItemId), eq(s.serviceCatalog.propertyId, input.propertyId),
     eq(s.serviceCatalog.active, true),
@@ -53,17 +80,17 @@ export const bookService = async (tx: Tx, input: ServiceBookingInput) => {
     const [serviceRequest] = await tx.select().from(s.leads).where(eq(s.leads.id, input.requestId)).limit(1);
     if (!serviceRequest || serviceRequest.guestId !== input.customerId || serviceRequest.propertyId !== input.propertyId)
       throw new ServiceConflict("Обращение не связано с этим клиентом и объектом");
-    if (input.reservationId && serviceRequest.id !== (await tx.select({ requestId: s.reservations.requestId }).from(s.reservations)
-      .where(eq(s.reservations.id, input.reservationId)).limit(1))[0]?.requestId)
+    if (reservationId && serviceRequest.id !== (await tx.select({ requestId: s.reservations.requestId }).from(s.reservations)
+      .where(eq(s.reservations.id, reservationId)).limit(1))[0]?.requestId)
       throw new ServiceConflict("Обращение не относится к выбранной брони");
   }
   let reservation: typeof s.reservations.$inferSelect | undefined;
   let stay: typeof s.guestStays.$inferSelect | undefined;
   let folio: typeof s.folios.$inferSelect | undefined;
-  if (input.reservationId) {
+  if (reservationId) {
     // Also serializes first-folio creation and service bookings against checkout.
-    await tx.execute(sql`SELECT id FROM reservations WHERE id = ${input.reservationId} FOR UPDATE`);
-    [reservation] = await tx.select().from(s.reservations).where(eq(s.reservations.id, input.reservationId)).limit(1);
+    await tx.execute(sql`SELECT id FROM reservations WHERE id = ${reservationId} FOR UPDATE`);
+    [reservation] = await tx.select().from(s.reservations).where(eq(s.reservations.id, reservationId)).limit(1);
     if (!reservation || reservation.propertyId !== input.propertyId ||
         ["cancelled", "no_show", "completed"].includes(reservation.status)) throw new ServiceConflict("Бронь недоступна для услуги");
     [stay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservation.id)).limit(1);
@@ -130,7 +157,7 @@ export const bookService = async (tx: Tx, input: ServiceBookingInput) => {
     await recalcFolio(tx, folio.id);
   }
   const [service] = await tx.insert(s.serviceReservations).values({ id: id("service_reservation"),
-    propertyId: input.propertyId, customerId: input.customerId, requestId: input.requestId,
+    propertyId: input.propertyId, customerId: input.customerId, requestId: input.requestId ?? reservation?.requestId,
     reservationId: reservation?.id, stayId: stay?.id, catalogItemId: catalog.id,
     folioId: folio?.id, folioLineId: line?.id, entitlementId: entitlement?.id,
     idempotencyKey: input.idempotencyKey, status: "scheduled", startAt: input.startAt,
