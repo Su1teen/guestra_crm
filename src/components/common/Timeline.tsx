@@ -41,6 +41,19 @@ const iconByType: Record<ActivityType, LucideIcon> = {
   item_added: PlusCircle,
   item_updated: RefreshCw,
   item_removed: MinusCircle,
+  check_in: CalendarCheck,
+  check_out: CalendarCheck,
+  stay_extended: CalendarCheck,
+  departure_time_changed: CalendarCheck,
+  room_moved: CalendarCheck,
+  housekeeping_requested: CheckSquare,
+  guest_request: MessageSquare,
+  guest_request_completed: CheckSquare,
+  service_scheduled: Sparkles,
+  service_completed: Sparkles,
+  service_cancelled: MinusCircle,
+  service_rescheduled: RefreshCw,
+  reservation_context: CalendarCheck,
 };
 
 const accentByType: Record<ActivityType, string> = {
@@ -62,6 +75,19 @@ const accentByType: Record<ActivityType, string> = {
   item_added: "bg-emerald-50 text-emerald-600",
   item_updated: "bg-amber-50 text-amber-600",
   item_removed: "bg-rose-50 text-rose-600",
+  check_in: "bg-emerald-50 text-emerald-600",
+  check_out: "bg-slate-100 text-slate-600",
+  stay_extended: "bg-brand-50 text-brand-600",
+  departure_time_changed: "bg-amber-50 text-amber-600",
+  room_moved: "bg-sky-50 text-sky-600",
+  housekeeping_requested: "bg-sky-50 text-sky-600",
+  guest_request: "bg-violet-50 text-violet-600",
+  guest_request_completed: "bg-emerald-50 text-emerald-600",
+  service_scheduled: "bg-amber-50 text-amber-600",
+  service_completed: "bg-emerald-50 text-emerald-600",
+  service_cancelled: "bg-rose-50 text-rose-600",
+  service_rescheduled: "bg-amber-50 text-amber-600",
+  reservation_context: "bg-slate-100 text-slate-600",
 };
 
 export const Timeline = ({ events, className }: { events: ActivityEvent[]; className?: string }) => {

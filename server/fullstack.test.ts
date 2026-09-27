@@ -48,7 +48,7 @@ beforeAll(async () => {
   for (const statement of migration2.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
     await client.exec(statement);
   }
-  for (const name of ["0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey", "0006_task_context_and_followup_queue", "0007_service_resource_availability"]) {
+  for (const name of ["0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey", "0006_task_context_and_followup_queue", "0007_service_resource_availability", "0008_stay_activity_context"]) {
     const migration = await readFile(new URL(`../drizzle/${name}.sql`, import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) await client.exec(statement);
   }
@@ -60,7 +60,7 @@ beforeAll(async () => {
 describe("database migrations", () => {
   it("orders and applies the resort journey migration after the initial schema", async () => {
     const migrations = readMigrationFiles({ migrationsFolder: "drizzle" });
-    expect(migrations).toHaveLength(8);
+    expect(migrations).toHaveLength(9);
     expect(migrations[1].folderMillis).toBeGreaterThan(migrations[0].folderMillis);
     expect(migrations[2].folderMillis).toBeGreaterThan(migrations[1].folderMillis);
     expect(migrations[3].folderMillis).toBeGreaterThan(migrations[2].folderMillis);
@@ -164,7 +164,7 @@ describe("authentication and database bootstrap", () => {
     const adminAgent = request.agent(app);
     await adminAgent.post("/api/auth/login").send({ email: config.ADMIN_BOOTSTRAP_EMAIL, password: config.ADMIN_BOOTSTRAP_PASSWORD }).expect(200);
     const initial = await adminAgent.get("/api/crm/bootstrap").expect(200);
-    expect(initial.body.guests).toHaveLength(3);
+    expect(initial.body.guests).toContainEqual(expect.objectContaining({ id: "guest_demo_madina" }));
     expect(initial.body.conversations).toEqual([]);
     await adminAgent.patch("/api/crm/leads/lead_live_2").send({ roomType: "Делюкс — сохранено" }).expect(200);
     const reloaded = await adminAgent.get("/api/crm/bootstrap").expect(200);
@@ -329,6 +329,104 @@ describe("service resource scheduling", () => {
       startAt, endAt: "2027-10-06T06:00:00.000Z", reason: "TEST кабинет недоступен" }).expect(201);
     await agent.post("/api/crm/service-reservations").send({ ...base, catalogItemId: "svc_massage", startAt,
       idempotencyKey: "TEST-MASSAGE-NO-ROOM" }).expect(409);
+  });
+});
+
+describe("explicit in-stay operations", () => {
+  const admin = async () => {
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: config.ADMIN_BOOTSTRAP_EMAIL, password: config.ADMIN_BOOTSTRAP_PASSWORD }).expect(200);
+    return agent;
+  };
+  const localDay = (offset: number) => {
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Qyzylorda", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    const shifted = new Date(`${today}T12:00:00Z`);
+    shifted.setUTCDate(shifted.getUTCDate() + offset);
+    return shifted.toISOString().slice(0, 10);
+  };
+  const at = (offset: number, time: string) => new Date(`${localDay(offset)}T${time}:00+05:00`).toISOString();
+  const createActiveStay = async (key: string) => {
+    const roomId = `room_stay_ops_${key}`;
+    const reservationId = `reservation_stay_ops_${key}`;
+    const stayId = `stay_stay_ops_${key}`;
+    const allocationId = `allocation_stay_ops_${key}`;
+    const folioId = `folio_stay_ops_${key}`;
+    const arrivalAt = at(-1, "15:00");
+    const departureAt = at(1, "12:00");
+    await db.insert(s.rooms).values({ id: roomId, number: `ST-${key.toUpperCase()}`, propertyId: "les_borovoe",
+      category: "A-Frame", floor: 1, zone: "Лес", status: "occupied", occupiedByGuestId: "guest_live_1", checkOutAt: departureAt });
+    await db.insert(s.reservations).values({ id: reservationId, code: `STAY-${key.toUpperCase()}`, propertyId: "les_borovoe",
+      bookerCustomerId: "guest_live_1", roomTypeSnapshot: "A-Frame", source: "phone", status: "confirmed",
+      arrivalAt, departureAt, adults: 2, children: 0, currency: "KZT" });
+    await db.insert(s.reservationUnits).values({ id: allocationId, reservationId, roomId, arrivalAt, departureAt, status: "active", assignedAt: arrivalAt });
+    await db.insert(s.guestStays).values({ id: stayId, reservationId, reservationUnitId: allocationId, roomId,
+      guestId: "guest_live_1", propertyId: "les_borovoe", roomType: "A-Frame", checkIn: arrivalAt, checkOut: departureAt,
+      actualCheckIn: arrivalAt, nights: 2, adults: 2, children: 0, amount: 100000,
+      bookingReference: `STAY-${key.toUpperCase()}`, status: "in_house", operationalStatus: "in_house" });
+    await db.insert(s.folios).values({ id: folioId, code: `F-STAY-${key.toUpperCase()}`, reservationId, stayId,
+      guestId: "guest_live_1", propertyId: "les_borovoe" });
+    await db.insert(s.folioLines).values({ id: `line_stay_ops_${key}`, folioId, category: "accommodation",
+      description: "A-Frame · 2 ночи", quantity: 2, unit: "night", unitPrice: 50000, lineTotal: 100000 });
+    await recalcFolio(db, folioId);
+    return { roomId, reservationId, stayId, allocationId, folioId, arrivalAt, departureAt };
+  };
+
+  it("extends without adding a duplicate accommodation line and rejects the next guest conflict", async () => {
+    const agent = await admin();
+    const available = await createActiveStay("extend_ok");
+    const nextDeparture = at(2, "12:00");
+    const response = await agent.post(`/api/crm/reservations/${available.reservationId}/extend`).send({ departureAt: nextDeparture }).expect(200);
+    expect(response.body.stay).toMatchObject({ nights: 3, amount: 150000 });
+    expect(new Date(response.body.stay.checkOut).toISOString()).toBe(nextDeparture);
+    expect(new Date((await db.select().from(s.reservations).where(eq(s.reservations.id, available.reservationId)))[0].departureAt).toISOString()).toBe(nextDeparture);
+    expect(await db.select().from(s.folioLines).where(and(eq(s.folioLines.folioId, available.folioId), eq(s.folioLines.category, "accommodation")))).toHaveLength(1);
+    expect((await db.select().from(s.folios).where(eq(s.folios.id, available.folioId)))[0]).toMatchObject({ totalAmount: 150000, balance: 150000 });
+    expect(await db.select().from(s.guestActivity).where(and(eq(s.guestActivity.stayId, available.stayId), eq(s.guestActivity.type, "stay_extended")))).toHaveLength(1);
+
+    const conflict = await createActiveStay("extend_conflict");
+    const arrivalAt = conflict.departureAt;
+    const conflictDeparture = at(3, "12:00");
+    await db.insert(s.reservations).values({ id: "reservation_stay_ops_next", code: "STAY-NEXT-GUEST", propertyId: "les_borovoe",
+      bookerCustomerId: "guest_live_3", source: "phone", status: "confirmed", arrivalAt, departureAt: conflictDeparture, adults: 1, children: 0 });
+    await db.insert(s.reservationUnits).values({ id: "allocation_stay_ops_next", reservationId: "reservation_stay_ops_next",
+      roomId: conflict.roomId, arrivalAt, departureAt: conflictDeparture, status: "assigned" });
+    await agent.post(`/api/crm/reservations/${conflict.reservationId}/extend`).send({ departureAt: at(2, "12:00") }).expect(409);
+    expect((await db.select().from(s.folios).where(eq(s.folios.id, conflict.folioId)))[0].totalAmount).toBe(100000);
+  });
+
+  it("updates a late checkout only when it ends before the next arrival", async () => {
+    const agent = await admin();
+    const fixture = await createActiveStay("late_checkout");
+    const nextArrival = at(1, "23:00");
+    await db.insert(s.reservations).values({ id: "reservation_stay_ops_late_next", code: "STAY-LATE-NEXT", propertyId: "les_borovoe",
+      bookerCustomerId: "guest_live_3", source: "phone", status: "confirmed", arrivalAt: nextArrival,
+      departureAt: at(2, "12:00"), adults: 1, children: 0 });
+    await db.insert(s.reservationUnits).values({ id: "allocation_stay_ops_late_next", reservationId: "reservation_stay_ops_late_next",
+      roomId: fixture.roomId, arrivalAt: nextArrival, departureAt: at(2, "12:00"), status: "assigned" });
+    const blocked = await agent.post(`/api/crm/reservations/${fixture.reservationId}/change-departure-time`).send({ departureAt: at(1, "23:30") }).expect(409);
+    expect(blocked.body.error).toContain("Следующий заезд");
+    const validDeparture = at(1, "22:00");
+    await agent.post(`/api/crm/reservations/${fixture.reservationId}/change-departure-time`).send({ departureAt: validDeparture }).expect(200);
+    expect(new Date((await db.select().from(s.guestStays).where(eq(s.guestStays.id, fixture.stayId)))[0].checkOut).toISOString()).toBe(validDeparture);
+    expect(await db.select().from(s.guestActivity).where(and(eq(s.guestActivity.stayId, fixture.stayId), eq(s.guestActivity.type, "departure_time_changed")))).toHaveLength(1);
+  });
+
+  it("rejects a blocked move target and preserves both room allocations and the reason", async () => {
+    const agent = await admin();
+    const fixture = await createActiveStay("room_move");
+    await db.insert(s.rooms).values([
+      { id: "room_stay_ops_move_target", number: "ST-MOVE-TO", propertyId: "les_borovoe", category: "A-Frame", floor: 1, zone: "Лес", status: "vacant_clean" },
+      { id: "room_stay_ops_move_blocked", number: "ST-MOVE-BLOCKED", propertyId: "les_borovoe", category: "A-Frame", floor: 1, zone: "Лес", status: "out_of_order" },
+    ]);
+    await agent.post(`/api/crm/reservations/${fixture.reservationId}/move-room`).send({ roomId: "room_stay_ops_move_blocked", reason: "Проблема с отоплением" }).expect(409);
+    const moved = await agent.post(`/api/crm/reservations/${fixture.reservationId}/move-room`).send({ roomId: "room_stay_ops_move_target", reason: "Проблема с отоплением" }).expect(200);
+    expect(moved.body.stay.roomId).toBe("room_stay_ops_move_target");
+    expect((await db.select().from(s.reservationUnits).where(eq(s.reservationUnits.reservationId, fixture.reservationId))).map((item) => item.status).sort()).toEqual(["active", "released"]);
+    expect((await db.select().from(s.rooms).where(eq(s.rooms.id, fixture.roomId)))[0].status).toBe("vacant_dirty");
+    expect((await db.select().from(s.rooms).where(eq(s.rooms.id, "room_stay_ops_move_target")))[0]).toMatchObject({ status: "occupied", occupiedByGuestId: "guest_live_1" });
+    const [event] = await db.select().from(s.guestActivity).where(and(eq(s.guestActivity.stayId, fixture.stayId), eq(s.guestActivity.type, "room_moved")));
+    expect(event.metadata).toMatchObject({ fromRoomId: fixture.roomId, toRoomId: "room_stay_ops_move_target", reason: "Проблема с отоплением" });
+    expect(await db.select().from(s.housekeepingTasks).where(and(eq(s.housekeepingTasks.stayId, fixture.stayId), eq(s.housekeepingTasks.roomId, fixture.roomId)))).toHaveLength(1);
   });
 });
 
@@ -679,6 +777,10 @@ describe("operational guest journey", () => {
     expect(await db.select().from(s.tasks).where(eq(s.tasks.stayId, "stay_operations_test"))).toMatchObject([
       { type: "guest_request", reservationId: reservation.id },
     ]);
+    const cleaningRequest = await agent.post(`/api/crm/reservations/${reservation.id}/housekeeping-request`).send({
+      dueAt: new Date(Date.now() + 60 * 60_000).toISOString(), notes: "Не менять полотенца", doNotDisturb: true,
+    }).expect(201);
+    expect(cleaningRequest.body.task).toMatchObject({ stayId: "stay_operations_test", roomId: "room_operations_test", guestId: "guest_live_1", guestWishes: "Не беспокоить" });
 
     const paidInput = { customerId: "guest_live_1", propertyId: "les_borovoe", reservationId: reservation.id,
       catalogItemId: "svc_spa_visit", startAt: "2027-10-01T06:00:00.000Z", participants: 1,
@@ -692,6 +794,9 @@ describe("operational guest journey", () => {
     const included = await agent.post("/api/crm/service-reservations").send(includedInput).expect(201);
     expect(included.body.service).toMatchObject({ totalAmount: 0, entitlementId: "entitlement_operations_test" });
     await agent.post("/api/crm/service-reservations").send({ ...includedInput, idempotencyKey: "ops-service-included-2" }).expect(409);
+    const payment = await agent.post(`/api/crm/reservations/${reservation.id}/payments`).send({ amount: 10000, method: "card", reference: "OPS-PAY", comment: "Стойка" }).expect(201);
+    expect(payment.body.folio).toMatchObject({ totalAmount: 60000, paidAmount: 10000, balance: 50000 });
+    expect(await db.select().from(s.guestActivity).where(and(eq(s.guestActivity.stayId, "stay_operations_test"), eq(s.guestActivity.type, "payment")))).toHaveLength(1);
     await agent.post(`/api/crm/reservations/${reservation.id}/check-out`).send({ acknowledgeBalance: true }).expect(409);
     await agent.post(`/api/crm/reservations/${reservation.id}/check-out`).send({ acknowledgeBalance: true, acknowledgeOpenServices: true }).expect(200);
     expect((await agent.post(`/api/crm/reservations/${reservation.id}/check-out`).send({}).expect(200)).body.duplicate).toBe(true);
@@ -705,9 +810,10 @@ describe("operational guest journey", () => {
     const [nextReservation] = await db.select().from(s.reservations).where(eq(s.reservations.id, "reservation_after_checkout_test"));
     expect((await db.transaction((tx) => assignReservationUnit(tx, nextReservation, "room_operations_test"))).status).toBe("assigned");
     expect((await db.select().from(s.rooms).where(eq(s.rooms.id, "room_operations_test")))[0]).toMatchObject({ status: "vacant_dirty", occupiedByGuestId: null });
-    expect(await db.select().from(s.housekeepingTasks).where(eq(s.housekeepingTasks.stayId, stay.id))).toHaveLength(1);
+    expect(await db.select().from(s.housekeepingTasks).where(and(eq(s.housekeepingTasks.stayId, stay.id), eq(s.housekeepingTasks.type, "checkout")))).toHaveLength(1);
+    expect(await db.select().from(s.guestActivity).where(and(eq(s.guestActivity.stayId, stay.id), eq(s.guestActivity.type, "check_out")))).toHaveLength(1);
     expect((await db.select().from(s.tasks).where(eq(s.tasks.stayId, stay.id))).some((item) => item.source === "post_stay")).toBe(true);
-    const cleaning = (await db.select().from(s.housekeepingTasks).where(eq(s.housekeepingTasks.stayId, stay.id)))[0];
+    const cleaning = (await db.select().from(s.housekeepingTasks).where(and(eq(s.housekeepingTasks.stayId, stay.id), eq(s.housekeepingTasks.type, "checkout"))))[0];
     await agent.patch(`/api/crm/housekeeping/${cleaning.id}`).send({ action: "inspect" }).expect(409);
     await agent.patch(`/api/crm/housekeeping/${cleaning.id}`).send({ action: "complete" }).expect(200);
     const checklist = await db.select().from(s.housekeepingChecklistItems).where(eq(s.housekeepingChecklistItems.taskId, cleaning.id));

@@ -10,6 +10,13 @@ import { lesBorovoeUnitTypes, lesBorovoeLegacyCategoryNames } from "../../shared
 import { demoServiceBookingConfig, demoServiceResourceGroups, demoServiceResources, demoServiceRequirements } from "../../shared/service-demo-inventory.js";
 
 const date = (value: string) => new Date(value).toISOString();
+const demoLocalDate = (offsetDays: number) => {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Qyzylorda", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const shifted = new Date(`${today}T12:00:00Z`);
+  shifted.setUTCDate(shifted.getUTCDate() + offsetDays);
+  return shifted.toISOString().slice(0, 10);
+};
+const demoAt = (offsetDays: number, time: string) => date(`${demoLocalDate(offsetDays)}T${time}:00+05:00`);
 
 /**
  * Идемпотентный сид interest: на уже развёрнутых базах у лида может быть
@@ -369,6 +376,185 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
     .from(s.serviceCatalog);
   const catalogIdByKey = new Map(catalogRows.map((row) => [`${row.propertyId}:${row.code}`, row.id]));
   const catId = (propertyId: string, code: string) => catalogIdByKey.get(`${propertyId}:${code}`) ?? null;
+
+  // Stable, linked operational demos for the database-backed workspace.
+  // Rows are inserted once so a staff member's later changes remain intact.
+  const stayDemoGuests = [
+    { id: "guest_demo_madina", firstName: "Мадина", lastName: "Ержанова", fullName: "Мадина Ержанова" },
+    { id: "guest_demo_nurlan", firstName: "Нурлан", lastName: "Жумабаев", fullName: "Нурлан Жумабаев" },
+    { id: "guest_demo_alia", firstName: "Алия", lastName: "Ниязова", fullName: "Алия Ниязова" },
+    { id: "guest_demo_technical", firstName: "Марат", lastName: "Сейтказы", fullName: "Марат Сейтказы" },
+    { id: "guest_demo_dueout", firstName: "Динара", lastName: "Сулейменова", fullName: "Динара Сулейменова" },
+    { id: "guest_demo_checkedout", firstName: "Айдос", lastName: "Тлеубаев", fullName: "Айдос Тлеубаев" },
+    { id: "guest_demo_extension", firstName: "Сабина", lastName: "Ибраева", fullName: "Сабина Ибраева" },
+    { id: "guest_demo_conflict", firstName: "Бекзат", lastName: "Сагинтаев", fullName: "Бекзат Сагинтаев" },
+    { id: "guest_demo_room_move", firstName: "Рустем", lastName: "Калиев", fullName: "Рустем Калиев" },
+  ];
+  const [existingDemoStay] = await db.select({ id: s.guestStays.id }).from(s.guestStays).where(eq(s.guestStays.id, "stay_demo_normal")).limit(1);
+  const seedDemoRoomStates = !existingDemoStay;
+  await db.insert(s.guests).values(stayDemoGuests.map((guest) => ({ ...guest, organizationId: "org_les_live",
+    preferredPropertyId: "les_borovoe", language: "Русский", preferences: {}, identityMetadata: {} }))).onConflictDoNothing();
+  await db.insert(s.guestProperties).values(stayDemoGuests.map((guest) => ({ guestId: guest.id, propertyId: "les_borovoe" }))).onConflictDoNothing();
+  const demoRooms = await db.select().from(s.rooms).where(eq(s.rooms.propertyId, "les_borovoe"));
+  const roomId = (number: string) => demoRooms.find((room) => room.number === number)?.id;
+  const stayDemos = [
+    { key: "normal", guestId: "guest_demo_madina", room: "A-102", category: "A-Frame", start: -1, end: 3, amount: 520000, nights: 4, status: "in_house", paid: 520000 },
+    { key: "balance_request", guestId: "guest_demo_nurlan", room: "A-103", category: "A-Frame", start: -1, end: 2, amount: 480000, nights: 3, status: "in_house", paid: 360000 },
+    { key: "multiple_services", guestId: "guest_demo_alia", room: "G-301", category: "Glass House", start: -1, end: 3, amount: 405000, nights: 4, status: "in_house", paid: 0 },
+    { key: "technical_request", guestId: "guest_demo_technical", room: "N-201", category: "Nest House", start: -1, end: 2, amount: 420000, nights: 3, status: "in_house", paid: 0 },
+    { key: "due_out", guestId: "guest_demo_dueout", room: "F-401", category: "Forest House · 2-местный номер", start: -2, end: 0, amount: 180000, nights: 2, status: "due_out", paid: 180000 },
+    { key: "checked_out", guestId: "guest_demo_checkedout", room: "G-302", category: "Glass House", start: -5, end: -1, amount: 540000, nights: 4, status: "checked_out", paid: 609000 },
+    { key: "extension", guestId: "guest_demo_extension", room: "A-105", category: "A-Frame", start: -2, end: 1, amount: 390000, nights: 3, status: "in_house", paid: 0 },
+    { key: "extension_conflict", guestId: "guest_demo_conflict", room: "N-202", category: "Nest House", start: -2, end: 1, amount: 630000, nights: 3, status: "in_house", paid: 0 },
+    { key: "room_move", guestId: "guest_demo_room_move", room: "A-101", category: "A-Frame", start: -1, end: 2, amount: 390000, nights: 3, status: "in_house", paid: 0 },
+  ] as const;
+  const demoReservationRows = stayDemos.map((demo) => {
+    const arrivalAt = demoAt(demo.start, "15:00");
+    const departureAt = demoAt(demo.end, "12:00");
+    return { id: `reservation_demo_${demo.key}`, code: `DB-DEMO-${demo.key.toUpperCase()}`, propertyId: "les_borovoe",
+      bookerCustomerId: demo.guestId, roomTypeSnapshot: demo.category, source: "demo", status: demo.status === "checked_out" ? "completed" : "confirmed",
+      arrivalAt, departureAt, adults: 2, children: 0, currency: "KZT", confirmedAt: arrivalAt };
+  });
+  await db.insert(s.reservations).values(demoReservationRows).onConflictDoNothing();
+  const demoRoomsByReservation = new Map<string, string>();
+  const demoAllocationRows = stayDemos.map((demo) => {
+    const reservationId = `reservation_demo_${demo.key}`;
+    const physicalRoomId = roomId(demo.room);
+    if (!physicalRoomId) throw new Error(`Missing demo room ${demo.room}`);
+    demoRoomsByReservation.set(reservationId, physicalRoomId);
+    const arrivalAt = demoAt(demo.start, "15:00");
+    const departureAt = demoAt(demo.end, "12:00");
+    return { id: `allocation_demo_${demo.key}`, reservationId, roomId: physicalRoomId, arrivalAt, departureAt,
+      status: demo.status === "checked_out" ? "released" : "active", assignedAt: arrivalAt };
+  });
+  await db.insert(s.reservationUnits).values(demoAllocationRows).onConflictDoNothing();
+  await db.insert(s.guestStays).values(stayDemos.map((demo) => {
+    const reservationId = `reservation_demo_${demo.key}`;
+    const arrivalAt = demoAt(demo.start, "15:00");
+    const departureAt = demoAt(demo.end, "12:00");
+    return { id: `stay_demo_${demo.key}`, guestId: demo.guestId, propertyId: "les_borovoe", reservationId,
+      reservationUnitId: `allocation_demo_${demo.key}`, roomId: demoRoomsByReservation.get(reservationId),
+      actualCheckIn: arrivalAt, actualCheckOut: demo.status === "checked_out" ? departureAt : null,
+      roomType: demo.category, checkIn: arrivalAt, checkOut: departureAt, nights: demo.nights, adults: 2, children: 0,
+      amount: demo.amount, bookingReference: `DB-DEMO-${demo.key.toUpperCase()}`,
+      status: demo.status === "checked_out" ? "completed" : "in_house", operationalStatus: demo.status, serviceNames: [] };
+  })).onConflictDoNothing();
+  if (seedDemoRoomStates) {
+    for (const demo of stayDemos) {
+      if (demo.status === "checked_out") continue;
+      const physicalRoomId = demoRoomsByReservation.get(`reservation_demo_${demo.key}`)!;
+      await db.update(s.rooms).set({ status: "occupied", occupiedByGuestId: demo.guestId, checkOutAt: demoAt(demo.end, "12:00") }).where(eq(s.rooms.id, physicalRoomId));
+    }
+    if (roomId("A-104")) await db.update(s.rooms).set({ status: "vacant_clean", occupiedByGuestId: null, checkOutAt: null }).where(eq(s.rooms.id, roomId("A-104")!));
+  }
+  const extensionConflictRoom = roomId("N-202");
+  if (extensionConflictRoom) {
+    const arrivalAt = demoAt(1, "15:00");
+    const departureAt = demoAt(3, "12:00");
+    await db.insert(s.reservations).values({ id: "reservation_demo_next_guest_conflict", code: "DB-DEMO-NEXT-GUEST",
+      propertyId: "les_borovoe", bookerCustomerId: "guest_demo_conflict", roomTypeSnapshot: "Nest House", source: "demo",
+      status: "confirmed", arrivalAt, departureAt, adults: 2, children: 0, currency: "KZT" }).onConflictDoNothing();
+    await db.insert(s.reservationUnits).values({ id: "allocation_demo_next_guest_conflict", reservationId: "reservation_demo_next_guest_conflict",
+      roomId: extensionConflictRoom, arrivalAt, departureAt, status: "assigned", assignedAt: demoAt(0, "09:00") }).onConflictDoNothing();
+  }
+  await db.insert(s.reservationGuests).values(stayDemos.map((demo) => ({ id: `rg_reservation_demo_${demo.key}`,
+    reservationId: `reservation_demo_${demo.key}`, customerId: demo.guestId, fullName: stayDemoGuests.find((guest) => guest.id === demo.guestId)?.fullName,
+    role: "primary", isPrimary: true, isBooker: true, ageGroup: "adult" }))).onConflictDoNothing();
+  const demoExtraCharges: Record<string, Array<{ id: string; code: string; description: string; amount: number; quantity: number; offset: number; time: string; status: string }>> = {
+    normal: [{ id: "service_demo_madina_spa", code: "spa_visit", description: "SPA визит · включено", amount: 0, quantity: 1, offset: 0, time: "18:00", status: "scheduled" }],
+    multiple_services: [
+      { id: "service_demo_alia_atv", code: "act_atv", description: "Квадроциклы ×2", amount: 30000, quantity: 2, offset: 0, time: "14:00", status: "scheduled" },
+      { id: "service_demo_alia_spa", code: "spa_visit", description: "SPA визит ×2", amount: 24000, quantity: 2, offset: 0, time: "18:00", status: "scheduled" },
+      { id: "service_demo_alia_massage", code: "massage_60", description: "Массаж 60 минут", amount: 15000, quantity: 1, offset: 1, time: "11:00", status: "scheduled" },
+    ],
+    due_out: [{ id: "service_demo_due_out", code: "spa_visit", description: "SPA визит", amount: 50000, quantity: 1, offset: 0, time: "11:00", status: "scheduled" }],
+    checked_out: [
+      { id: "service_demo_checked_spa", code: "spa_visit", description: "SPA визит", amount: 24000, quantity: 1, offset: -3, time: "18:00", status: "completed" },
+      { id: "service_demo_checked_atv", code: "act_atv", description: "Квадроциклы ×2", amount: 45000, quantity: 2, offset: -2, time: "14:00", status: "completed" },
+    ],
+  };
+  const demoFolioRows = stayDemos.map((demo) => {
+    const extras = demoExtraCharges[demo.key] ?? [];
+    const total = demo.amount + extras.reduce((sum, item) => sum + item.amount, 0);
+    return { id: `folio_demo_${demo.key}`, code: `F-DB-DEMO-${demo.key.toUpperCase()}`,
+      reservationId: `reservation_demo_${demo.key}`, stayId: `stay_demo_${demo.key}`, guestId: demo.guestId,
+      propertyId: "les_borovoe", status: total === demo.paid ? "settled" : "open", currency: "KZT",
+      subtotal: total, discountAmount: 0, totalAmount: total, depositRequired: 0, paidAmount: demo.paid,
+      balance: Math.max(0, total - demo.paid), closedAt: total === demo.paid ? demoAt(demo.end, "12:00") : null };
+  });
+  await db.insert(s.folios).values(demoFolioRows).onConflictDoNothing();
+  const demoFolioLines = stayDemos.flatMap((demo) => {
+    const folioId = `folio_demo_${demo.key}`;
+    const extras = demoExtraCharges[demo.key] ?? [];
+    const stayLine = { id: `fline_demo_${demo.key}_accommodation`, folioId,
+      catalogItemId: catId("les_borovoe", ({ "A-Frame": "acc_a_frame", "Glass House": "acc_glass_house", "Nest House": "acc_nest_house", "Forest House · 2-местный номер": "acc_forest_double" } as Record<string, string>)[demo.category]) ?? null,
+      category: "accommodation", description: `${demo.category} · ${demo.nights} ночи`, quantity: demo.nights,
+      unit: "night", unitPrice: Math.round(demo.amount / demo.nights), lineTotal: demo.amount,
+      status: "active", metadata: { units: 1, nights: demo.nights } };
+    return [stayLine, ...extras.map((item) => ({ id: `fline_${item.id}`, folioId,
+      catalogItemId: catId("les_borovoe", item.code) ?? null, category: "service", description: item.description,
+      quantity: item.quantity, unit: "unit", unitPrice: Math.round(item.amount / item.quantity), lineTotal: item.amount,
+      status: item.status === "cancelled" ? "cancelled" : "active", metadata: { serviceReservationId: item.id } }))];
+  });
+  await db.insert(s.folioLines).values(demoFolioLines).onConflictDoNothing();
+  for (const demo of stayDemos) {
+    const extras = demoExtraCharges[demo.key] ?? [];
+    for (const item of extras) {
+      const catalogItemId = catId("les_borovoe", item.code);
+      if (!catalogItemId) continue;
+      await db.insert(s.serviceReservations).values({ id: item.id, propertyId: "les_borovoe", customerId: demo.guestId,
+        reservationId: `reservation_demo_${demo.key}`, stayId: `stay_demo_${demo.key}`, catalogItemId,
+        folioId: `folio_demo_${demo.key}`, folioLineId: `fline_${item.id}`, status: item.status,
+        startAt: demoAt(item.offset, item.time), endAt: demoAt(item.offset, item.time === "18:00" ? "19:00" : "16:00"),
+        completedAt: item.status === "completed" ? demoAt(item.offset, "19:00") : null,
+        participants: 2, quantity: item.quantity, unitPrice: Math.round(item.amount / item.quantity), totalAmount: item.amount, currency: "KZT" }).onConflictDoNothing();
+    }
+    if (demo.paid > 0) {
+      const paymentAmount = demo.paid;
+      await db.insert(s.guestPayments).values({ id: `payment_demo_${demo.key}`, guestId: demo.guestId,
+        reservationId: `reservation_demo_${demo.key}`, stayId: `stay_demo_${demo.key}`, folioId: `folio_demo_${demo.key}`,
+        date: demoAt(demo.status === "checked_out" ? -1 : -1, "16:00"), amount: paymentAmount,
+        method: demo.key === "due_out" ? "transfer" : "card", status: "paid", reference: `DB-DEMO-${demo.key.toUpperCase()}` }).onConflictDoNothing();
+      await db.insert(s.guestActivity).values({ id: `activity_demo_payment_${demo.key}`, guestId: demo.guestId,
+        reservationId: `reservation_demo_${demo.key}`, stayId: `stay_demo_${demo.key}`, propertyId: "les_borovoe",
+        employeeId: "emp_live_aigerim", type: "payment", title: "Добавлена оплата", amount: paymentAmount,
+        metadata: { paymentId: `payment_demo_${demo.key}` }, occurredAt: demoAt(-1, "16:00") }).onConflictDoNothing();
+    }
+    const arrivalAt = demoAt(demo.start, "15:00");
+    await db.insert(s.guestActivity).values({ id: `activity_demo_checkin_${demo.key}`, guestId: demo.guestId,
+      reservationId: `reservation_demo_${demo.key}`, stayId: `stay_demo_${demo.key}`, propertyId: "les_borovoe",
+      employeeId: "emp_live_aigerim", type: "check_in", title: "Гость заселён", occurredAt: arrivalAt,
+      metadata: { roomId: demoRoomsByReservation.get(`reservation_demo_${demo.key}`) } }).onConflictDoNothing();
+    if (demo.status === "checked_out") await db.insert(s.guestActivity).values({ id: `activity_demo_checkout_${demo.key}`,
+      guestId: demo.guestId, reservationId: `reservation_demo_${demo.key}`, stayId: `stay_demo_${demo.key}`,
+      propertyId: "les_borovoe", employeeId: "emp_live_aigerim", type: "check_out", title: "Гость выселен",
+      occurredAt: demoAt(demo.end, "12:00") }).onConflictDoNothing();
+  }
+  await db.insert(s.tasks).values([
+    { id: "task_demo_nurlan_towels", title: "Дополнительные полотенца", type: "guest_request", status: "in_progress", priority: "medium",
+      dueAt: demoAt(0, "20:00"), ownerId: "emp_live_aigerim", guestId: "guest_demo_nurlan", reservationId: "reservation_demo_balance_request",
+      stayId: "stay_demo_balance_request", roomId: roomId("A-103"), department: "Уборка", propertyId: "les_borovoe", description: "В работе" },
+    { id: "task_demo_heating_issue", title: "Не работает отопление", type: "guest_request", status: "in_progress", priority: "high",
+      dueAt: demoAt(0, "18:00"), ownerId: "emp_live_timur", guestId: "guest_demo_technical", reservationId: "reservation_demo_technical_request",
+      stayId: "stay_demo_technical_request", roomId: roomId("N-201"), department: "Техобслуживание", propertyId: "les_borovoe",
+      description: "Проверить неисправность; Maintenance Ticket не создаётся автоматически." },
+    { id: "task_demo_checked_request", title: "Дополнительные подушки", type: "guest_request", status: "done", priority: "low",
+      dueAt: demoAt(-3, "20:00"), ownerId: "emp_live_aigerim", guestId: "guest_demo_checkedout", reservationId: "reservation_demo_checked_out",
+      stayId: "stay_demo_checked_out", roomId: roomId("G-302"), department: "Уборка", propertyId: "les_borovoe",
+      completedAt: demoAt(-3, "20:20"), description: "Завершённый запрос демонстрационного визита." },
+  ]).onConflictDoNothing();
+  await db.insert(s.guestActivity).values([
+    { id: "activity_demo_request_towels", guestId: "guest_demo_nurlan", reservationId: "reservation_demo_balance_request", stayId: "stay_demo_balance_request",
+      propertyId: "les_borovoe", type: "guest_request", title: "Дополнительные полотенца", description: "Уборка · В работе",
+      metadata: { taskId: "task_demo_nurlan_towels" }, occurredAt: demoAt(0, "19:00") },
+    { id: "activity_demo_request_heating", guestId: "guest_demo_technical", reservationId: "reservation_demo_technical_request", stayId: "stay_demo_technical_request",
+      propertyId: "les_borovoe", type: "guest_request", title: "Не работает отопление", description: "Техобслуживание · В работе",
+      metadata: { taskId: "task_demo_heating_issue" }, occurredAt: demoAt(0, "17:00") },
+    { id: "activity_demo_request_checked", guestId: "guest_demo_checkedout", reservationId: "reservation_demo_checked_out", stayId: "stay_demo_checked_out",
+      propertyId: "les_borovoe", type: "guest_request", title: "Запрос: дополнительные подушки", metadata: { taskId: "task_demo_checked_request" }, occurredAt: demoAt(-3, "20:00") },
+    { id: "activity_demo_request_checked_done", guestId: "guest_demo_checkedout", reservationId: "reservation_demo_checked_out", stayId: "stay_demo_checked_out",
+      propertyId: "les_borovoe", type: "guest_request_completed", title: "Запрос выполнен: дополнительные подушки", metadata: { taskId: "task_demo_checked_request" }, occurredAt: demoAt(-3, "20:20") },
+  ]).onConflictDoNothing();
 
   const interestLive1Spa = await interestIdFor(db, { id: "interest_live_1_spa", leadId: "lead_live_1", direction: "spa", isPrimary: false, status: "active" });
   const interestLive1Rest = await interestIdFor(db, { id: "interest_live_1_rest", leadId: "lead_live_1", direction: "restaurant", isPrimary: false, status: "active" });

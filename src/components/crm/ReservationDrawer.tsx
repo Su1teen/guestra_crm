@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { CalendarDays, Home, MessageCircle, UserRound } from "lucide-react";
+import { CalendarDays, Check, Clock3, CreditCard, Home, MessageCircle, MoreHorizontal, UserRound } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,11 +18,17 @@ import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDia
 import { GuestRequestDialog } from "@/components/crm/GuestRequestDialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { propertyDate, propertyDateTimeIso, propertyTime } from "@/lib/service-time";
+import { attentionForStay, folioForReservation, timelineForStay, todayForStay } from "@/lib/stay-workspace";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: string | null; onClose: () => void }) => {
-  const { data, assignReservationRoom, checkInReservation, checkOutReservation, assignPackage, updateReservationContext, addReservationNote, propertyById } = useCrm();
+  const { data, assignReservationRoom, checkInReservation, checkOutReservation, assignPackage, updateReservationContext, addReservationNote,
+    updateTask, extendStay, changeDepartureTime, moveStayRoom, requestStayHousekeeping, recordReservationPayment, propertyById } = useCrm();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const propertyTimeZone = "Asia/Qyzylorda";
   const [saving, setSaving] = useState(false);
   const [serviceOpen, setServiceOpen] = useState(false);
   const [requestOpen, setRequestOpen] = useState(false);
@@ -35,7 +41,23 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
   const [noteDraft, setNoteDraft] = useState("");
   const [selectedPackageId, setSelectedPackageId] = useState("");
   const [tab, setTab] = useState("overview");
-  const propertyTimeZone = "Asia/Qyzylorda";
+  const [extendOpen, setExtendOpen] = useState(false);
+  const [departureOpen, setDepartureOpen] = useState(false);
+  const [moveRoomOpen, setMoveRoomOpen] = useState(false);
+  const [housekeepingOpen, setHousekeepingOpen] = useState(false);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [extendDate, setExtendDate] = useState("");
+  const [departureTime, setDepartureTime] = useState("16:00");
+  const [targetRoomId, setTargetRoomId] = useState("");
+  const [moveReason, setMoveReason] = useState("");
+  const [housekeepingTime, setHousekeepingTime] = useState(() => propertyTime(new Date(Date.now() + 60 * 60_000), propertyTimeZone));
+  const [housekeepingNotes, setHousekeepingNotes] = useState("");
+  const [doNotDisturb, setDoNotDisturb] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<"card" | "transfer" | "cash">("card");
+  const [paymentReference, setPaymentReference] = useState("");
+  const [paymentComment, setPaymentComment] = useState("");
   const reservation = data.reservations.find((item) => item.id === reservationId);
   const editingReservationId = reservation?.id;
   const editingEtaAt = reservation?.etaAt;
@@ -53,7 +75,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
   const stay = reservation ? data.stays.find((item) => item.reservationId === reservation.id) : null;
   const allocation = reservation ? data.reservationUnits.find((item) => item.reservationId === reservation.id && ["assigned", "active"].includes(item.status)) : null;
   const room = data.rooms.find((item) => item.id === (allocation?.roomId ?? stay?.roomId));
-  const folio = reservation ? data.folios.find((item) => item.reservationId === reservation.id || (reservation.requestId && item.leadId === reservation.requestId)) : null;
+  const folio = reservation ? folioForReservation(data, reservation, stay ?? undefined) : null;
   const request = reservation?.requestId ? data.leads.find((item) => item.id === reservation.requestId) : null;
   const conversation = reservation ? data.conversations.find((item) => item.reservationId === reservation.id) ??
     data.conversations.find((item) => item.guestId === reservation.bookerCustomerId && item.leadId === reservation.requestId) : null;
@@ -63,6 +85,11 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
   const reservationNotes = reservation ? data.reservationNotes.filter((item) => item.reservationId === reservation.id) : [];
   const readiness = reservation ? reservationReadiness(data, reservation) : null;
   const stayStatus = stay ? effectiveStayStatus(stay) : null;
+  const inHouse = Boolean(stay && ["in_house", "due_out"].includes(stayStatus ?? ""));
+  const dueOut = stayStatus === "due_out";
+  const attention = reservation && stay && inHouse ? attentionForStay(data, reservation, stay) : null;
+  const todayItems = reservation && stay && inHouse ? todayForStay(data, reservation, stay) : [];
+  const timeline = reservation && stay ? timelineForStay(data, reservation, stay) : [];
   const cleaningWarning = Boolean(room && (data.housekeepingTasks.some((item) => item.roomId === room.id && !["inspected", "skipped"].includes(item.status)) ||
     !["vacant_clean", "inspected"].includes(room.status)));
   const activeServices = services.filter((item) => item.status === "scheduled");
@@ -120,10 +147,89 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
     try {
       await addReservationNote(reservation.id, noteDraft.trim());
       setNoteDraft("");
+      setNoteOpen(false);
       toast({ title: "Заметка к брони добавлена" });
     } catch (error) {
       toast({ title: "Не удалось добавить заметку", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
     } finally { setSaving(false); }
+  };
+
+  const saveExtendedStay = async () => {
+    if (!reservation || !extendDate) return;
+    setSaving(true);
+    try {
+      await extendStay(reservation.id, propertyDateTimeIso(extendDate, "12:00", propertyTimeZone));
+      setExtendOpen(false);
+      toast({ title: "Проживание продлено", description: `Выезд: ${extendDate}` });
+    } catch (error) {
+      toast({ title: "Не удалось продлить проживание", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    } finally { setSaving(false); }
+  };
+
+  const saveDepartureTime = async () => {
+    if (!reservation || !departureTime) return;
+    setSaving(true);
+    try {
+      await changeDepartureTime(reservation.id, propertyDateTimeIso(propertyDate(reservation.departureAt, propertyTimeZone), departureTime, propertyTimeZone));
+      setDepartureOpen(false);
+      toast({ title: "Время выезда изменено" });
+    } catch (error) {
+      toast({ title: "Не удалось изменить время выезда", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    } finally { setSaving(false); }
+  };
+
+  const saveRoomMove = async () => {
+    if (!reservation || !targetRoomId || !moveReason.trim()) return;
+    setSaving(true);
+    try {
+      await moveStayRoom(reservation.id, targetRoomId, moveReason.trim());
+      setMoveRoomOpen(false);
+      setTargetRoomId("");
+      setMoveReason("");
+      toast({ title: "Гость переселён" });
+    } catch (error) {
+      toast({ title: "Не удалось переселить гостя", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    } finally { setSaving(false); }
+  };
+
+  const saveHousekeepingRequest = async () => {
+    if (!reservation || !housekeepingTime) return;
+    setSaving(true);
+    try {
+      await requestStayHousekeeping(reservation.id, { dueAt: propertyDateTimeIso(propertyDate(new Date(), propertyTimeZone), housekeepingTime, propertyTimeZone),
+        notes: housekeepingNotes.trim() || undefined, doNotDisturb });
+      setHousekeepingOpen(false);
+      setHousekeepingNotes("");
+      setDoNotDisturb(false);
+      toast({ title: doNotDisturb ? "Пожелание передано уборке" : "Запрос на уборку создан" });
+    } catch (error) {
+      toast({ title: "Не удалось запросить уборку", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    } finally { setSaving(false); }
+  };
+
+  const saveStayPayment = async () => {
+    if (!reservation || Number(paymentAmount) <= 0) return;
+    setSaving(true);
+    try {
+      await recordReservationPayment(reservation.id, { amount: Number(paymentAmount), method: paymentMethod,
+        reference: paymentReference.trim() || undefined, comment: paymentComment.trim() || undefined });
+      setPaymentOpen(false);
+      setPaymentAmount("");
+      setPaymentReference("");
+      setPaymentComment("");
+      toast({ title: "Оплата добавлена", description: formatTenge(Number(paymentAmount)) });
+    } catch (error) {
+      toast({ title: "Не удалось добавить оплату", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    } finally { setSaving(false); }
+  };
+
+  const completeGuestRequest = async (taskId: string) => {
+    try {
+      await updateTask(taskId, { status: "done" });
+      toast({ title: "Запрос выполнен" });
+    } catch (error) {
+      toast({ title: "Не удалось завершить запрос", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
+    }
   };
 
   const addPackage = async () => {
@@ -145,9 +251,51 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
           <SheetDescription>{reservation.code} · {propertyById(reservation.propertyId)?.name ?? reservation.propertyId}
             {customer && customer.fullName !== primaryName ? ` · оформил: ${customer.fullName}` : ""}</SheetDescription>
         </SheetHeader>
+        {inHouse && stay && <section className={`rounded-xl border p-4 ${dueOut ? "border-amber-300 bg-amber-50/70" : "border-brand-200 bg-brand-50/40"}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div><p className={`text-xs font-semibold uppercase tracking-wide ${dueOut ? "text-amber-800" : "text-brand-800"}`}>{dueOut ? "Выезд сегодня" : "Сейчас проживает"}</p>
+              <p className="mt-1 text-lg font-semibold">{room ? `${room.number} · ${room.category}` : reservation.roomTypeSnapshot ?? "Домик не назначен"}</p>
+              <p className="text-sm text-muted-foreground">{formatDateNumeric(reservation.arrivalAt)} → {formatDateNumeric(reservation.departureAt)} · {occupancyLabel(reservation.adults, reservation.children)}</p>
+              <p className="mt-1 text-sm">Выезд: <strong>{formatDateNumeric(reservation.departureAt)} · {propertyTime(reservation.departureAt, propertyTimeZone)}</strong>
+                <span className="ml-3">Баланс: <strong>{formatTenge(balance)}</strong></span></p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="outline" disabled={!conversation} onClick={() => conversation && navigate(`/inbox?conversation=${conversation.id}`)}><MessageCircle className="mr-1.5 h-4 w-4" />Написать</Button>
+              {!dueOut && <Button size="sm" variant="outline" onClick={() => setServiceOpen(true)}>Добавить услугу</Button>}
+              {!dueOut && <Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>Запрос гостя</Button>}
+              <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon" variant="outline" aria-label="Другие действия с проживанием"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => { setExtendDate(propertyDate(new Date(new Date(reservation.departureAt).getTime() + 86_400_000), propertyTimeZone)); setExtendOpen(true); }}>Продлить проживание</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => { const departureIsToday = propertyDate(reservation.departureAt, propertyTimeZone) === propertyDate(new Date(), propertyTimeZone); setDepartureTime(departureIsToday ? propertyTime(new Date(Date.now() + 60 * 60_000), propertyTimeZone) : propertyTime(reservation.departureAt, propertyTimeZone)); setDepartureOpen(true); }}>Изменить время выезда</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => { setTargetRoomId(""); setMoveRoomOpen(true); }}>Переселить</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setNoteOpen(true)}>Добавить заметку</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setHousekeepingOpen(true)}>Запросить уборку</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+        </section>}
         <div className="flex flex-wrap gap-2"><StatusPill tone={reservation.status === "confirmed" ? "success" : reservation.status === "cancelled" ? "danger" : "warning"}>{reservationStatusLabels[reservation.status]}</StatusPill>
-          {stayStatus && <StatusPill tone={["in_house", "due_out"].includes(stayStatus) ? "success" : "info"}>{operationalStatusLabels[stayStatus]}</StatusPill>}</div>
+          {stayStatus && <StatusPill tone={dueOut ? "warning" : inHouse ? "success" : "info"}>{operationalStatusLabels[stayStatus]}</StatusPill>}</div>
         <Tabs value={tab} onValueChange={setTab}><TabsList className="grid h-auto w-full grid-cols-4"><TabsTrigger value="overview">Обзор</TabsTrigger><TabsTrigger value="folio">Счёт</TabsTrigger><TabsTrigger value="services">Услуги</TabsTrigger><TabsTrigger value="history">История</TabsTrigger></TabsList></Tabs>
+        {inHouse && attention && <>
+          <SectionCard className={tab !== "overview" ? "hidden" : ""} title={dueOut ? "ВЫЕЗД СЕГОДНЯ · требует внимания" : "Требует внимания"}>
+            {attention.issues.length ? <ul className="space-y-1.5 text-sm">{attention.issues.map((issue, index) => <li key={`${issue}-${index}`} className="flex gap-2 text-amber-800"><span aria-hidden="true">!</span><span>{issue}</span></li>)}</ul> :
+              <p className="flex items-center gap-2 text-sm text-emerald-700"><Check className="h-4 w-4" />По гостю всё в порядке</p>}
+            {dueOut && <div className="mt-3 space-y-2 border-t pt-3">
+              {balance > 0 && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={acknowledgeBalance} onChange={(event) => setAcknowledgeBalance(event.target.checked)} />Подтверждаю выселение с остатком {formatTenge(balance)}</label>}
+              {activeServices.length > 0 && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={acknowledgeServices} onChange={(event) => setAcknowledgeServices(event.target.checked)} />Подтверждаю выселение с {activeServices.length} незавершёнными услугами</label>}
+              <Button disabled={saving || (balance > 0 && !acknowledgeBalance) || (activeServices.length > 0 && !acknowledgeServices)} onClick={() => void run("check-out")}>Выселить</Button>
+            </div>}
+            {!dueOut && balance > 0 && <Button size="sm" variant="outline" className="mt-3" onClick={() => { setPaymentAmount(String(balance)); setPaymentOpen(true); }}><CreditCard className="mr-1.5 h-4 w-4" />Добавить оплату</Button>}
+          </SectionCard>
+          <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Сегодня у гостя">
+            {todayItems.length ? <ul className="divide-y">{todayItems.map((item) => <li key={item.id} className="flex items-start gap-3 py-2 first:pt-0 last:pb-0">
+              <span className="w-12 shrink-0 text-sm font-semibold tabular-nums">{propertyTime(item.at, propertyTimeZone)}</span>
+              <span className="min-w-0 text-sm"><span className="font-medium">{item.kind === "request" ? "Запрос: " : ""}{item.title}</span>{item.detail && <span className="block text-xs text-muted-foreground">{item.detail}</span>}</span>
+            </li>)}</ul> : <p className="text-sm text-muted-foreground">На сегодня ничего не запланировано.</p>}
+          </SectionCard>
+        </>}
         <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Проживание"><div className="grid gap-3 sm:grid-cols-2">
           <Field label="Заезд"><span className="flex items-center gap-1.5"><CalendarDays className="h-4 w-4" />{formatDateNumeric(reservation.arrivalAt)}</span></Field>
           <Field label="Выезд">{formatDateNumeric(reservation.departureAt)}</Field>
@@ -156,13 +304,13 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
           <Field label="Домик">{room ? `${room.number} · ${room.category}` : "Ещё не назначен"}</Field>
           <Field label="Источник">{sourceLabels[reservation.source as keyof typeof sourceLabels] ?? "Другой источник"}</Field>
         </div></SectionCard>
-        {stay && !["checked_out", "cancelled", "no_show"].includes(stay.operationalStatus ?? "upcoming") && <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Готовность и следующее действие">
+        {stay && !inHouse && !["checked_out", "cancelled", "no_show"].includes(stay.operationalStatus ?? "upcoming") && <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Готовность и следующее действие">
           {readiness?.warnings.length ? <ul className="space-y-1 text-sm text-amber-800">{readiness.warnings.map((warning) => <li key={warning}>• {warning}</li>)}</ul> : <p className="text-sm text-emerald-700">Готов к заезду</p>}
           {!["in_house", "due_out"].includes(stay.operationalStatus ?? "") && reservation.status === "confirmed" && <div className="mt-3 space-y-2">
             {cleaningWarning && <Input aria-label="Причина заселения до готовности домика" value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} placeholder="Причина заселения до готовности домика" />}
             <Button disabled={saving || !room || (cleaningWarning && !overrideReason.trim())} onClick={() => void run("check-in")}>Заселить</Button>
           </div>}
-          {["in_house", "due_out"].includes(stay.operationalStatus ?? "") && <div className="mt-3 space-y-2">
+          {["in_house", "due_out"].includes(stay.operationalStatus ?? "") && !dueOut && <div className="mt-3 space-y-2">
             {balance > 0 && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={acknowledgeBalance} onChange={(event) => setAcknowledgeBalance(event.target.checked)} />Подтверждаю остаток к оплате {formatTenge(balance)}</label>}
             {activeServices.length > 0 && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={acknowledgeServices} onChange={(event) => setAcknowledgeServices(event.target.checked)} />Подтверждаю {activeServices.length} открытых услуг</label>}
             <Button disabled={saving || (balance > 0 && !acknowledgeBalance) || (activeServices.length > 0 && !acknowledgeServices)} onClick={() => void run("check-out")}>Выселить</Button>
@@ -171,6 +319,14 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
         {participants.length > 1 && <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Участники"><ul className="space-y-1 text-sm">{participants.map((item) => <li key={item.id}>{item.fullName ?? data.guests.find((guest) => guest.id === item.customerId)?.fullName ?? "Имя не указано"}{item.isPrimary ? " · основной гость" : ""}</li>)}</ul></SectionCard>}
         {!room && !["cancelled", "no_show", "completed"].includes(reservation.status) && <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Назначить домик" description="Доступность проверяется при сохранении на сервере.">
           <Select disabled={saving} onValueChange={(value) => void assign(value)}><SelectTrigger><SelectValue placeholder="Выберите свободный домик" /></SelectTrigger><SelectContent>{rooms.map((item) => <SelectItem key={item.id} value={item.id}>{item.number} · {item.category}</SelectItem>)}</SelectContent></Select>
+        </SectionCard>}
+        {inHouse && <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Счёт"><div className="space-y-3">
+          <div className="grid grid-cols-3 gap-3"><Field label="Итого">{formatTenge(folio?.totalAmount ?? stay?.amount ?? 0)}</Field><Field label="Оплачено">{formatTenge(folio?.paidAmount ?? 0)}</Field><Field label="Остаток"><strong>{formatTenge(balance)}</strong></Field></div>
+          <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => { setPaymentAmount(String(balance || "")); setPaymentOpen(true); }} disabled={balance <= 0}>Добавить оплату</Button><Button size="sm" variant="outline" onClick={() => setTab("folio")}>Открыть счёт</Button></div>
+        </div></SectionCard>}
+        {inHouse && <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Ближайшие услуги">
+          {services.filter((item) => item.status === "scheduled").slice(0, 2).length ? <ul className="space-y-2">{services.filter((item) => item.status === "scheduled").slice(0, 2).map((service) => <li key={service.id} className="flex items-center justify-between gap-3 text-sm"><span><strong>{propertyDate(service.startAt, propertyTimeZone) === propertyDate(new Date(), propertyTimeZone) ? "Сегодня" : formatDateNumeric(service.startAt)} · {propertyTime(service.startAt, propertyTimeZone)}</strong><br />{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"}</span><span className="shrink-0 text-xs text-muted-foreground">{service.entitlementId ? "включено" : formatTenge(service.totalAmount)}</span></li>)}</ul> : <p className="text-sm text-muted-foreground">Услуги не запланированы.</p>}
+          <Button size="sm" variant="outline" className="mt-3" onClick={() => setServiceOpen(true)}>Добавить услугу</Button>
         </SectionCard>}
         <SectionCard className={tab !== "folio" ? "hidden" : ""} title={`Счёт${folio ? ` · ${folio.code}` : ""}`}><div className="space-y-4">
           {folio?.lines.length ? <div className="divide-y rounded-lg border">{folio.lines.map((line) => <div key={line.id} className="flex items-start justify-between gap-3 px-3 py-2.5 text-sm"><div className="min-w-0"><p className="font-medium">{line.description}</p><p className="text-xs text-muted-foreground">{line.quantity} × {formatTenge(line.unitPrice)}</p></div><span className="shrink-0 font-medium">{formatTenge(line.lineTotal)}</span></div>)}</div> : <p className="text-sm text-muted-foreground">Проводок по счёту пока нет.</p>}
@@ -185,7 +341,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
             <Button size="sm" variant="outline" disabled={saving} onClick={() => void saveContext()}>Сохранить детали</Button></div>
         </SectionCard>
         <SectionCard className={tab !== "history" ? "hidden" : ""} title="Заметки к брони"><ul className="space-y-1 text-sm">{reservationNotes.map((note) => <li key={note.id} className="rounded-lg bg-secondary p-2">{note.text}</li>)}</ul><div className="mt-2 flex gap-2"><Input aria-label="Заметка к брони" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder="Деталь только для этого приезда" /><Button size="sm" disabled={saving || noteDraft.trim().length < 2} onClick={() => void saveNote()}>Добавить</Button></div></SectionCard>
-        <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Открытые запросы и задачи"><ul className="space-y-2 text-sm">{tasks.length ? tasks.map((task) => <li key={task.id} className="flex justify-between gap-2"><span>{task.title}</span><span className="shrink-0 text-xs text-muted-foreground">{formatDateNumeric(task.dueAt)}</span></li>) : <li className="text-muted-foreground">Открытых запросов и задач нет.</li>}</ul><div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => navigate("/tasks")}>Очередь задач</Button>{!["cancelled", "no_show", "completed"].includes(reservation.status) && <Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>Добавить запрос гостя</Button>}</div></SectionCard>
+        <SectionCard className={tab !== "overview" || (inHouse && tasks.length === 0) ? "hidden" : ""} title={inHouse ? "Запросы гостя" : "Открытые запросы и задачи"}><ul className="space-y-2 text-sm">{tasks.length ? tasks.map((task) => <li key={task.id} className="flex items-start justify-between gap-2 rounded-lg border p-2"><div><p className="font-medium">{task.title}</p><p className="text-xs text-muted-foreground">{task.type === "guest_request" ? `${task.department ?? "Запрос гостя"} · ` : ""}{formatDateNumeric(task.dueAt)}{task.status === "in_progress" ? " · В работе" : ""}</p></div><div className="flex shrink-0 gap-1">{task.type === "guest_request" && <Button size="sm" variant="outline" onClick={() => void completeGuestRequest(task.id)}>Выполнено</Button>}<Button size="sm" variant="ghost" onClick={() => navigate("/tasks")}>Открыть</Button></div></li>) : <li className="text-muted-foreground">Открытых запросов и задач нет.</li>}</ul><div className="mt-3 flex flex-wrap gap-2">{!inHouse && <Button size="sm" variant="outline" onClick={() => navigate("/tasks")}>Очередь задач</Button>}{!["cancelled", "no_show", "completed"].includes(reservation.status) && <Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>Добавить запрос гостя</Button>}</div></SectionCard>
         <SectionCard className={tab !== "services" ? "hidden" : ""} title="Услуги" description="Запланированные и оказанные услуги связаны со счётом и историей гостя.">
           {services.length ? <ul className="space-y-2">{services.map((service) => { const item = data.serviceCatalog.find((catalog) => catalog.id === service.catalogItemId); return <li key={service.id} className="rounded-lg border p-2 text-sm"><div className="flex items-center justify-between gap-2"><span className="font-medium">{item?.name ?? "Услуга"}</span><span>{service.status === "scheduled" ? "Запланирована" : service.status === "completed" ? "Оказана" : "Отменена"}</span></div><p className="text-xs text-muted-foreground">{formatDateNumeric(service.startAt)} · {service.entitlementId ? "Включено в пакет" : formatTenge(service.totalAmount)}</p><Button size="sm" variant="outline" className="mt-2" onClick={() => setSelectedServiceId(service.id)}>Открыть · перенести</Button></li>; })}</ul> : <p className="text-sm text-muted-foreground">Услуги пока не запланированы.</p>}
           {!["cancelled", "no_show"].includes(reservation.status) && <Button className="mt-3" variant="outline" onClick={() => setServiceOpen(true)}>Добавить услугу</Button>}
@@ -194,17 +350,23 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
         {!reservation.packageId && availablePackages.length > 0 && !["cancelled", "no_show", "completed"].includes(reservation.status) && <SectionCard className={tab !== "services" ? "hidden" : ""} title="Пакет услуг" description="Стоимость отдельного пакета добавится в счёт один раз."><div className="space-y-2"><Select value={selectedPackageId} onValueChange={setSelectedPackageId}><SelectTrigger><SelectValue placeholder="Выберите пакет" /></SelectTrigger><SelectContent>{availablePackages.map((item) => <SelectItem key={item.id} value={item.id}>{item.name} · {item.billingMode === "separate" ? formatTenge(item.price) : "Включён в тариф"}</SelectItem>)}</SelectContent></Select>{selectedPackageId && <p className="text-xs text-muted-foreground">{availablePackages.find((item) => item.id === selectedPackageId)?.description}</p>}<Button size="sm" variant="outline" disabled={saving || !selectedPackageId} onClick={() => void addPackage()}>Добавить пакет</Button></div></SectionCard>}
         {tab === "overview" && !["cancelled", "no_show", "completed"].includes(reservation.status) && <Button variant="outline" onClick={() => setRequestOpen(true)}>Добавить запрос гостя</Button>}
         {tab === "overview" && context?.customer?.preferences.roomPreference && <p className="rounded-xl bg-secondary p-3 text-sm">Предпочтение гостя: {context.customer.preferences.roomPreference}</p>}
-        {tab === "history" && <SectionCard title="История этого визита"><ol className="space-y-3 border-l pl-4 text-sm"><li><p className="font-medium">Бронь создана</p><p className="text-xs text-muted-foreground">{formatDateNumeric(reservation.createdAt)}</p></li>{reservation.etaAt && <li><p className="font-medium">Ожидаемое прибытие · {propertyTime(reservation.etaAt, propertyTimeZone)}</p><p className="text-xs text-muted-foreground">{formatDateNumeric(reservation.etaAt)}</p></li>}{stay?.actualCheckIn && <li><p className="font-medium">Гость заселён</p><p className="text-xs text-muted-foreground">{formatDateNumeric(stay.actualCheckIn)}</p></li>}{folioPayments.map((payment) => <li key={payment.id}><p className="font-medium">Оплата · {formatTenge(payment.amount)}</p><p className="text-xs text-muted-foreground">{formatDateNumeric(payment.date)}</p></li>)}{services.map((service) => <li key={service.id}><p className="font-medium">{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"} · {service.status === "cancelled" ? "отменена" : service.status === "completed" ? "оказана" : "запланирована"}</p><p className="text-xs text-muted-foreground">{formatDateNumeric(service.startAt)}</p></li>)}{stay?.actualCheckOut && <li><p className="font-medium">Гость выселен</p><p className="text-xs text-muted-foreground">{formatDateNumeric(stay.actualCheckOut)}</p></li>}</ol></SectionCard>}
-        <div className="flex flex-wrap gap-2">
+        {tab === "history" && <SectionCard title="История этого визита"><ol className="space-y-3 border-l pl-4 text-sm">{timeline.length ? timeline.map((event) => <li key={event.id}><p className="font-medium">{event.title}{event.amount !== undefined ? ` · ${formatTenge(event.amount)}` : ""}</p><p className="text-xs text-muted-foreground">{formatDateNumeric(event.at)} · {propertyTime(event.at, propertyTimeZone)}{event.description ? ` · ${event.description}` : ""}</p></li>) : <li className="text-muted-foreground">Событий этого визита пока нет.</li>}</ol></SectionCard>}
+        {!inHouse && <div className="flex flex-wrap gap-2">
           {conversation && <Button onClick={() => navigate(`/inbox?conversation=${conversation.id}`)} className="gap-2"><MessageCircle className="h-4 w-4" />Написать гостю</Button>}
           {request && balance > 0 && <Button variant="outline" onClick={() => navigate(`/requests/${request.id}`)}>Открыть счёт</Button>}
           {customer && <Button variant="outline" asChild><Link to={`/guests/${customer.id}`}><UserRound className="mr-2 h-4 w-4" />Профиль</Link></Button>}
           <Button variant="outline" onClick={() => { onClose(); navigate("/reservations"); }} className="gap-2"><Home className="h-4 w-4" />Календарь</Button>
-        </div>
+        </div>}
       </div> : <p className="py-8 text-sm text-muted-foreground">Бронирование не найдено.</p>}
     </SheetContent>
   </Sheet>
     {reservation && <><ServiceBookingDialog reservation={reservation} customerId={stay?.guestId ?? reservation.bookerCustomerId} open={serviceOpen} onOpenChange={setServiceOpen} /><GuestRequestDialog reservationId={reservation.id} open={requestOpen} onOpenChange={setRequestOpen} /></>}
     <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
+    <Dialog open={noteOpen} onOpenChange={setNoteOpen}><DialogContent><DialogHeader><DialogTitle>Заметка к проживанию</DialogTitle><DialogDescription>Заметка сохранится только в истории этой поездки.</DialogDescription></DialogHeader><Textarea value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder="Например, гость вернётся после 22:00" /><DialogFooter><Button variant="outline" onClick={() => setNoteOpen(false)}>Отмена</Button><Button disabled={saving || noteDraft.trim().length < 2} onClick={() => void saveNote()}>Сохранить</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={extendOpen} onOpenChange={setExtendOpen}><DialogContent><DialogHeader><DialogTitle>Продлить проживание</DialogTitle><DialogDescription>Стоимость и доступность будут пересчитаны при сохранении.</DialogDescription></DialogHeader><label className="space-y-1 text-sm"><span>Новая дата выезда</span><Input type="date" value={extendDate} min={propertyDate(new Date(new Date(reservation?.departureAt ?? new Date()).getTime() + 86_400_000), propertyTimeZone)} onChange={(event) => setExtendDate(event.target.value)} /></label><DialogFooter><Button variant="outline" onClick={() => setExtendOpen(false)}>Отмена</Button><Button disabled={saving || !extendDate} onClick={() => void saveExtendedStay()}>Продлить</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={departureOpen} onOpenChange={setDepartureOpen}><DialogContent><DialogHeader><DialogTitle>Изменить время выезда</DialogTitle><DialogDescription>Сохранится в брони и проживании. При конфликте с новым заездом сервер отклонит изменение.</DialogDescription></DialogHeader><label className="space-y-1 text-sm"><span>Время выезда</span><Input type="time" value={departureTime} onChange={(event) => setDepartureTime(event.target.value)} /></label><DialogFooter><Button variant="outline" onClick={() => setDepartureOpen(false)}>Отмена</Button><Button disabled={saving || !departureTime} onClick={() => void saveDepartureTime()}>Сохранить</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={moveRoomOpen} onOpenChange={setMoveRoomOpen}><DialogContent><DialogHeader><DialogTitle>Переселить гостя</DialogTitle><DialogDescription>Покои проверяются на доступность и готовность перед переселением.</DialogDescription></DialogHeader><div className="space-y-3"><Select value={targetRoomId} onValueChange={setTargetRoomId}><SelectTrigger><SelectValue placeholder="Новый домик" /></SelectTrigger><SelectContent>{rooms.filter((item) => item.id !== room?.id && ["vacant_clean", "inspected"].includes(item.status) && !data.housekeepingTasks.some((task) => task.roomId === item.id && !["inspected", "skipped"].includes(task.status)) && !data.maintenanceTickets.some((ticket) => ticket.roomId === item.id && ticket.blocksRoom && !["verified", "cancelled"].includes(ticket.status))).map((item) => <SelectItem key={item.id} value={item.id}>{item.number} · {item.category}</SelectItem>)}</SelectContent></Select><Textarea value={moveReason} onChange={(event) => setMoveReason(event.target.value)} placeholder="Причина переселения" /></div><DialogFooter><Button variant="outline" onClick={() => setMoveRoomOpen(false)}>Отмена</Button><Button disabled={saving || !targetRoomId || !moveReason.trim()} onClick={() => void saveRoomMove()}>Переселить</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={housekeepingOpen} onOpenChange={setHousekeepingOpen}><DialogContent><DialogHeader><DialogTitle>Запросить уборку</DialogTitle><DialogDescription>Задача появится в существующей очереди уборки для этого домика.</DialogDescription></DialogHeader><div className="space-y-3"><label className="space-y-1 text-sm"><span>После какого времени</span><Input type="time" value={housekeepingTime} onChange={(event) => setHousekeepingTime(event.target.value)} /></label><Textarea value={housekeepingNotes} onChange={(event) => setHousekeepingNotes(event.target.value)} placeholder="Комментарий, например: не менять полотенца" /><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={doNotDisturb} onChange={(event) => setDoNotDisturb(event.target.checked)} />Не беспокоить до указанного времени</label></div><DialogFooter><Button variant="outline" onClick={() => setHousekeepingOpen(false)}>Отмена</Button><Button disabled={saving || !housekeepingTime} onClick={() => void saveHousekeepingRequest()}>Создать запрос</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent><DialogHeader><DialogTitle>Добавить оплату</DialogTitle><DialogDescription>Оплата будет учтена в счёте этого проживания.</DialogDescription></DialogHeader><div className="space-y-3"><label className="space-y-1 text-sm"><span>Сумма</span><Input type="number" min="1" max={balance} value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} /></label><label className="space-y-1 text-sm"><span>Метод</span><Select value={paymentMethod} onValueChange={(value) => setPaymentMethod(value as "card" | "transfer" | "cash")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="card">Карта</SelectItem><SelectItem value="transfer">Перевод</SelectItem><SelectItem value="cash">Наличные</SelectItem></SelectContent></Select></label><Input value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Reference" /><Input value={paymentComment} onChange={(event) => setPaymentComment(event.target.value)} placeholder="Комментарий" /></div><DialogFooter><Button variant="outline" onClick={() => setPaymentOpen(false)}>Отмена</Button><Button disabled={saving || Number(paymentAmount) <= 0 || Number(paymentAmount) > balance} onClick={() => void saveStayPayment()}>Сохранить оплату</Button></DialogFooter></DialogContent></Dialog>
   </>;
 };

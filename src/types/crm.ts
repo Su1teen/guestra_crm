@@ -155,7 +155,20 @@ export type ActivityType =
   | "interest_removed"
   | "item_added"
   | "item_updated"
-  | "item_removed";
+  | "item_removed"
+  | "check_in"
+  | "check_out"
+  | "stay_extended"
+  | "departure_time_changed"
+  | "room_moved"
+  | "housekeeping_requested"
+  | "guest_request"
+  | "guest_request_completed"
+  | "service_scheduled"
+  | "service_completed"
+  | "service_cancelled"
+  | "service_rescheduled"
+  | "reservation_context";
 
 export interface Employee {
   id: string;
@@ -429,6 +442,9 @@ export interface ActivityEvent {
 export interface GuestActivityEvent extends ActivityEvent {
   guestId: string;
   propertyId?: PropertyId;
+  reservationId?: string;
+  stayId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface LeadServiceLine {

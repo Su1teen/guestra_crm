@@ -183,12 +183,15 @@ export const guestNotes = pgTable("guest_notes", {
 export const guestActivity = pgTable("guest_activity", {
   id: text("id").primaryKey(),
   guestId: text("guest_id").notNull().references(() => guests.id, { onDelete: "cascade" }),
+  reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
+  stayId: text("stay_id").references(() => guestStays.id, { onDelete: "set null" }),
   propertyId: text("property_id").references(() => properties.id, { onDelete: "set null" }),
   employeeId: text("employee_id").references(() => employees.id, { onDelete: "set null" }),
   type: text("type").notNull(),
   title: text("title").notNull(),
   description: text("description"),
   amount: integer("amount"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>(),
   occurredAt: timestamp("occurred_at", { withTimezone: true, mode: "string" }).notNull(),
   createdAt: createdAt(),
 });

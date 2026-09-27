@@ -11,6 +11,8 @@ import type {
   Folio,
   FollowUp,
   Guest,
+  GuestActivityEvent,
+  GuestPayment,
   GuestReview,
   InterestDetails,
   HousekeepingTask,
@@ -163,6 +165,11 @@ interface CrmContextValue {
   addReservationNote: (reservationId: string, text: string) => Promise<void>;
   checkInReservation: (reservationId: string, input?: { readinessOverride?: boolean; overrideReason?: string }) => Promise<void>;
   checkOutReservation: (reservationId: string, input?: { acknowledgeBalance?: boolean; acknowledgeOpenServices?: boolean }) => Promise<void>;
+  extendStay: (reservationId: string, departureAt: string) => Promise<void>;
+  changeDepartureTime: (reservationId: string, departureAt: string) => Promise<void>;
+  moveStayRoom: (reservationId: string, roomId: string, reason: string) => Promise<void>;
+  requestStayHousekeeping: (reservationId: string, input: { dueAt: string; notes?: string; doNotDisturb?: boolean }) => Promise<void>;
+  recordReservationPayment: (reservationId: string, payment: { amount: number; method: "card" | "transfer" | "cash"; reference?: string; comment?: string }) => Promise<void>;
   bookService: (input: ServiceBookingInput) => Promise<void>;
   getServiceAvailability: (input: { catalogItemId: string; propertyId: string; startsAt: string[];
     durationMinutes?: number; participants: number; quantity: number; preferredResourceIds?: Record<string, string>;
@@ -551,9 +558,15 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       await persist(`/api/crm/reservations/${reservationId}/notes`, { method: "POST", body: JSON.stringify({ text: noteText }) });
       return;
     }
+    const at = new Date().toISOString();
+    const reservation = data.reservations.find((item) => item.id === reservationId);
+    const stay = data.stays.find((item) => item.reservationId === reservationId);
     setData((previous) => ({ ...previous, reservationNotes: [{ id: `reservation_note_${crypto.randomUUID()}`,
-      reservationId, authorId: currentEmployee.id, text: noteText, createdAt: new Date().toISOString() }, ...previous.reservationNotes] }));
-  }, [currentEmployee.id, dataMode, persist]);
+      reservationId, authorId: currentEmployee.id, text: noteText, createdAt: at }, ...previous.reservationNotes],
+      guestActivity: reservation ? [{ id: `activity_${crypto.randomUUID()}`, guestId: stay?.guestId ?? reservation.bookerCustomerId,
+        reservationId, stayId: stay?.id, propertyId: reservation.propertyId, employeeId: currentEmployee.id,
+        type: "note", title: "Заметка к проживанию", description: noteText, at }, ...previous.guestActivity] : previous.guestActivity }));
+  }, [currentEmployee.id, data.reservations, data.stays, dataMode, persist]);
 
   const checkInReservation = useCallback(async (reservationId: string, input: { readinessOverride?: boolean; overrideReason?: string } = {}) => {
     if (dataMode === "database") {
@@ -577,8 +590,11 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       stays: previous.stays.map((item) => item.id === stay.id ? { ...item, operationalStatus: "in_house", status: "in_house", actualCheckIn: at, roomId: room.id } : item),
       rooms: previous.rooms.map((item) => item.id === room.id ? { ...item, status: "occupied", occupiedByGuestId: stay.guestId, checkOutAt: reservation.departureAt } : item),
       tasks: previous.tasks.map((item) => item.reservationId === reservationId && item.type === "pre_arrival" ? { ...item, status: "done", completedAt: at } : item),
+      guestActivity: [{ id: `activity_${crypto.randomUUID()}`, guestId: stay.guestId, reservationId, stayId: stay.id,
+        propertyId: reservation.propertyId, employeeId: currentEmployee.id, type: "check_in", title: "Гость заселён",
+        description: reservation.code, metadata: { roomId: room.id, roomNumber: room.number }, at }, ...previous.guestActivity],
     }));
-  }, [data, dataMode, persist]);
+  }, [currentEmployee.id, data, dataMode, persist]);
 
   const checkOutReservation = useCallback(async (reservationId: string, input: { acknowledgeBalance?: boolean; acknowledgeOpenServices?: boolean } = {}) => {
     if (dataMode === "database") {
@@ -606,16 +622,183 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
           type: "checkout", status: "pending", priority: 2, dueAt: at, serviceDate: at,
           checklist: ["Смена постельного белья", "Замена полотенец", "Уборка санузла"].map((label) => ({ label, checked: false })),
           maintenanceRequired: false, maintenanceNotes: undefined, guestId: stay.guestId, estimatedMinutes: 45 }, ...previous.housekeepingTasks],
+      guestActivity: [{ id: `activity_${crypto.randomUUID()}`, guestId: stay.guestId, reservationId, stayId: stay.id,
+        propertyId: stay.propertyId, employeeId: currentEmployee.id, type: "check_out", title: "Гость выселен",
+        description: reservation.code, metadata: { roomId: stay.roomId }, at }, ...previous.guestActivity],
     }));
-  }, [data, dataMode, persist]);
+  }, [currentEmployee.id, data, dataMode, persist]);
+
+  const extendStay = useCallback(async (reservationId: string, departureAt: string) => {
+    if (dataMode === "database") { await persist(`/api/crm/reservations/${reservationId}/extend`, { method: "POST", body: JSON.stringify({ departureAt }) }); return; }
+    const reservation = data.reservations.find((item) => item.id === reservationId);
+    const stay = data.stays.find((item) => item.reservationId === reservationId);
+    if (!reservation || !stay || !["in_house", "due_out"].includes(stay.operationalStatus ?? "") || reservation.status !== "confirmed") throw new Error("Продлить можно только текущее проживание");
+    if (new Date(departureAt) <= new Date(reservation.departureAt)) throw new Error("Новая дата выезда должна быть позже текущей");
+    const roomId = stay.roomId;
+    if (!roomId) throw new Error("У проживания не назначен домик");
+    const conflict = data.reservationUnits.some((unit) => unit.reservationId !== reservationId && unit.roomId === roomId &&
+      ["active", "assigned"].includes(unit.status) && new Date(unit.arrivalAt) < new Date(departureAt) && new Date(unit.departureAt) > new Date(reservation.departureAt) &&
+      data.reservations.some((item) => item.id === unit.reservationId && !["cancelled", "no_show", "completed"].includes(item.status)));
+    if (conflict) throw new Error("Домик занят на выбранные даты");
+    const at = new Date().toISOString();
+    const days = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
+    const nights = Math.max(1, Math.round((Date.parse(`${days(departureAt)}T00:00:00Z`) - Date.parse(`${days(reservation.arrivalAt)}T00:00:00Z`)) / 86_400_000));
+    const addedNights = nights - stay.nights;
+    if (addedNights <= 0) throw new Error("Продление должно добавить хотя бы одну ночь");
+    const lead = reservation.requestId ? data.leads.find((item) => item.id === reservation.requestId) : undefined;
+    const accommodation = lead?.items.find((item) => item.type === "accommodation" && item.status !== "cancelled");
+    const currentCharge = accommodation?.totalAmount ?? stay.amount;
+    const nightlyRate = Math.round(currentCharge / Math.max(stay.nights, 1));
+    const addedCharge = nightlyRate * addedNights;
+    setData((previous) => ({ ...previous,
+      reservations: previous.reservations.map((item) => item.id === reservationId ? { ...item, departureAt, updatedAt: at } : item),
+      stays: previous.stays.map((item) => item.id === stay.id ? { ...item, checkOut: departureAt, nights, amount: item.amount + addedCharge } : item),
+      reservationUnits: previous.reservationUnits.map((item) => item.reservationId === reservationId && item.roomId === roomId && ["active", "assigned"].includes(item.status) ? { ...item, departureAt } : item),
+      rooms: previous.rooms.map((item) => item.id === roomId ? { ...item, checkOutAt: departureAt } : item),
+      leads: previous.leads.map((item) => item.id === lead?.id ? { ...item, checkOut: departureAt, nights,
+        roomAmount: item.roomAmount + addedCharge, totalAmount: item.totalAmount + addedCharge,
+        items: item.items.map((line) => line === accommodation ? { ...line, nights, totalAmount: currentCharge + addedCharge } : line) } : item),
+      folios: previous.folios.map((folio) => folio.reservationId === reservationId ? { ...folio,
+        subtotal: folio.subtotal + addedCharge, totalAmount: folio.totalAmount + addedCharge,
+        balance: Math.max(0, folio.balance + addedCharge), status: folio.balance + addedCharge > 0 ? "open" : "settled", lines: folio.lines.map((line) => line.category === "accommodation" ?
+          { ...line, quantity: nights, unit: "night", unitPrice: nightlyRate, lineTotal: currentCharge + addedCharge,
+            description: `Проживание · ${nights} ноч.` } : line), updatedAt: at } : folio),
+      guestActivity: [{ id: `activity_${crypto.randomUUID()}`, guestId: stay.guestId, reservationId, stayId: stay.id,
+        propertyId: stay.propertyId, employeeId: currentEmployee.id, type: "stay_extended", title: "Проживание продлено",
+        description: `${days(reservation.departureAt)} → ${days(departureAt)}`, amount: addedCharge,
+        metadata: { previousDepartureAt: reservation.departureAt, departureAt, previousNights: stay.nights, nights, roomId }, at }, ...previous.guestActivity],
+    }));
+  }, [currentEmployee.id, data, dataMode, persist]);
+
+  const changeDepartureTime = useCallback(async (reservationId: string, departureAt: string) => {
+    if (dataMode === "database") { await persist(`/api/crm/reservations/${reservationId}/change-departure-time`, { method: "POST", body: JSON.stringify({ departureAt }) }); return; }
+    const reservation = data.reservations.find((item) => item.id === reservationId);
+    const stay = data.stays.find((item) => item.reservationId === reservationId);
+    if (!reservation || !stay || !["in_house", "due_out"].includes(stay.operationalStatus ?? "")) throw new Error("Время выезда можно менять только во время проживания");
+    const days = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
+    if (days(departureAt) !== days(reservation.departureAt)) throw new Error("Для изменения даты выезда используйте продление проживания");
+    if (new Date(departureAt) <= new Date()) throw new Error("Время выезда должно быть в будущем");
+    const roomId = stay.roomId;
+    const conflict = roomId && data.reservationUnits.some((unit) => unit.reservationId !== reservationId && unit.roomId === roomId &&
+      ["active", "assigned"].includes(unit.status) && new Date(unit.arrivalAt) < new Date(departureAt) && new Date(unit.departureAt) > new Date(reservation.arrivalAt) &&
+      data.reservations.some((item) => item.id === unit.reservationId && !["cancelled", "no_show", "completed"].includes(item.status)));
+    if (conflict) throw new Error("Следующий заезд запланирован сегодня. Поздний выезд недоступен.");
+    const at = new Date().toISOString();
+    setData((previous) => ({ ...previous,
+      reservations: previous.reservations.map((item) => item.id === reservationId ? { ...item, departureAt, updatedAt: at } : item),
+      stays: previous.stays.map((item) => item.id === stay.id ? { ...item, checkOut: departureAt } : item),
+      reservationUnits: previous.reservationUnits.map((item) => item.reservationId === reservationId && item.roomId === roomId ? { ...item, departureAt } : item),
+      rooms: previous.rooms.map((item) => item.id === roomId ? { ...item, checkOutAt: departureAt } : item),
+      guestActivity: [{ id: `activity_${crypto.randomUUID()}`, guestId: stay.guestId, reservationId, stayId: stay.id,
+        propertyId: stay.propertyId, employeeId: currentEmployee.id, type: "departure_time_changed", title: "Изменено время выезда",
+        description: `${new Date(reservation.departureAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} → ${new Date(departureAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`,
+        metadata: { previousDepartureAt: reservation.departureAt, departureAt, roomId }, at }, ...previous.guestActivity],
+    }));
+  }, [currentEmployee.id, data, dataMode, persist]);
+
+  const moveStayRoom = useCallback(async (reservationId: string, roomId: string, reason: string) => {
+    if (dataMode === "database") { await persist(`/api/crm/reservations/${reservationId}/move-room`, { method: "POST", body: JSON.stringify({ roomId, reason }) }); return; }
+    const reservation = data.reservations.find((item) => item.id === reservationId);
+    const stay = data.stays.find((item) => item.reservationId === reservationId);
+    const oldRoom = data.rooms.find((item) => item.id === stay?.roomId);
+    const newRoom = data.rooms.find((item) => item.id === roomId && item.propertyId === reservation?.propertyId);
+    if (!reservation || !stay || !oldRoom || !["in_house", "due_out"].includes(stay.operationalStatus ?? "")) throw new Error("Переселить можно только проживающего гостя");
+    if (!reason.trim()) throw new Error("Укажите причину переселения");
+    if (!newRoom || newRoom.id === oldRoom.id || !["vacant_clean", "inspected"].includes(newRoom.status)) throw new Error("Новый домик должен быть чистым и готовым");
+    if (data.maintenanceTickets.some((item) => item.roomId === newRoom.id && item.blocksRoom && !["verified", "cancelled"].includes(item.status))) throw new Error("Новый домик закрыт на обслуживание");
+    if (data.housekeepingTasks.some((item) => item.roomId === newRoom.id && !["inspected", "skipped"].includes(item.status))) throw new Error("Уборка нового домика не завершена");
+    const at = new Date().toISOString();
+    const conflict = data.reservationUnits.some((unit) => unit.reservationId !== reservationId && unit.roomId === newRoom.id && ["active", "assigned"].includes(unit.status) &&
+      new Date(unit.arrivalAt) < new Date(reservation.departureAt) && new Date(unit.departureAt) > new Date(at) &&
+      data.reservations.some((item) => item.id === unit.reservationId && !["cancelled", "no_show", "completed"].includes(item.status)));
+    if (conflict || data.stays.some((item) => item.id !== stay.id && item.roomId === newRoom.id && ["in_house", "due_out"].includes(item.operationalStatus ?? ""))) throw new Error("Новый домик занят на выбранный период");
+    const oldAllocation = data.reservationUnits.find((item) => item.reservationId === reservationId && item.roomId === oldRoom.id && ["active", "assigned"].includes(item.status));
+    if (!oldAllocation) throw new Error("Активное назначение текущего домика не найдено");
+    const housekeepingId = `housekeeping_move_${crypto.randomUUID()}`;
+    const allocationId = `allocation_move_${crypto.randomUUID()}`;
+    const activity: GuestActivityEvent = { id: `activity_${crypto.randomUUID()}`, guestId: stay.guestId, reservationId, stayId: stay.id,
+      propertyId: stay.propertyId, employeeId: currentEmployee.id, type: "room_moved", title: "Гость переселён",
+      description: `${oldRoom.number} → ${newRoom.number} · ${reason.trim()}`,
+      metadata: { fromRoomId: oldRoom.id, fromRoomNumber: oldRoom.number, toRoomId: newRoom.id, toRoomNumber: newRoom.number, reason: reason.trim(), movedAt: at, housekeepingTaskId: housekeepingId }, at };
+    setData((previous) => ({ ...previous,
+      stays: previous.stays.map((item) => item.id === stay.id ? { ...item, roomId: newRoom.id,
+        reservationUnitId: allocationId } : item),
+      reservationUnits: [...previous.reservationUnits.map((item) => item.id === oldAllocation?.id ? { ...item, status: "released", departureAt: at } : item),
+        { id: allocationId, reservationId, roomId: newRoom.id, arrivalAt: at, departureAt: reservation.departureAt, status: "active", assignedAt: at }],
+      rooms: previous.rooms.map((item) => item.id === oldRoom.id ? { ...item, status: "vacant_dirty", occupiedByGuestId: undefined, checkOutAt: undefined } :
+        item.id === newRoom.id ? { ...item, status: "occupied", occupiedByGuestId: stay.guestId, checkOutAt: reservation.departureAt } : item),
+      housekeepingTasks: [{ id: housekeepingId, stayId: stay.id, roomId: oldRoom.id, roomNumber: oldRoom.number,
+        propertyId: stay.propertyId, category: oldRoom.category, floor: oldRoom.floor, zone: oldRoom.zone, type: "stayover",
+        status: "pending", priority: 2, dueAt: at, serviceDate: at, checklist: [], notes: `После переселения в ${newRoom.number}: ${reason.trim()}`,
+        maintenanceRequired: false, guestId: stay.guestId, leadId: reservation.requestId, estimatedMinutes: 30 }, ...previous.housekeepingTasks],
+      guestActivity: [activity, ...previous.guestActivity],
+    }));
+  }, [currentEmployee.id, data, dataMode, persist]);
+
+  const requestStayHousekeeping = useCallback(async (reservationId: string, input: { dueAt: string; notes?: string; doNotDisturb?: boolean }) => {
+    if (dataMode === "database") { await persist(`/api/crm/reservations/${reservationId}/housekeeping-request`, { method: "POST", body: JSON.stringify(input) }); return; }
+    const reservation = data.reservations.find((item) => item.id === reservationId);
+    const stay = data.stays.find((item) => item.reservationId === reservationId);
+    const room = data.rooms.find((item) => item.id === stay?.roomId);
+    if (!reservation || !stay || !room || !["in_house", "due_out"].includes(stay.operationalStatus ?? "")) throw new Error("Запросить уборку можно только во время проживания");
+    if (new Date(input.dueAt) < new Date() || new Date(input.dueAt) > new Date(reservation.departureAt)) throw new Error("Время уборки должно быть в рамках текущего проживания");
+    const at = new Date().toISOString();
+    const taskId = `housekeeping_${crypto.randomUUID()}`;
+    const notes = [input.notes?.trim(), input.doNotDisturb ? "Не беспокоить: уборка сегодня не требуется." : undefined].filter(Boolean).join("\n") || undefined;
+    setData((previous) => ({ ...previous, housekeepingTasks: [{ id: taskId, stayId: stay.id, roomId: room.id,
+      roomNumber: room.number, propertyId: stay.propertyId, category: room.category, floor: room.floor, zone: room.zone,
+      type: "special_request", status: "pending", priority: 3, dueAt: input.dueAt, serviceDate: input.dueAt,
+      checklist: [{ label: "Выполнить запрос гостя", checked: false }], notes, guestWishes: input.doNotDisturb ? "Не беспокоить" : input.notes,
+      maintenanceRequired: false, guestId: stay.guestId, leadId: reservation.requestId, estimatedMinutes: 30 }, ...previous.housekeepingTasks],
+      guestActivity: [{ id: `activity_${crypto.randomUUID()}`, guestId: stay.guestId, reservationId, stayId: stay.id,
+        propertyId: stay.propertyId, employeeId: currentEmployee.id, type: "housekeeping_requested",
+        title: input.doNotDisturb ? "Уборка сегодня не требуется" : "Запрошена уборка", description: notes,
+        metadata: { housekeepingTaskId: taskId, roomId: room.id, dueAt: input.dueAt, doNotDisturb: Boolean(input.doNotDisturb) }, at }, ...previous.guestActivity],
+    }));
+  }, [currentEmployee.id, data, dataMode, persist]);
+
+  const recordReservationPayment = useCallback(async (reservationId: string, input: { amount: number; method: "card" | "transfer" | "cash"; reference?: string; comment?: string }) => {
+    if (dataMode === "database") { await persist(`/api/crm/reservations/${reservationId}/payments`, { method: "POST", body: JSON.stringify(input) }); return; }
+    const reservation = data.reservations.find((item) => item.id === reservationId);
+    const stay = data.stays.find((item) => item.reservationId === reservationId);
+    if (!reservation || !stay) throw new Error("Проживание не найдено");
+    const lead = reservation.requestId ? data.leads.find((item) => item.id === reservation.requestId) : undefined;
+    const currentFolio = data.folios.find((item) => item.reservationId === reservationId) ?? (lead ? folioForLead(lead, data.folios, data.payments) : undefined);
+    const totalAmount = currentFolio?.totalAmount ?? stay.amount;
+    const paidAmount = currentFolio?.paidAmount ?? data.payments.filter((item) => item.reservationId === reservationId && item.status === "paid").reduce((sum, item) => sum + item.amount, 0);
+    const balance = Math.max(0, totalAmount - paidAmount);
+    if (!Number.isInteger(input.amount) || input.amount <= 0 || input.amount > balance) throw new Error("Сумма оплаты не может превышать остаток по счёту");
+    const at = new Date().toISOString();
+    const reference = [input.reference?.trim() || `PAY-${Date.now()}`, input.comment?.trim()].filter(Boolean).join(" · ");
+    const payment: GuestPayment = { id: `payment_${crypto.randomUUID()}`, guestId: stay.guestId, stayId: stay.id,
+      reservationId, leadId: reservation.requestId, folioId: currentFolio?.id, date: at, amount: input.amount,
+      method: input.method, status: "paid", reference };
+    const nextPaid = paidAmount + input.amount;
+    setData((previous) => ({ ...previous, payments: [payment, ...previous.payments],
+      leads: previous.leads.map((item) => item.id === lead?.id ? { ...item, paidAmount: nextPaid } : item),
+      folios: currentFolio ? (previous.folios.some((item) => item.id === currentFolio.id) ? previous.folios.map((item) => item.id === currentFolio.id ?
+        { ...item, paidAmount: nextPaid, balance: Math.max(0, item.totalAmount - nextPaid), status: nextPaid >= item.totalAmount ? "settled" : "open", updatedAt: at } : item) :
+        [{ ...currentFolio, reservationId, stayId: stay.id, paidAmount: nextPaid, balance: Math.max(0, totalAmount - nextPaid), status: nextPaid >= totalAmount ? "settled" : "open", updatedAt: at }, ...previous.folios]) : previous.folios,
+      guestActivity: [{ id: `activity_${crypto.randomUUID()}`, guestId: stay.guestId, reservationId, stayId: stay.id,
+        propertyId: stay.propertyId, employeeId: currentEmployee.id, type: "payment", title: "Добавлена оплата",
+        description: `${input.method} · ${reference}`, amount: input.amount,
+        metadata: { paymentId: payment.id, method: input.method, reference, balance: balance - input.amount }, at }, ...previous.guestActivity],
+    }));
+  }, [currentEmployee.id, data, dataMode, persist]);
 
   const bookService = useCallback(async (input: ServiceBookingInput) => {
     if (dataMode === "database") {
       await persist("/api/crm/service-reservations", { method: "POST", body: JSON.stringify(input) });
       return;
     }
-    setData(bookDemoService(data, input));
-  }, [data, dataMode, persist]);
+    const next = bookDemoService(data, input);
+    const service = next.serviceReservations.find((item) => !data.serviceReservations.some((old) => old.id === item.id));
+    setData(service ? { ...next, guestActivity: [{ id: `activity_${crypto.randomUUID()}`, guestId: service.customerId,
+      reservationId: service.reservationId, stayId: service.stayId, propertyId: service.propertyId,
+      employeeId: currentEmployee.id, type: "service_scheduled",
+      title: `Запланировано: ${data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"}`,
+      amount: service.totalAmount, metadata: { serviceReservationId: service.id, startAt: service.startAt, quantity: service.quantity }, at: new Date().toISOString() }, ...next.guestActivity] } : next);
+  }, [currentEmployee.id, data, dataMode, persist]);
 
   const getServiceAvailability = useCallback(async (input: { catalogItemId: string; propertyId: string; startsAt: string[];
     durationMinutes?: number; participants: number; quantity: number; preferredResourceIds?: Record<string, string>;
@@ -634,8 +817,15 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     preferredResourceIds?: Record<string, string> }) => {
     if (dataMode === "database") { await persist(`/api/crm/service-reservations/${serviceId}/reschedule`,
       { method: "POST", body: JSON.stringify(input) }); return; }
-    setData(rescheduleDemoService(data, serviceId, input));
-  }, [data, dataMode, persist]);
+    const service = data.serviceReservations.find((item) => item.id === serviceId);
+    const next = rescheduleDemoService(data, serviceId, input);
+    setData(service ? { ...next, guestActivity: [{ id: `activity_${crypto.randomUUID()}`, guestId: service.customerId,
+      reservationId: service.reservationId, stayId: service.stayId, propertyId: service.propertyId,
+      employeeId: currentEmployee.id, type: "service_rescheduled",
+      title: `Перенесено: ${data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "услуга"}`,
+      description: `${service.startAt} → ${input.startAt}`,
+      metadata: { serviceReservationId: service.id, previousStartAt: service.startAt, startAt: input.startAt }, at: new Date().toISOString() }, ...next.guestActivity] } : next);
+  }, [currentEmployee.id, data, dataMode, persist]);
 
   const linkServiceToReservation = useCallback(async (serviceId: string, reservationId: string, mergeFolio: boolean) => {
     if (dataMode === "database") {
@@ -668,8 +858,15 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       await persist(`/api/crm/service-reservations/${serviceId}`, { method: "PATCH", body: JSON.stringify({ status: serviceStatus }) });
       return;
     }
-    setData(changeDemoServiceStatus(data, serviceId, serviceStatus));
-  }, [data, dataMode, persist]);
+    const service = data.serviceReservations.find((item) => item.id === serviceId);
+    const next = changeDemoServiceStatus(data, serviceId, serviceStatus);
+    setData(service ? { ...next, guestActivity: [{ id: `activity_${crypto.randomUUID()}`, guestId: service.customerId,
+      reservationId: service.reservationId, stayId: service.stayId, propertyId: service.propertyId,
+      employeeId: currentEmployee.id, type: serviceStatus === "completed" ? "service_completed" : "service_cancelled",
+      title: `${serviceStatus === "completed" ? "Оказана" : "Отменена"}: ${data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "услуга"}`,
+      amount: serviceStatus === "completed" ? service.totalAmount : undefined,
+      metadata: { serviceReservationId: service.id, status: serviceStatus }, at: new Date().toISOString() }, ...next.guestActivity] } : next);
+  }, [currentEmployee.id, data, dataMode, persist]);
 
   const assignPackage = useCallback(async (reservationId: string, packageId: string) => {
     if (dataMode === "database") {
@@ -697,11 +894,16 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     const reservation = data.reservations.find((item) => item.id === reservationId);
     if (!reservation) throw new Error("Бронь не найдена");
     const stay = data.stays.find((item) => item.reservationId === reservationId);
+    const at = new Date().toISOString();
     setData((previous) => ({ ...previous, tasks: [{ id: `task_${crypto.randomUUID()}`, title: input.title,
       description: input.description, type: "guest_request", source: "guest_request", department: input.department,
       status: "todo", priority: input.priority,
       dueAt: input.dueAt, ownerId: input.ownerId ?? currentEmployee.id, guestId: stay?.guestId ?? reservation.bookerCustomerId,
-      leadId: reservation.requestId, reservationId, stayId: stay?.id, propertyId: reservation.propertyId }, ...previous.tasks] }));
+      leadId: reservation.requestId, reservationId, stayId: stay?.id, propertyId: reservation.propertyId }, ...previous.tasks],
+      guestActivity: [{ id: `activity_${crypto.randomUUID()}`, guestId: stay?.guestId ?? reservation.bookerCustomerId,
+        reservationId, stayId: stay?.id, propertyId: reservation.propertyId, employeeId: currentEmployee.id,
+        type: "guest_request", title: input.title, description: input.description,
+        metadata: { department: input.department, priority: input.priority }, at }, ...previous.guestActivity] }));
   }, [currentEmployee.id, data.reservations, data.stays, dataMode, persist]);
 
   const createReview = useCallback(async (input: Omit<GuestReview, "id" | "status" | "reply" | "respondedAt">) => {
@@ -1216,11 +1418,20 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
 
   const updateTask = useCallback(async (taskId: string, patch: Partial<Pick<Task, "status" | "priority" | "dueAt" | "ownerId">>) => {
     if (dataMode === "database") { await persist(`/api/crm/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(patch) }); return; }
-    setData((previous) => ({
-      ...previous,
-      tasks: previous.tasks.map((task) => (task.id === taskId ? overdueAdjusted({ ...task, ...patch }) : task)),
-    }));
-  }, [dataMode, persist]);
+    setData((previous) => {
+      const current = previous.tasks.find((item) => item.id === taskId);
+      const at = nowIso();
+      const completed = patch.status === "done" && current?.status !== "done" && current?.type === "guest_request";
+      return { ...previous,
+        tasks: previous.tasks.map((task) => (task.id === taskId ? overdueAdjusted({ ...task, ...patch,
+          completedAt: patch.status === "done" ? at : task.completedAt }) : task)),
+        guestActivity: completed && current?.guestId ? [{ id: `activity_${crypto.randomUUID()}`, guestId: current.guestId,
+          reservationId: current.reservationId, stayId: current.stayId, propertyId: current.propertyId,
+          employeeId: currentEmployee.id, type: "guest_request_completed", title: "Запрос гостя выполнен",
+          description: current.title, metadata: { taskId: current.id, department: current.department }, at }, ...previous.guestActivity] : previous.guestActivity,
+      };
+    });
+  }, [currentEmployee.id, dataMode, persist]);
 
   const toggleTaskDone = useCallback(async (taskId: string) => {
     if (dataMode === "database") {
@@ -1228,17 +1439,23 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       if (task) await persist(`/api/crm/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify({ status: task.status === "done" ? "todo" : "done", completedAt: task.status === "done" ? null : nowIso() }) });
       return;
     }
-    setData((previous) => ({
-      ...previous,
-      tasks: previous.tasks.map((task) => {
-        if (task.id !== taskId) return task;
-        if (task.status === "done") {
-          return overdueAdjusted({ ...task, status: "todo", completedAt: undefined });
-        }
-        return { ...task, status: "done", completedAt: nowIso() };
-      }),
-    }));
-  }, [data.tasks, dataMode, persist]);
+    setData((previous) => {
+      const current = previous.tasks.find((item) => item.id === taskId);
+      const at = nowIso();
+      const completing = current?.status !== "done";
+      return { ...previous,
+        tasks: previous.tasks.map((task) => {
+          if (task.id !== taskId) return task;
+          if (task.status === "done") return overdueAdjusted({ ...task, status: "todo", completedAt: undefined });
+          return { ...task, status: "done", completedAt: at };
+        }),
+        guestActivity: completing && current?.type === "guest_request" && current.guestId ? [{ id: `activity_${crypto.randomUUID()}`,
+          guestId: current.guestId, reservationId: current.reservationId, stayId: current.stayId, propertyId: current.propertyId,
+          employeeId: currentEmployee.id, type: "guest_request_completed", title: "Запрос гостя выполнен",
+          description: current.title, metadata: { taskId: current.id, department: current.department }, at }, ...previous.guestActivity] : previous.guestActivity,
+      };
+    });
+  }, [currentEmployee.id, data.tasks, dataMode, persist]);
 
   const sendMessage = useCallback(async (conversationId: string, text: string, asNote = false) => {
     if (dataMode === "database") {
@@ -2253,6 +2470,11 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       addReservationNote,
       checkInReservation,
       checkOutReservation,
+      extendStay,
+      changeDepartureTime,
+      moveStayRoom,
+      requestStayHousekeeping,
+      recordReservationPayment,
       bookService,
       getServiceAvailability,
       rescheduleService,
@@ -2334,8 +2556,13 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       createServiceResourceBlock,
       cancelServiceResourceBlock,
       changeServiceStatus,
+      changeDepartureTime,
       checkInReservation,
       checkOutReservation,
+      extendStay,
+      moveStayRoom,
+      recordReservationPayment,
+      requestStayHousekeeping,
       assignHousekeepingTask,
       assignMaintenanceTicket,
       cancelLead,

@@ -12,6 +12,7 @@ import { demoServiceBookingConfig, demoServiceResourceGroups, demoServiceResourc
 import { addDays, startOfDay } from "@/lib/format";
 import { classify, slaMinutesFor } from "@/lib/classification";
 import { generateFollowUps } from "@/lib/followup";
+import { propertyDate, propertyDateTimeIso } from "@/lib/service-time";
 import type {
   ActivityEvent,
   Campaign,
@@ -1826,60 +1827,141 @@ stays.filter((stay) => stay.status === "upcoming" && stay.id.startsWith("stay_le
   }
 });
 
-// One linked, in-house conversation makes the demo cover the full guest lifecycle.
-const inHouseStart = addDays(TODAY, -1);
-inHouseStart.setHours(15, 0, 0, 0);
-const inHouseEnd = addDays(TODAY, 1);
-inHouseEnd.setHours(12, 0, 0, 0);
-const inHouseReservation = demoReservations.find((reservation) => {
-  const stay = stays.find((item) => item.reservationId === reservation.id);
-  return Boolean(stay && conversations.some((conversation) => conversation.leadId === reservation.requestId) && rooms.some((room) => room.propertyId === reservation.propertyId && room.category === reservation.roomTypeSnapshot &&
-    ["vacant_clean", "inspected", "guest_ready", "clean"].includes(room.status) &&
-    !demoReservationUnits.some((unit) => unit.reservationId !== reservation.id && unit.roomId === room.id &&
-      unit.arrivalAt < inHouseEnd.toISOString() && inHouseStart.toISOString() < unit.departureAt)));
+// Curated, stable in-stay cases are anchored to the property's current date.
+// They are intentionally linked through the existing Reservation / Stay / Task / Service records.
+const demoProperty = "les_borovoe" as const;
+const demoEmployeeId = employees[0].id;
+const demoToday = propertyDate(NOW, "Asia/Qyzylorda");
+const demoDay = (offset: number) => {
+  const date = new Date(`${demoToday}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
+};
+const demoAt = (offset: number, time: string) => propertyDateTimeIso(demoDay(offset), time, "Asia/Qyzylorda");
+const demoServices: NonNullable<CrmDataset["serviceReservations"]> = [];
+const demoFixture = (input: { key: string; guestName: string; roomNumber: string; category: string; startOffset: number;
+  endOffset: number; amount: number; status?: "in_house" | "due_out" | "checked_out"; }) => {
+  const guest = guests.find((item) => item.fullName === input.guestName);
+  const room = rooms.find((item) => item.propertyId === demoProperty && item.number === input.roomNumber);
+  if (!guest || !room) return null;
+  const status = input.status ?? "in_house";
+  const arrivalAt = demoAt(input.startOffset, "15:00");
+  const departureAt = demoAt(input.endOffset, "12:00");
+  const reservationId = `reservation_demo_${input.key}`;
+  const stayId = `stay_demo_${input.key}`;
+  const allocationId = `allocation_demo_${input.key}`;
+  const reservation: Reservation = { id: reservationId, code: `DEMO-${input.key.toUpperCase()}`, propertyId: demoProperty,
+    bookerCustomerId: guest.id, roomTypeSnapshot: input.category, source: "demo", status: status === "checked_out" ? "completed" : "confirmed",
+    arrivalAt, departureAt, adults: 2, children: 0, currency: "KZT", confirmedAt: arrivalAt, createdAt: arrivalAt, updatedAt: arrivalAt };
+  const stay: GuestStay = { id: stayId, guestId: guest.id, propertyId: demoProperty, reservationId, reservationUnitId: allocationId,
+    roomId: room.id, actualCheckIn: arrivalAt, actualCheckOut: status === "checked_out" ? departureAt : undefined,
+    operationalStatus: status, roomType: input.category, checkIn: arrivalAt, checkOut: departureAt,
+    nights: Math.max(1, input.endOffset - input.startOffset), adults: 2, children: 0, amount: input.amount,
+    bookingReference: reservation.code, status: status === "checked_out" ? "completed" : "in_house", serviceNames: [] };
+  demoReservations.push(reservation);
+  stays.push(stay);
+  demoReservationUnits.push({ id: allocationId, reservationId, roomId: room.id, arrivalAt, departureAt,
+    status: status === "checked_out" ? "released" : "active", assignedAt: arrivalAt });
+  demoReservationGuests.push({ id: `rg_${reservationId}`, reservationId, customerId: guest.id, fullName: guest.fullName,
+    role: "primary", isPrimary: true, isBooker: true, ageGroup: "adult" });
+  room.status = status === "checked_out" ? "vacant_dirty" : "occupied";
+  room.occupiedByGuestId = status === "checked_out" ? undefined : guest.id;
+  room.checkOutAt = departureAt;
+  return { guest, room, reservation, stay };
+};
+const demoActivity = (key: string, guestId: string, reservationId: string, stayId: string, type: GuestActivityEvent["type"],
+  title: string, offset: number, time: string, extra: Partial<GuestActivityEvent> = {}) => guestActivity.push({
+  id: `ga_demo_${key}`, guestId, propertyId: demoProperty, reservationId, stayId, type, title, at: demoAt(offset, time), ...extra,
 });
-if (inHouseReservation) {
-  const inHouseStay = stays.find((item) => item.reservationId === inHouseReservation.id)!;
-  const inHouseRoom = rooms.find((room) => room.propertyId === inHouseReservation.propertyId && room.category === inHouseReservation.roomTypeSnapshot &&
-    ["vacant_clean", "inspected", "guest_ready", "clean"].includes(room.status) &&
-    !demoReservationUnits.some((unit) => unit.reservationId !== inHouseReservation.id && unit.roomId === room.id &&
-      unit.arrivalAt < inHouseEnd.toISOString() && inHouseStart.toISOString() < unit.departureAt));
-  inHouseReservation.arrivalAt = inHouseStart.toISOString();
-  inHouseReservation.departureAt = inHouseEnd.toISOString();
-  inHouseStay.checkIn = inHouseStart.toISOString();
-  inHouseStay.checkOut = inHouseEnd.toISOString();
-  inHouseStay.nights = 2;
-  inHouseStay.operationalStatus = "in_house";
-  inHouseStay.roomId = inHouseRoom?.id;
-  if (inHouseRoom) {
-    demoReservationUnits.splice(0, demoReservationUnits.length, ...demoReservationUnits.filter((unit) => unit.reservationId !== inHouseReservation.id));
-    demoReservationUnits.push({ id: `allocation_${inHouseReservation.id}`, reservationId: inHouseReservation.id,
-      roomId: inHouseRoom.id, arrivalAt: inHouseReservation.arrivalAt, departureAt: inHouseReservation.departureAt,
-      status: "active", assignedAt: minutesAgo(60) });
-    inHouseRoom.status = "occupied";
-    inHouseRoom.occupiedByGuestId = inHouseReservation.bookerCustomerId;
-    inHouseRoom.checkOutAt = inHouseReservation.departureAt;
-  }
-  if (inHouseReservation.requestId) {
-    const linkedRequest = leads.find((item) => item.id === inHouseReservation.requestId);
-    if (linkedRequest) { linkedRequest.checkIn = inHouseReservation.arrivalAt; linkedRequest.checkOut = inHouseReservation.departureAt; linkedRequest.nights = 2; }
-  }
-  const existingConversation = conversations.find((item) => item.leadId === inHouseReservation.requestId);
-  if (existingConversation) {
-    const atMessage = minutesAgo(2);
-    existingConversation.status = "open";
-    existingConversation.unreadCount = 1;
-    existingConversation.lastMessageAt = atMessage;
-    existingConversation.messages.push({ id: `${existingConversation.id}_inhouse_request`, conversationId: existingConversation.id,
-      direction: "in", text: "Добрый день! Можно принести в домик ещё два полотенца?", at: atMessage });
-    tasks.push({ id: "task_demo_inhouse_request", title: "Принести дополнительные полотенца", type: "guest_request",
-      status: "todo", priority: "medium", dueAt: minutesAgo(-15), ownerId: inHouseReservation.requestId ?
-        (leads.find((item) => item.id === inHouseReservation.requestId)?.ownerId ?? employees[0].id) : employees[0].id,
-      guestId: inHouseReservation.bookerCustomerId, leadId: inHouseReservation.requestId ?? undefined,
-      conversationId: existingConversation.id, reservationId: inHouseReservation.id, stayId: inHouseStay.id,
-      roomId: inHouseRoom?.id, propertyId: inHouseReservation.propertyId, description: "Запрос из WhatsApp во время проживания." });
-  }
+const addDemoTask = (input: { id: string; guestId: string; reservationId: string; stayId: string; roomId: string;
+  title: string; department?: string; status?: Task["status"]; dueOffset?: number; dueTime?: string; type?: Task["type"]; }) => {
+  const stay = stays.find((item) => item.id === input.stayId)!;
+  tasks.push({ id: input.id, title: input.title, type: input.type ?? "guest_request", status: input.status ?? "todo",
+    priority: input.department === "Техобслуживание" ? "high" : "medium", dueAt: demoAt(input.dueOffset ?? 0, input.dueTime ?? "20:00"),
+    ownerId: demoEmployeeId, guestId: input.guestId, reservationId: input.reservationId, stayId: input.stayId,
+    roomId: input.roomId, propertyId: stay.propertyId, department: input.department, description: "Демонстрационный запрос текущего проживания." });
+};
+
+const demoMadina = demoFixture({ key: "normal", guestName: "Мадина Ержанова", roomNumber: "A-102", category: "A-Frame", startOffset: -1, endOffset: 3, amount: 520000 });
+const demoNurlan = demoFixture({ key: "balance_request", guestName: "Нурлан Жумабаев", roomNumber: "A-103", category: "A-Frame", startOffset: -1, endOffset: 2, amount: 480000 });
+const demoAlia = demoFixture({ key: "multiple_services", guestName: "Алия Ниязова", roomNumber: "G-301", category: "Glass House", startOffset: -1, endOffset: 3, amount: 405000 });
+const demoTechnical = demoFixture({ key: "technical_request", guestName: "Марат Сейтказы", roomNumber: "N-201", category: "Nest House", startOffset: -1, endOffset: 2, amount: 420000 });
+const demoDueOut = demoFixture({ key: "due_out", guestName: "Динара Сулейменова", roomNumber: "F-401", category: "Forest House · 2-местный номер", startOffset: -2, endOffset: 0, amount: 180000, status: "due_out" });
+const demoCheckedOut = demoFixture({ key: "checked_out", guestName: "Айдос Тлеубаев", roomNumber: "G-302", category: "Glass House", startOffset: -5, endOffset: -1, amount: 540000, status: "checked_out" });
+const demoExtension = demoFixture({ key: "extension", guestName: "Сабина Ибраева", roomNumber: "A-105", category: "A-Frame", startOffset: -2, endOffset: 1, amount: 390000 });
+const demoConflict = demoFixture({ key: "extension_conflict", guestName: "Бекзат Сагинтаев", roomNumber: "N-202", category: "Nest House", startOffset: -2, endOffset: 1, amount: 630000 });
+const demoMove = demoFixture({ key: "room_move", guestName: "Рустем Калиев", roomNumber: "A-101", category: "A-Frame", startOffset: -1, endOffset: 2, amount: 390000 });
+
+for (const fixture of [demoMadina, demoNurlan, demoAlia, demoTechnical, demoDueOut, demoCheckedOut, demoExtension, demoConflict, demoMove]) {
+  if (!fixture) continue;
+  const arrivalOffset = Math.round((Date.parse(propertyDate(fixture.stay.checkIn, "Asia/Qyzylorda")) - Date.parse(demoToday)) / 86_400_000);
+  demoActivity(fixture.reservation.code, fixture.guest.id, fixture.reservation.id, fixture.stay.id, "check_in", "Гость заселён", arrivalOffset, "15:00");
+  if (fixture.stay.operationalStatus === "checked_out") demoActivity(`${fixture.reservation.code}_out`, fixture.guest.id, fixture.reservation.id, fixture.stay.id, "check_out", "Гость выселен", -1, "12:00");
 }
+if (demoMadina) {
+  payments.push({ id: "payment_demo_madina_settled", guestId: demoMadina.guest.id, reservationId: demoMadina.reservation.id,
+    stayId: demoMadina.stay.id, date: demoAt(-1, "16:00"), amount: 520000, method: "card", status: "paid", reference: "DEMO-PAID" });
+  demoServices.push({ id: "service_demo_madina_spa", propertyId: demoProperty, customerId: demoMadina.guest.id, reservationId: demoMadina.reservation.id,
+    stayId: demoMadina.stay.id, catalogItemId: "svc_spa_visit", entitlementId: "demo_included_spa", status: "scheduled", startAt: demoAt(0, "18:00"),
+    participants: 2, quantity: 1, unitPrice: 0, totalAmount: 0, currency: "KZT" });
+}
+if (demoNurlan) {
+  const payment: GuestPayment = { id: "payment_demo_nurlan_partial", guestId: demoNurlan.guest.id, reservationId: demoNurlan.reservation.id,
+    stayId: demoNurlan.stay.id, date: demoAt(-1, "16:00"), amount: 360000, method: "card", status: "paid", reference: "DEMO-PARTIAL" };
+  payments.push(payment);
+  addDemoTask({ id: "task_demo_nurlan_towels", guestId: demoNurlan.guest.id, reservationId: demoNurlan.reservation.id,
+    stayId: demoNurlan.stay.id, roomId: demoNurlan.room.id, title: "Дополнительные полотенца", department: "Уборка", status: "in_progress" });
+}
+if (demoAlia) {
+  for (const service of [
+    { id: "service_demo_alia_atv", catalogItemId: "svc_atv", offset: 0, time: "14:00", quantity: 2, amount: 30000 },
+    { id: "service_demo_alia_spa", catalogItemId: "svc_spa_visit", offset: 0, time: "18:00", quantity: 2, amount: 24000 },
+    { id: "service_demo_alia_massage", catalogItemId: "svc_massage", offset: 1, time: "11:00", quantity: 1, amount: 15000 },
+  ]) demoServices.push({ id: service.id, propertyId: demoProperty, customerId: demoAlia.guest.id, reservationId: demoAlia.reservation.id,
+    stayId: demoAlia.stay.id, catalogItemId: service.catalogItemId, status: "scheduled", startAt: demoAt(service.offset, service.time),
+    participants: 2, quantity: service.quantity, unitPrice: service.amount / service.quantity, totalAmount: service.amount, currency: "KZT" });
+}
+if (demoTechnical) addDemoTask({ id: "task_demo_heating", guestId: demoTechnical.guest.id, reservationId: demoTechnical.reservation.id,
+  stayId: demoTechnical.stay.id, roomId: demoTechnical.room.id, title: "Не работает отопление", department: "Техобслуживание", status: "in_progress" });
+if (demoDueOut) {
+  payments.push({ id: "payment_demo_due_out", guestId: demoDueOut.guest.id, reservationId: demoDueOut.reservation.id, stayId: demoDueOut.stay.id,
+    date: demoAt(-1, "16:00"), amount: 180000, method: "transfer", status: "paid", reference: "DEMO-DUE-OUT" });
+  demoServices.push({ id: "service_demo_due_out", propertyId: demoProperty, customerId: demoDueOut.guest.id, reservationId: demoDueOut.reservation.id,
+    stayId: demoDueOut.stay.id, catalogItemId: "svc_spa_visit", status: "scheduled", startAt: demoAt(0, "13:00"), participants: 2,
+    quantity: 1, unitPrice: 50000, totalAmount: 50000, currency: "KZT" });
+}
+if (demoCheckedOut) {
+  payments.push({ id: "payment_demo_checked_out", guestId: demoCheckedOut.guest.id, reservationId: demoCheckedOut.reservation.id,
+    stayId: demoCheckedOut.stay.id, date: demoAt(-1, "11:00"), amount: 609000, method: "card", status: "paid", reference: "DEMO-SETTLED" });
+  demoServices.push({ id: "service_demo_checked_spa", propertyId: demoProperty, customerId: demoCheckedOut.guest.id, reservationId: demoCheckedOut.reservation.id,
+    stayId: demoCheckedOut.stay.id, catalogItemId: "svc_spa_visit", status: "completed", startAt: demoAt(-3, "18:00"), completedAt: demoAt(-3, "19:00"),
+    participants: 2, quantity: 1, unitPrice: 24000, totalAmount: 24000, currency: "KZT" });
+  demoServices.push({ id: "service_demo_checked_atv", propertyId: demoProperty, customerId: demoCheckedOut.guest.id, reservationId: demoCheckedOut.reservation.id,
+    stayId: demoCheckedOut.stay.id, catalogItemId: "svc_atv", status: "completed", startAt: demoAt(-2, "14:00"), completedAt: demoAt(-2, "16:00"),
+    participants: 2, quantity: 2, unitPrice: 22500, totalAmount: 45000, currency: "KZT" });
+}
+if (demoExtension) demoActivity("extend_available", demoExtension.guest.id, demoExtension.reservation.id, demoExtension.stay.id, "reservation_context", "Сценарий: продление доступно", 0, "09:00");
+if (demoConflict) {
+  const conflictArrival = demoAt(1, "15:00");
+  const conflictDeparture = demoAt(3, "12:00");
+  const reservationId = "reservation_demo_next_guest_conflict";
+  demoReservations.push({ id: reservationId, code: "DEMO-NEXT-GUEST", propertyId: demoProperty, bookerCustomerId: demoConflict.guest.id,
+    roomTypeSnapshot: demoConflict.reservation.roomTypeSnapshot, source: "demo", status: "confirmed", arrivalAt: conflictArrival, departureAt: conflictDeparture,
+    adults: 2, children: 0, currency: "KZT", createdAt: conflictArrival, updatedAt: conflictArrival });
+  demoReservationUnits.push({ id: "allocation_demo_next_guest_conflict", reservationId, roomId: demoConflict.room.id,
+    arrivalAt: conflictArrival, departureAt: conflictDeparture, status: "assigned", assignedAt: demoAt(0, "09:00") });
+}
+if (demoMove) {
+  addDemoTask({ id: "task_demo_move_heating", guestId: demoMove.guest.id, reservationId: demoMove.reservation.id,
+    stayId: demoMove.stay.id, roomId: demoMove.room.id, title: "Проверить отопление", department: "Техобслуживание", status: "in_progress" });
+  demoActivity("room_move_tech_request", demoMove.guest.id, demoMove.reservation.id, demoMove.stay.id, "guest_request", "Не работает отопление", 0, "15:45");
+}
+const roomMoveTarget = rooms.find((item) => item.propertyId === demoProperty && item.number === "A-104");
+if (roomMoveTarget) { roomMoveTarget.status = "vacant_clean"; roomMoveTarget.occupiedByGuestId = undefined; }
+if (roomMoveTarget) housekeepingTasks.filter((task) => task.roomId === roomMoveTarget.id).forEach((task) => {
+  task.status = "inspected";
+  task.inspectedAt = demoAt(0, "09:00");
+});
 
 // Короткий пример нового диалога о бронировании для демо-входа.
 const sultanSeedGuest = guests.find((guest) => guest.staysCount === 0) ?? guests[0];
@@ -1929,7 +2011,7 @@ conversations.push({
 });
 
 const demoConversations = conversations.map((conversation) => {
-  const reservation = demoReservations.find((item) => item.requestId === conversation.leadId);
+  const reservation = conversation.leadId ? demoReservations.find((item) => item.requestId === conversation.leadId) : undefined;
   const stay = reservation ? stays.find((item) => item.reservationId === reservation.id) : undefined;
   return { ...conversation, reservationId: conversation.reservationId ?? reservation?.id,
     stayId: conversation.stayId ?? stay?.id };
@@ -1973,7 +2055,7 @@ export const crmDataset: CrmDataset = {
   reservationNotes: [],
   unitTypes: [],
   services,
-  serviceReservations: [],
+  serviceReservations: demoServices,
   serviceResourceGroups: demoServiceResourceGroups,
   serviceResources: demoServiceResources,
   serviceResourceRequirements: demoServiceRequirements,

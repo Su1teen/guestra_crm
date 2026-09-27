@@ -40,6 +40,8 @@ import { isOpen } from "@/lib/analytics";
 import CashbackWallet from "@/components/common/CashbackWallet";
 import { buildReputationReviews, CHANNELS } from "@/lib/reputation-demo";
 import { customerContext, reservationStatusLabels, operationalStatusLabels } from "@/lib/hospitality";
+import { folioForReservation, todayForStay } from "@/lib/stay-workspace";
+import { propertyTime } from "@/lib/service-time";
 
 type TabKey = "overview" | "bookings" | "spending" | "conversations" | "profile";
 
@@ -108,6 +110,9 @@ const GuestDetail = () => {
   const activeLead = related.leads.find(isOpen);
   const lastStay = related.stays.find((stay) => stay.status === "completed");
   const context = customerContext(data, guest.id);
+  const currentFolio = context.reservation ? folioForReservation(data, context.reservation, context.stay) : undefined;
+  const currentAgenda = context.reservation && context.stay && context.state === "in_house"
+    ? todayForStay(data, context.reservation, context.stay) : [];
 
   const tabs: { value: TabKey; label: string; count?: number }[] = [
     { value: "overview", label: "Обзор" },
@@ -171,13 +176,14 @@ const GuestDetail = () => {
             <StatusPill tone={context.state === "in_house" ? "success" : context.state === "reserved" ? "info" : "neutral"}>{context.state === "in_house" ? "Сейчас проживает" : context.state === "reserved" ? "Будущий гость" : context.state === "request" ? "Есть обращение" : context.state === "post_stay" ? "Проживал" : "Контакт"}</StatusPill>
             {context.reservation ? <><p className="text-sm font-semibold">{propertyById(context.reservation.propertyId)?.name ?? context.reservation.propertyId} · {context.room ? `домик ${context.room.number}` : context.reservation.roomTypeSnapshot ?? "Домик не назначен"}</p>
               <p className="text-sm text-muted-foreground">{formatStayRange(context.reservation.arrivalAt, context.reservation.departureAt)} · {context.reservation.adults} взрослых</p>
-              {context.folio && <p className="text-sm">Остаток: <strong>{formatTenge(context.folio.balance)}</strong></p>}</>
+              {currentFolio && <p className="text-sm">Остаток: <strong>{formatTenge(currentFolio.balance)}</strong></p>}</>
               : context.request ? <p className="text-sm">Обращение {context.request.code} · {context.request.roomType ?? "запрос уточняется"}</p>
                 : <p className="text-sm text-muted-foreground">Активных обращений и бронирований нет.</p>}
             {context.task && <p className="text-xs text-muted-foreground">Следующее действие: {context.task.title} · {formatDateNumeric(context.task.dueAt)}</p>}
-            {context.state === "in_house" && <p className="text-xs text-muted-foreground">Запланированные услуги: {related.serviceReservations.filter((item) => item.stayId === context.stay?.id && item.status === "scheduled").length} · открытые запросы: {data.tasks.filter((item) => item.stayId === context.stay?.id && item.type === "guest_request" && item.status !== "done").length}</p>}
+            {context.state === "in_house" && <><p className="text-xs text-muted-foreground">Запланированные услуги: {related.serviceReservations.filter((item) => item.reservationId === context.reservation?.id || item.stayId === context.stay?.id).filter((item) => item.status === "scheduled").length} · открытые запросы: {data.tasks.filter((item) => (item.reservationId === context.reservation?.id || item.stayId === context.stay?.id) && item.type === "guest_request" && item.status !== "done").length}</p>
+              {currentAgenda.length > 0 && <div className="space-y-1 rounded-lg bg-secondary/60 p-2 text-xs"><p className="font-semibold">Сегодня у гостя</p>{currentAgenda.slice(0, 3).map((item) => <p key={item.id}><strong>{propertyTime(item.at, "Asia/Qyzylorda")}</strong> · {item.title}</p>)}</div>}</>}
           </div>
-          <div className="flex gap-2">{context.reservation && <Button variant="outline" onClick={() => navigate(`/reservations?reservation=${context.reservation?.id}`)}>Открыть бронь</Button>}
+          <div className="flex gap-2">{context.reservation && <Button variant="outline" onClick={() => navigate(`/reservations?reservation=${context.reservation?.id}`)}>{context.state === "in_house" ? "Открыть проживание" : "Открыть бронь"}</Button>}
             {context.request && <Button variant="outline" onClick={() => navigate(`/requests/${context.request?.id}`)}>Открыть обращение</Button>}</div>
         </div>
       </SectionCard>
@@ -208,12 +214,18 @@ const GuestDetail = () => {
           <div className="space-y-3">
             {related.reservations.map((reservation) => {
               const stay = related.stays.find((item) => item.reservationId === reservation.id);
-              return <button type="button" key={reservation.id} onClick={() => navigate(`/reservations?reservation=${reservation.id}`)} className="flex w-full flex-wrap items-center justify-between gap-2 border-b border-border pb-3 text-left last:border-0 last:pb-0 hover:text-brand-700">
-                <span><span className="block font-medium">{reservation.code} · {reservation.roomTypeSnapshot ?? "Размещение"}</span>
-                  <span className="text-sm text-muted-foreground">{formatDateNumeric(reservation.arrivalAt)} — {formatDateNumeric(reservation.departureAt)}</span></span>
-                <span className="text-right text-sm"><span className="block">{reservationStatusLabels[reservation.status]}</span>
-                  <span className="text-muted-foreground">{stay ? `Проживание: ${operationalStatusLabels[stay.operationalStatus ?? "upcoming"]}` : "Проживание не создано"}</span></span>
-              </button>;
+              const folio = folioForReservation(data, reservation, stay);
+              const accommodationTotal = folio?.lines.filter((line) => line.category === "accommodation" && line.status !== "cancelled").reduce((sum, line) => sum + line.lineTotal, 0) ?? stay?.amount ?? 0;
+              const extraTotal = Math.max(0, (folio?.totalAmount ?? stay?.amount ?? 0) - accommodationTotal);
+              const visitServices = data.serviceReservations.filter((item) => item.reservationId === reservation.id || item.stayId === stay?.id);
+              const guestRequestCount = data.tasks.filter((item) => (item.reservationId === reservation.id || item.stayId === stay?.id) && item.type === "guest_request").length;
+              const room = data.rooms.find((item) => item.id === stay?.roomId || data.reservationUnits.some((unit) => unit.reservationId === reservation.id && unit.roomId === item.id));
+              return <div key={reservation.id} className="border-b border-border pb-3 last:border-0 last:pb-0"><button type="button" aria-label={`Открыть детали визита ${reservation.code}`} onClick={() => navigate(`/reservations?reservation=${reservation.id}`)} className="flex w-full flex-wrap items-center justify-between gap-2 text-left hover:text-brand-700">
+                <span><span className="block font-medium">{formatDateNumeric(reservation.arrivalAt)} — {formatDateNumeric(reservation.departureAt)} · {room?.number ?? reservation.roomTypeSnapshot ?? "Размещение"}</span>
+                  <span className="text-sm text-muted-foreground">{stay ? `${stay.nights} ${nightsLabel(stay.nights)} · ${operationalStatusLabels[stay.operationalStatus ?? "upcoming"]}` : reservation.code}</span></span>
+                <span className="text-right text-sm"><span className="block">Итого {formatTenge(folio?.totalAmount ?? stay?.amount ?? 0)}</span>
+                  <span className="text-muted-foreground">Оплачено {formatTenge(folio?.paidAmount ?? 0)} · Услуги {visitServices.length} · Запросы {guestRequestCount}</span></span>
+              </button><p className="mt-1 text-xs text-muted-foreground">Проживание {formatTenge(accommodationTotal)} · Доп. услуги {formatTenge(extraTotal)} · Остаток {formatTenge(folio?.balance ?? 0)}</p>{visitServices.length > 0 && <p className="mt-1 text-xs text-muted-foreground">Услуги: {visitServices.map((service) => data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга").filter((name, index, names) => names.indexOf(name) === index).join(", ")}</p>}</div>;
             })}
           </div>
         </SectionCard>

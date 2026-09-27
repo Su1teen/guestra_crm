@@ -20,7 +20,8 @@ import type { JourneyStage } from "../../shared/journey.js";
 import { findCustomerCandidates, normalizeEmail, normalizePhone } from "../services/customer-service.js";
 import { assignReservationUnit, assertRoomAvailable, AvailabilityConflict } from "../services/availability-service.js";
 import { ensureReservationForRequest } from "../services/reservation-service.js";
-import { checkInStay, checkOutStay, StayConflict } from "../services/stay-service.js";
+import { addStayPayment, changeDepartureTime, checkInStay, checkOutStay, extendStay, moveStayRoom,
+  requestStayHousekeeping, StayConflict } from "../services/stay-service.js";
 import { bookService, changeServiceStatus, linkServiceToReservation, rescheduleService, ServiceConflict } from "../services/service-reservation-service.js";
 import { assessServiceSlot, loadServiceCatalogItem, lockServiceGroups, ServiceAvailabilityConflict } from "../services/service-availability-service.js";
 
@@ -131,6 +132,79 @@ export const createCrmRouter = (db: Database) => {
       }));
       if (!result) return response.status(404).json({ error: "Бронь не найдена" });
       response.json(result);
+    } catch (error) {
+      if (error instanceof StayConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.post("/reservations/:id/extend", async (request, response) => {
+    const body = z.object({ departureAt: z.string().datetime() }).parse(request.body);
+    try {
+      const result = await db.transaction((tx) => extendStay(tx, request.params.id, {
+        ...body, employeeId: (request as AuthenticatedRequest).authUser?.employeeId ?? undefined,
+      }));
+      if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+      response.json(result);
+    } catch (error) {
+      if (error instanceof StayConflict || error instanceof AvailabilityConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.post("/reservations/:id/change-departure-time", async (request, response) => {
+    const body = z.object({ departureAt: z.string().datetime() }).parse(request.body);
+    try {
+      const result = await db.transaction((tx) => changeDepartureTime(tx, request.params.id, {
+        ...body, employeeId: (request as AuthenticatedRequest).authUser?.employeeId ?? undefined,
+      }));
+      if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+      response.json(result);
+    } catch (error) {
+      if (error instanceof AvailabilityConflict) return response.status(409).json({ error: "Следующий заезд запланирован сегодня. Поздний выезд недоступен." });
+      if (error instanceof StayConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.post("/reservations/:id/move-room", async (request, response) => {
+    const body = z.object({ roomId: z.string().min(1), reason: z.string().trim().min(2) }).parse(request.body);
+    try {
+      const result = await db.transaction((tx) => moveStayRoom(tx, request.params.id, {
+        ...body, employeeId: (request as AuthenticatedRequest).authUser?.employeeId ?? undefined,
+      }));
+      if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+      response.json(result);
+    } catch (error) {
+      if (error instanceof StayConflict || error instanceof AvailabilityConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.post("/reservations/:id/housekeeping-request", async (request, response) => {
+    const body = z.object({ dueAt: z.string().datetime(), notes: z.string().trim().max(500).optional(),
+      doNotDisturb: z.boolean().optional() }).parse(request.body);
+    try {
+      const result = await db.transaction((tx) => requestStayHousekeeping(tx, request.params.id, {
+        ...body, employeeId: (request as AuthenticatedRequest).authUser?.employeeId ?? undefined,
+      }));
+      if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+      response.status(201).json(result);
+    } catch (error) {
+      if (error instanceof StayConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.post("/reservations/:id/payments", async (request, response) => {
+    const body = z.object({ amount: z.number().int().positive(), method: z.enum(["card", "transfer", "cash"]),
+      reference: z.string().trim().max(120).optional(), comment: z.string().trim().max(300).optional() }).parse(request.body);
+    try {
+      const result = await db.transaction((tx) => addStayPayment(tx, request.params.id, {
+        ...body, employeeId: (request as AuthenticatedRequest).authUser?.employeeId ?? undefined,
+      }));
+      if (!result) return response.status(404).json({ error: "Бронь не найдена" });
+      response.status(201).json(result);
     } catch (error) {
       if (error instanceof StayConflict) return response.status(409).json({ error: error.message });
       throw error;
@@ -327,8 +401,10 @@ export const createCrmRouter = (db: Database) => {
         leadId: reservation.requestId, reservationId: reservation.id, stayId: stay?.id,
         propertyId: reservation.propertyId }).returning();
       await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: stay?.guestId ?? reservation.bookerCustomerId,
+        reservationId: reservation.id, stayId: stay?.id,
         propertyId: reservation.propertyId, employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
-        type: "guest_request", title: body.title, description: body.description, occurredAt: now() });
+        type: "guest_request", title: body.title, description: body.description,
+        metadata: { taskId: task.id, department: body.department, priority: body.priority }, occurredAt: now() });
       return task;
     }).catch((error: unknown) => { if (error instanceof StayConflict) return error; throw error; });
     if (result instanceof StayConflict) return response.status(409).json({ error: result.message });
@@ -358,9 +434,17 @@ export const createCrmRouter = (db: Database) => {
     const [reservation] = await db.select().from(s.reservations).where(eq(s.reservations.id, request.params.id)).limit(1);
     if (!reservation) return response.status(404).json({ error: "Бронь не найдена" });
     const at = now();
-    const [note] = await db.insert(s.reservationNotes).values({ id: id("reservation_note"),
-      reservationId: reservation.id, authorId: (request as AuthenticatedRequest).authUser?.employeeId,
-      text, createdAt: at }).returning();
+    const note = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(s.reservationNotes).values({ id: id("reservation_note"),
+        reservationId: reservation.id, authorId: (request as AuthenticatedRequest).authUser?.employeeId,
+        text, createdAt: at }).returning();
+      const [stay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservation.id)).limit(1);
+      await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: stay?.guestId ?? reservation.bookerCustomerId,
+        reservationId: reservation.id, stayId: stay?.id, propertyId: reservation.propertyId,
+        employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "note",
+        title: "Заметка к проживанию", description: text, metadata: { noteId: created.id }, occurredAt: at });
+      return created;
+    });
     response.status(201).json(note);
   });
 
@@ -923,10 +1007,24 @@ export const createCrmRouter = (db: Database) => {
   });
   router.patch("/tasks/:id", async (request, response) => {
     const patch = z.object({ status: z.string().optional(), priority: z.string().optional(), dueAt: z.string().datetime().optional(), ownerId: z.string().optional(), completedAt: z.string().datetime().nullable().optional() }).parse(request.body);
-    const [task] = await db.update(s.tasks).set({ ...patch, updatedAt: now() }).where(eq(s.tasks.id, request.params.id)).returning();
+    const timestamp = now();
+    const task = await db.transaction(async (tx) => {
+      const [current] = await tx.select().from(s.tasks).where(eq(s.tasks.id, request.params.id)).limit(1);
+      if (!current) return undefined;
+      const [updated] = await tx.update(s.tasks).set({ ...patch, updatedAt: timestamp,
+        ...(patch.status === "done" ? { completedAt: patch.completedAt ?? timestamp } : {}) })
+        .where(eq(s.tasks.id, request.params.id)).returning();
+      if (patch.status === "done" && current.status !== "done" && current.type === "guest_request" && current.guestId) {
+        await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: current.guestId,
+          reservationId: current.reservationId, stayId: current.stayId, propertyId: current.propertyId,
+          employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "guest_request_completed",
+          title: "Запрос гостя выполнен", description: current.title,
+          metadata: { taskId: current.id, department: current.department }, occurredAt: timestamp });
+      }
+      return updated;
+    });
     if (task?.source?.startsWith("legacy_follow_up:")) {
       const followUpId = task.source.slice("legacy_follow_up:".length);
-      const timestamp = now();
       const followUpPatch = {
         ...(patch.dueAt ? { dueAt: patch.dueAt } : {}),
         ...(patch.ownerId ? { ownerId: patch.ownerId } : {}),

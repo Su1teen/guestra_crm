@@ -1,4 +1,5 @@
 import type { CrmDataset, Guest, GuestStay, Lead, RequestStatus, Reservation, ReservationStatus, StayStatus, Task } from "@/types/crm";
+import { propertyDate } from "@/lib/service-time";
 
 export const requestStatusLabels: Record<RequestStatus, string> = {
   new: "Новое", active: "В работе", waiting_customer: "Ждём гостя",
@@ -35,7 +36,7 @@ export const operationalStatusLabels: Record<StayStatus, string> = {
 export const effectiveStayStatus = (stay: GuestStay, at = new Date()): StayStatus => {
   const status = stay.operationalStatus ?? "upcoming";
   if (["checked_out", "no_show", "cancelled"].includes(status)) return status;
-  const sameDay = (date: string) => new Date(date).toDateString() === at.toDateString();
+  const sameDay = (date: string) => propertyDate(date, "Asia/Qyzylorda") === propertyDate(at, "Asia/Qyzylorda");
   if (status === "in_house" || status === "due_out") return sameDay(stay.checkOut) ? "due_out" : "in_house";
   if (sameDay(stay.checkIn)) return "due_in";
   const days = (new Date(stay.checkIn).getTime() - at.getTime()) / 86_400_000;

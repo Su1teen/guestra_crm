@@ -169,8 +169,9 @@ export const bookService = async (tx: Tx, input: ServiceBookingInput) => {
     resourceId: assignment.resourceId, startAt: input.startAt, endAt, quantity: assignment.quantity,
   })));
   await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: input.customerId,
-    propertyId: input.propertyId, employeeId: input.employeeId, type: "service_scheduled",
-    title: `Запланировано: ${catalog.name}`, amount: total, occurredAt: at });
+    reservationId: reservation?.id, stayId: stay?.id, propertyId: input.propertyId, employeeId: input.employeeId,
+    type: "service_scheduled", title: `Запланировано: ${catalog.name}`, amount: total,
+    metadata: { serviceReservationId: service.id, startAt: service.startAt, quantity: service.quantity }, occurredAt: at });
   return { service, duplicate: false };
 };
 
@@ -196,9 +197,11 @@ export const changeServiceStatus = async (tx: Tx, serviceId: string, status: "co
   const [catalog] = await tx.select().from(s.serviceCatalog)
     .where(eq(s.serviceCatalog.id, service.catalogItemId)).limit(1);
   await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: service.customerId,
+    reservationId: service.reservationId ?? undefined, stayId: service.stayId ?? undefined,
     propertyId: service.propertyId, employeeId, type: status === "completed" ? "service_completed" : "service_cancelled",
     title: `${status === "completed" ? "Оказана" : "Отменена"}: ${catalog?.name ?? "услуга"}`,
-    amount: status === "completed" ? service.totalAmount : null, occurredAt: at });
+    amount: status === "completed" ? service.totalAmount : null,
+    metadata: { serviceReservationId: service.id, status }, occurredAt: at });
   return { service: updated, duplicate: false };
 };
 
@@ -245,8 +248,10 @@ export const linkServiceToReservation = async (tx: Tx, serviceId: string, reserv
   }
   const [updated] = await tx.update(s.serviceReservations).set({ reservationId: reservation.id, stayId: stay?.id ?? null, requestId: reservation.requestId,
     ...(mergeFolio ? { folioId: targetFolio.id } : {}), updatedAt: now() }).where(eq(s.serviceReservations.id, service.id)).returning();
-  await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: service.customerId, propertyId: service.propertyId,
-    employeeId, type: "service_linked", title: "Услуга связана с проживанием", description: reservation.code, occurredAt: now() });
+  await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: service.customerId,
+    reservationId: reservation.id, stayId: stay?.id, propertyId: service.propertyId,
+    employeeId, type: "service_linked", title: "Услуга связана с проживанием", description: reservation.code,
+    metadata: { serviceReservationId: service.id, folioId: mergeFolio ? targetFolio?.id : service.folioId }, occurredAt: now() });
   return { service: updated, duplicate: false, folioId: mergeFolio ? targetFolio.id : service.folioId };
 };
 
@@ -274,7 +279,9 @@ export const rescheduleService = async (tx: Tx, serviceId: string, input: {
   const [updated] = await tx.update(s.serviceReservations).set({ startAt: input.startAt, endAt, updatedAt: at })
     .where(eq(s.serviceReservations.id, service.id)).returning();
   await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: service.customerId,
+    reservationId: service.reservationId ?? undefined, stayId: service.stayId ?? undefined,
     propertyId: service.propertyId, employeeId: input.employeeId, type: "service_rescheduled",
-    title: `Перенесено: ${catalog.name}`, description: `${service.startAt} → ${input.startAt}`, occurredAt: at });
+    title: `Перенесено: ${catalog.name}`, description: `${service.startAt} → ${input.startAt}`,
+    metadata: { serviceReservationId: service.id, previousStartAt: service.startAt, startAt: input.startAt }, occurredAt: at });
   return updated;
 };

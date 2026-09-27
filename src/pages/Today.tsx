@@ -10,8 +10,10 @@ import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import { formatDateNumeric, formatDueDate } from "@/lib/format";
 import { displayTaskTitle, effectiveStayStatus, operationalStatusLabels, reservationReadiness, reservationStatusLabels } from "@/lib/hospitality";
+import { attentionForStay, todayForStay } from "@/lib/stay-workspace";
+import { propertyDate, propertyTime } from "@/lib/service-time";
 
-const sameDate = (date: string, today: Date) => new Date(date).toDateString() === today.toDateString();
+const sameDate = (date: string, today: Date) => propertyDate(date, "Asia/Qyzylorda") === propertyDate(today, "Asia/Qyzylorda");
 
 const Today = () => {
   const { status, reload, property, propertyName, data, currentEmployee } = useCrm();
@@ -25,6 +27,10 @@ const Today = () => {
   const departures = scoped.reservations.filter((item) => item.status === "confirmed" && sameDate(item.departureAt, now) &&
     scoped.stays.some((stay) => stay.reservationId === item.id && ["in_house", "due_out"].includes(stay.operationalStatus ?? "")));
   const inHouse = scoped.stays.filter((item) => ["in_house", "due_out"].includes(effectiveStayStatus(item, now)));
+  const staysWithAgenda = inHouse.map((stay) => {
+    const reservation = data.reservations.find((item) => item.id === stay.reservationId);
+    return reservation ? { stay, reservation, items: todayForStay(data, reservation, stay, now), attention: attentionForStay(data, reservation, stay, now) } : null;
+  }).filter((item): item is NonNullable<typeof item> => Boolean(item));
   const newRequests = scoped.leads.filter((item) => item.requestStatus === "new" || (!item.requestStatus && item.stage === "new"));
   const unread = scoped.conversations.filter((item) => item.unreadCount > 0 && item.status !== "closed");
   const pendingPayment = scoped.reservations.filter((item) => item.status === "pending_payment");
@@ -79,6 +85,15 @@ const Today = () => {
       {todaysServices.length ? <ul className="space-y-2">{todaysServices.slice(0, 8).map((service) => <li key={service.id} className="flex justify-between rounded-lg border px-3 py-2 text-sm">
         <span>{new Date(service.startAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} · {data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"} · {data.guests.find((item) => item.id === service.customerId)?.fullName ?? "Гость"}</span>
         <span>{service.quantity} ед.</span></li>)}</ul> : <p className="text-sm text-muted-foreground">На сегодня услуг нет.</p>}
+    </SectionCard>
+    <SectionCard title="Сегодня у проживающих гостей" description="Ближайшие услуги, запросы и задачи по текущим проживаниям.">
+      {staysWithAgenda.length ? <ul className="divide-y">{staysWithAgenda.map(({ stay, reservation, items, attention: stayAttention }) => <li key={stay.id} className="py-3 first:pt-0 last:pb-0">
+        <button type="button" className="mb-2 text-left text-sm font-semibold hover:text-brand-700" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>
+          {data.guests.find((guest) => guest.id === reservation.bookerCustomerId)?.fullName ?? "Гость"} · открыть проживание
+        </button>
+        {items.length ? <ul className="space-y-1">{items.slice(0, 4).map((item) => <li key={item.id} className="text-sm"><span className="mr-2 font-semibold tabular-nums">{propertyTime(item.at, "Asia/Qyzylorda")}</span>{item.kind === "request" ? "Запрос: " : ""}{item.title}{item.detail ? <span className="text-muted-foreground"> · {item.detail}</span> : null}</li>)}</ul> : <p className="text-xs text-muted-foreground">Сегодня ничего не запланировано.</p>}
+        {stayAttention.issues.length > 0 && <p className="mt-1 text-xs text-amber-700">{stayAttention.issues.slice(0, 2).join(" · ")}</p>}
+      </li>)}</ul> : <p className="text-sm text-muted-foreground">Сейчас никто не проживает.</p>}
     </SectionCard>
   </div>;
 };

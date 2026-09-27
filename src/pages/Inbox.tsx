@@ -26,6 +26,8 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { conversationQueueLabel, conversationQueueState, type ConversationQueueState } from "@/lib/conversations";
 import { customerContext, effectiveStayStatus, operationalStatusLabels, reservationReadiness, reservationStatusLabels } from "@/lib/hospitality";
+import { attentionForStay, folioForReservation, todayForStay } from "@/lib/stay-workspace";
+import { propertyTime } from "@/lib/service-time";
 
 const channelOptions = [
   { value: "all", label: "Все каналы" },
@@ -50,7 +52,7 @@ const Inbox = () => {
     status, reload, data, guestById, leadById, currentEmployee, employeeById, propertyById,
     sendMessage, markConversationRead, setConversationStatus, assignConversation,
     toggleTaskDone, updateTask, createOfferFromLead, setOfferStatus, recordPayment,
-    updateLead, folioByLeadId,
+    updateLead, folioByLeadId, recordReservationPayment,
   } = useCrm();
   const scoped = useScopedData();
   const navigate = useNavigate();
@@ -140,7 +142,7 @@ const Inbox = () => {
       : request ? undefined : guestSummary?.stay;
   const room = data.rooms.find((item) => item.id === (stay?.roomId ?? data.reservationUnits.find((unit) => unit.reservationId === reservation?.id)?.roomId));
   const folio = reservation
-    ? data.folios.find((item) => item.reservationId === reservation.id || (reservation.requestId && item.leadId === reservation.requestId))
+    ? folioForReservation(data, reservation, stay ?? undefined)
     : request ? folioByLeadId(request.id) : undefined;
   const offer = selected?.offerId ? data.offers.find((item) => item.id === selected.offerId)
     : request ? data.offers.filter((item) => item.leadId === request.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] : undefined;
@@ -151,6 +153,8 @@ const Inbox = () => {
   const nextTask = activeTasks[0] ?? (!request && !reservation && !stay ? guestSummary?.task : undefined);
   const stayState = stay ? effectiveStayStatus(stay) : null;
   const isInHouse = stayState === "in_house" || stayState === "due_out";
+  const stayAgenda = isInHouse && reservation && stay ? todayForStay(data, reservation, stay) : [];
+  const stayAttention = isInHouse && reservation && stay ? attentionForStay(data, reservation, stay) : null;
   const readiness = reservation ? reservationReadiness(data, reservation) : null;
   const bookedServices = data.serviceReservations.filter((item) => item.status === "scheduled" &&
     (reservation ? item.reservationId === reservation.id : request ? item.requestId === request.id : item.customerId === guest?.id && !item.reservationId));
@@ -207,7 +211,9 @@ const Inbox = () => {
     if (!request || Number(paymentAmount) <= 0 || Number(paymentAmount) > balance) return;
     setBusy(true);
     try {
-      await recordPayment(request.id, { amount: Number(paymentAmount), method: paymentMethod });
+      if (isInHouse && reservation) await recordReservationPayment(reservation.id, { amount: Number(paymentAmount), method: paymentMethod });
+      else if (request) await recordPayment(request.id, { amount: Number(paymentAmount), method: paymentMethod });
+      else throw new Error("Не найден счёт этого проживания");
       setPaymentOpen(false);
       setPaymentAmount("");
       toast({ title: "Оплата зарегистрирована", description: formatTenge(Number(paymentAmount)) });
@@ -295,11 +301,13 @@ const Inbox = () => {
             <p className="text-xs text-muted-foreground">{stayState === "due_out" ? "Выезд сегодня" : `Выезд ${formatDateLong(stay?.checkOut ?? reservation.departureAt)}`} · {stay?.checkOut ? formatTime(stay.checkOut) : "12:00"}</p>
             <p className="text-xs">Баланс: {formatTenge(balance)}</p>
             <p className="text-xs text-muted-foreground">Услуги: {bookedServices.length} · Открытые запросы: {guestRequests.length}</p>
+            {stayAttention?.issues.length ? <p className="text-xs text-amber-700">{stayAttention.issues.slice(0, 2).join(" · ")}</p> : <p className="text-xs text-emerald-700">По гостю всё в порядке</p>}
+            <div className="rounded-md bg-secondary/60 p-2"><p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Сегодня</p>{stayAgenda.length ? stayAgenda.slice(0, 3).map((item) => <p key={item.id} className="text-xs"><strong>{propertyTime(item.at, "Asia/Qyzylorda")}</strong> · {item.kind === "request" ? "Запрос: " : ""}{item.title}</p>) : <p className="text-xs text-muted-foreground">Ничего не запланировано</p>}</div>
             <div className="grid grid-cols-2 gap-2">
               <Button size="sm" variant="outline" onClick={() => setServiceOpen(true)}>Добавить услугу</Button>
               <Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>Добавить запрос</Button>
               {balance > 0 && <Button size="sm" variant="outline" onClick={() => { setPaymentAmount(String(balance)); setPaymentOpen(true); }}>Оплата</Button>}
-              <Button size="sm" variant="outline" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
+              <Button size="sm" variant="outline" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть проживание</Button>
             </div>
           </section>
         ) : reservation ? (

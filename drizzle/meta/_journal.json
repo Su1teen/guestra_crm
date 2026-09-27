@@ -57,6 +57,13 @@
       "when": 1790553600000,
       "tag": "0007_service_resource_availability",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790553600001,
+      "tag": "0008_stay_activity_context",
+      "breakpoints": true
     }
   ]
 }
