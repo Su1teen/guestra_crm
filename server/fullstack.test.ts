@@ -1217,6 +1217,10 @@ describe("AI Guest Agent gateway", () => {
       externalMessageId: "tg_agent_service_message", externalUpdateId: "tg_agent_service_update" };
     const inbound = await api("/messages/inbound").send(agentContact).expect(201);
     const conversationId = inbound.body.context.conversation.id as string;
+    await api("/requests/upsert").send({
+      propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
+      conversationId, idempotencyKey: "spa-request-001", direction: "spa",
+    }).expect(201);
     const startAt = "2027-05-01T05:00:00.000Z";
     const endAt = "2027-05-01T07:00:00.000Z";
     const proposalPayload = { catalogItemId: "svc_spa_visit", startAt, endAt, participants: 2, quantity: 2 };
@@ -1232,6 +1236,12 @@ describe("AI Guest Agent gateway", () => {
       .where(eq(s.serviceCatalog.id, spaCatalog.id));
     const proposalMessageId = await sendProposal(agentContact.externalUserId, conversationId,
       "spa-visit-agent-001", { actionType: "book_service", payload: proposalPayload }, "Записать вас в SPA на 10:00? ");
+    const proposalContext = await api("/context").send({ propertyId: "les_borovoe",
+      externalUserId: agentContact.externalUserId, conversationId }).expect(200);
+    expect(proposalContext.body).toMatchObject({ contractVersion: "agent-api-v1", activeProposal: {
+      messageId: proposalMessageId, actionType: "book_service", payload: proposalPayload,
+      expiresAt: expect.any(String), sentAt: expect.any(String),
+    } });
     const confirmation = await confirmInbound(agentContact, "spa-book", "Подтверждаю запись.");
     const bookingInput = { propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
       conversationId, proposalMessageId, confirmationMessageId: confirmation.body.messageId,
@@ -1242,6 +1252,9 @@ describe("AI Guest Agent gateway", () => {
     const folio = (await db.select().from(s.folios).where(eq(s.folios.id, service.folioId!)))[0];
     expect(folio.reservationId).toBeNull();
     expect((await api("/services/book").send(bookingInput).expect(200)).body.duplicate).toBe(true);
+    const consumedProposalContext = await api("/context").send({ propertyId: "les_borovoe",
+      externalUserId: agentContact.externalUserId, conversationId }).expect(200);
+    expect(consumedProposalContext.body.activeProposal).toBeNull();
 
     const moveStartAt = "2027-05-01T08:00:00.000Z";
     const moveEndAt = "2027-05-01T10:00:00.000Z";
@@ -1279,6 +1292,10 @@ describe("AI Guest Agent gateway", () => {
       externalMessageId: "tg_agent_confirmation_guard_in", externalUpdateId: "tg_agent_confirmation_guard_update" };
     const inbound = await api("/messages/inbound").send(contact).expect(201);
     const conversationId = inbound.body.context.conversation.id as string;
+    await api("/requests/upsert").send({
+      propertyId: "les_borovoe", externalUserId: contact.externalUserId,
+      conversationId, idempotencyKey: "spa-guard-request", direction: "spa",
+    }).expect(201);
     const [spaCatalog] = await db.select().from(s.serviceCatalog).where(eq(s.serviceCatalog.id, "svc_spa_visit"));
     await db.update(s.serviceCatalog).set({ metadata: { ...(spaCatalog.metadata ?? {}), demoRate: false } })
       .where(eq(s.serviceCatalog.id, spaCatalog.id));

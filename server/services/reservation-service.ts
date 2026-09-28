@@ -288,7 +288,7 @@ export const confirmBooking = async (db: Database, input: ConfirmBookingInput) =
     await recalcFolio(tx, folio.id);
     await tx.update(s.leads).set({
       stage: "confirmed", requestStatus: "won", probability: 100,
-      bookingReference: input.confirmationNumber, reservationId: input.reservationId,
+      bookingReference: input.confirmationNumber, reservationId: reservation.id,
       roomType: input.roomType, checkIn: arrivalAt, checkOut: departureAt, nights,
       adults: input.adults, children: input.children, lastActivityAt: timestamp, updatedAt: timestamp,
     }).where(eq(s.leads.id, request.id));

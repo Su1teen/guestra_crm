@@ -3,6 +3,7 @@ import { Router } from "express";
 import { and, asc, desc, eq, gte, inArray, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { AGENT_API_VERSION, AGENT_BOOKING_MODES, AGENT_CONFIRMATION_POLICY, AGENT_LIFECYCLES, AGENT_TOOLS,
+  AGENT_TOOL_DESCRIPTORS,
   AgentAccommodationAvailabilitySchema, AgentAccommodationBookSchema, AgentAccommodationOptionsQuerySchema,
   AgentClassifyConversationSchema, AgentContextRequestSchema, AgentFolioSummarySchema, AgentGuestRequestSchema,
   AgentHandoffSchema, AgentIdentityVerifySchema, AgentInboundMessageSchema, AgentOutboundPrepareSchema,
@@ -142,6 +143,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
     contractVersion: AGENT_API_VERSION,
     supportedChannels: ["telegram"],
     supportedTools: AGENT_TOOLS,
+    toolDescriptors: AGENT_TOOL_DESCRIPTORS,
     supportedLifecycleStates: AGENT_LIFECYCLES,
     supportedAgentBookingModes: AGENT_BOOKING_MODES,
     confirmationPolicy: AGENT_CONFIRMATION_POLICY,
@@ -397,9 +399,11 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
         throw new Error("Request idempotency record is incomplete");
       }
       const timestamp = now();
-      let [lead] = await tx.select().from(s.leads).where(and(eq(s.leads.guestId, identity.guestId),
-        eq(s.leads.propertyId, input.propertyId), notInArray(s.leads.stage, ["confirmed", "completed", "lost", "cancelled"])))
-        .orderBy(desc(s.leads.updatedAt)).limit(1);
+      let [lead] = conversation.leadId
+        ? await tx.select().from(s.leads).where(and(eq(s.leads.id, conversation.leadId),
+            eq(s.leads.guestId, identity.guestId), eq(s.leads.propertyId, input.propertyId),
+            notInArray(s.leads.stage, ["confirmed", "completed", "lost", "cancelled"]))).limit(1)
+        : [];
       let created = false;
       if (!lead) {
         const [assignment] = await tx.select().from(s.employeeProperties).where(eq(s.employeeProperties.propertyId, input.propertyId)).limit(1);
@@ -843,12 +847,26 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
       )).limit(1);
       if (priorAttempt) {
         if (priorAttempt.payloadHash !== verificationHash) return { linked: false, conflict: true };
-        if (priorAttempt.guestId && priorAttempt.guestId !== stub.id) {
-          const [verifiedConversation] = await tx.select().from(s.conversations).where(and(
-            eq(s.conversations.guestId, stub.id), eq(s.conversations.propertyId, input.propertyId),
-            eq(s.conversations.channel, "telegram"), eq(s.conversations.externalChatId, identity.externalChatId ?? ""),
+        const reference = input.bookingReference.toLocaleUpperCase("en-US");
+        const normalizedPhone = normalizePhone(input.phone);
+        const [matchingReservation] = await tx.select().from(s.reservations).where(and(
+          eq(s.reservations.propertyId, input.propertyId),
+          or(eq(s.reservations.code, reference), eq(s.reservations.externalConfirmationNumber, reference)),
+          notInArray(s.reservations.status, ["cancelled", "no_show"]),
+        )).limit(1);
+        if (matchingReservation && stub.normalizedPhone === normalizedPhone) {
+          const isBooker = matchingReservation.bookerCustomerId === stub.id;
+          const [participant] = isBooker ? [] : await tx.select({ id: s.reservationGuests.id }).from(s.reservationGuests).where(and(
+            eq(s.reservationGuests.reservationId, matchingReservation.id),
+            eq(s.reservationGuests.customerId, stub.id),
           )).limit(1);
-          return { linked: true, customerId: stub.id, conversationId: verifiedConversation?.id ?? null, duplicate: true };
+          if (isBooker || participant) {
+            const [verifiedConversation] = await tx.select().from(s.conversations).where(and(
+              eq(s.conversations.guestId, stub.id), eq(s.conversations.propertyId, input.propertyId),
+              eq(s.conversations.channel, "telegram"), ...(identity.externalChatId ? [eq(s.conversations.externalChatId, identity.externalChatId)] : []),
+            )).limit(1);
+            return { linked: true, customerId: stub.id, conversationId: verifiedConversation?.id ?? null, duplicate: true };
+          }
         }
         return { linked: false, invalid: true, duplicate: true };
       }
@@ -912,9 +930,15 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
       const [task] = await tx.select({ id: s.tasks.id }).from(s.tasks).where(eq(s.tasks.guestId, stub.id)).limit(1);
       const [activity] = await tx.select({ id: s.guestActivity.id }).from(s.guestActivity)
         .where(eq(s.guestActivity.guestId, stub.id)).limit(1);
+      const [note] = await tx.select({ id: s.guestNotes.id }).from(s.guestNotes).where(eq(s.guestNotes.guestId, stub.id)).limit(1);
+      const [payment] = await tx.select({ id: s.guestPayments.id }).from(s.guestPayments).where(eq(s.guestPayments.guestId, stub.id)).limit(1);
+      const [guestService] = await tx.select({ id: s.guestServices.id }).from(s.guestServices).where(eq(s.guestServices.guestId, stub.id)).limit(1);
+      const [offer] = await tx.select({ id: s.offers.id }).from(s.offers).where(eq(s.offers.guestId, stub.id)).limit(1);
+      const [followUp] = await tx.select({ id: s.followUps.id }).from(s.followUps).where(eq(s.followUps.guestId, stub.id)).limit(1);
       const cleanStub = stub.profileStatus === "stub" && !stub.phone && !stub.email && !stub.normalizedPhone &&
         !stub.normalizedEmail && Number(identityCount?.count ?? 0) === 1 && !lead && !ownedReservation &&
-        !participantReservation && !stay && !service && !folio && !task && !activity;
+        !participantReservation && !stay && !service && !folio && !task && !activity &&
+        !note && !payment && !guestService && !offer && !followUp;
       if (!cleanStub) return { linked: false, handoff: true };
 
       const stubConversations = await tx.select().from(s.conversations).where(eq(s.conversations.guestId, stub.id));

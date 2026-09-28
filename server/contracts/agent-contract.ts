@@ -23,6 +23,37 @@ export const AgentConfirmationActionSchema = z.enum([
 ]);
 export type AgentConfirmationAction = z.infer<typeof AgentConfirmationActionSchema>;
 
+export interface AgentToolDescriptor {
+  name: AgentTool;
+  method: "GET" | "POST";
+  path: string;
+  mutation: boolean;
+  confirmationRequired: boolean;
+  description: string;
+}
+
+export const AGENT_TOOL_DESCRIPTORS: Record<AgentTool, AgentToolDescriptor> = {
+  get_context: { name: "get_context", method: "POST", path: "/context", mutation: false, confirmationRequired: false, description: "Load identity-scoped CRM context" },
+  classify_conversation: { name: "classify_conversation", method: "POST", path: "/conversations/classify", mutation: true, confirmationRequired: false, description: "Record AI conversation classification" },
+  get_property_knowledge: { name: "get_property_knowledge", method: "GET", path: "/property-knowledge", mutation: false, confirmationRequired: false, description: "Query property FAQ and policies" },
+  get_accommodation_options: { name: "get_accommodation_options", method: "GET", path: "/accommodations/options", mutation: false, confirmationRequired: false, description: "List accommodation categories for occupancy" },
+  check_accommodation_availability: { name: "check_accommodation_availability", method: "POST", path: "/accommodations/availability", mutation: false, confirmationRequired: false, description: "Check category availability for dates" },
+  create_or_update_request: { name: "create_or_update_request", method: "POST", path: "/requests/upsert", mutation: true, confirmationRequired: false, description: "Upsert commercial lead/request" },
+  create_offer: { name: "create_offer", method: "POST", path: "/offers/create", mutation: true, confirmationRequired: false, description: "Generate binding commercial offer" },
+  book_accommodation: { name: "book_accommodation", method: "POST", path: "/accommodations/book", mutation: true, confirmationRequired: true, description: "Confirm accommodation booking from accepted offer" },
+  get_service_options: { name: "get_service_options", method: "GET", path: "/services/options", mutation: false, confirmationRequired: false, description: "List service catalog items" },
+  check_service_availability: { name: "check_service_availability", method: "POST", path: "/services/availability", mutation: false, confirmationRequired: false, description: "Assess live booking service slot" },
+  book_service: { name: "book_service", method: "POST", path: "/services/book", mutation: true, confirmationRequired: true, description: "Book scheduled resort service" },
+  reschedule_service: { name: "reschedule_service", method: "POST", path: "/services/reschedule", mutation: true, confirmationRequired: true, description: "Reschedule existing service booking" },
+  cancel_service: { name: "cancel_service", method: "POST", path: "/services/cancel", mutation: true, confirmationRequired: true, description: "Cancel scheduled service booking" },
+  get_stay_context: { name: "get_stay_context", method: "POST", path: "/stay-context", mutation: false, confirmationRequired: false, description: "Retrieve stay details for verified guest" },
+  get_folio_summary: { name: "get_folio_summary", method: "POST", path: "/folio-summary", mutation: false, confirmationRequired: false, description: "View folio balance and charges if permitted" },
+  create_guest_request: { name: "create_guest_request", method: "POST", path: "/guest-requests", mutation: true, confirmationRequired: false, description: "Create operational in-house guest request" },
+  check_stay_extension: { name: "check_stay_extension", method: "POST", path: "/stays/extension/preview", mutation: false, confirmationRequired: false, description: "Preview stay extension price and feasibility" },
+  extend_stay: { name: "extend_stay", method: "POST", path: "/stays/extend", mutation: true, confirmationRequired: true, description: "Extend active stay with confirmed payment" },
+  handoff_to_human: { name: "handoff_to_human", method: "POST", path: "/handoff", mutation: true, confirmationRequired: false, description: "Escalate conversation to human staff" },
+};
+
 const id = z.string().trim().min(1);
 const isoDateTime = z.string().datetime({ offset: true });
 const directionSchema = z.enum(["accommodation", "restaurant", "spa", "massage", "bathhouse", "karaoke", "activities",
@@ -138,7 +169,7 @@ export const AGENT_ERROR_CODES = [
   "CONVERSATION_NOT_FOUND", "CONVERSATION_HUMAN_OWNED", "ACTION_NOT_ALLOWED", "CONFIRMATION_REQUIRED",
   "CONFIRMATION_STALE", "CONFIRMATION_PAYLOAD_MISMATCH", "IDEMPOTENCY_CONFLICT", "NO_AVAILABILITY",
   "PRICE_NOT_AUTHORITATIVE", "SERVICE_NOT_LIVE_BOOKABLE", "RESOURCE_CONFLICT", "REQUEST_NOT_FOUND",
-  "OFFER_EXPIRED", "HANDOFF_REQUIRED", "DELIVERY_FAILED", "CLASSIFICATION_MANUAL_OVERRIDE",
+  "OFFER_EXPIRED", "HANDOFF_REQUIRED", "DELIVERY_FAILED", "MESSAGE_NOT_FOUND", "CLASSIFICATION_MANUAL_OVERRIDE",
 ] as const;
 export const AgentErrorCodeSchema = z.enum(AGENT_ERROR_CODES);
 export type AgentErrorCode = z.infer<typeof AgentErrorCodeSchema>;

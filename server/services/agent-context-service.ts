@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, notInArray, or } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
+import { AGENT_API_VERSION } from "../contracts/agent-contract.js";
 import type { AgentLifecycle, AgentTool } from "../contracts/agent-contract.js";
 
 const terminalReservationStatuses = ["cancelled", "no_show"];
@@ -13,7 +14,7 @@ const propertyDate = (value: string, timezone: string) => new Intl.DateTimeForma
 const lifecycleActions: Record<AgentLifecycle, AgentTool[]> = {
   new_contact: ["get_property_knowledge", "get_accommodation_options", "check_accommodation_availability",
     "get_service_options", "check_service_availability", "classify_conversation", "create_or_update_request",
-    "book_service", "handoff_to_human"],
+    "handoff_to_human"],
   active_request: ["get_property_knowledge", "get_accommodation_options", "check_accommodation_availability",
     "get_service_options", "check_service_availability", "classify_conversation", "create_or_update_request",
     "create_offer", "book_service", "handoff_to_human"],
@@ -102,13 +103,16 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
       eq(s.guestStays.propertyId, conversation.propertyId))).orderBy(desc(s.guestStays.checkOut)).limit(1);
   const stay = stayRows[0];
 
-  const [offers, items, messageRows, openTasks, completedStayRows] = await Promise.all([
+  const [offers, items, messageRows, openTasks, completedStayRows, executedActions] = await Promise.all([
     request ? db.select().from(s.offers).where(and(eq(s.offers.leadId, request.id),
       eq(s.offers.guestId, trustedCustomerId), eq(s.offers.propertyId, conversation.propertyId)))
       .orderBy(desc(s.offers.createdAt)).limit(1) : Promise.resolve([]),
     request ? db.select().from(s.leadItems).where(eq(s.leadItems.leadId, request.id)) : Promise.resolve([]),
+    // Keep enough recent history to find a valid 30-minute action proposal even
+    // when the guest sends several messages before confirming it. The public
+    // context stays compact below.
     db.select().from(s.messages).where(eq(s.messages.conversationId, conversation.id))
-      .orderBy(desc(s.messages.sentAt)).limit(12),
+      .orderBy(desc(s.messages.sentAt)).limit(64),
     db.select().from(s.tasks).where(and(eq(s.tasks.propertyId, conversation.propertyId),
       inArray(s.tasks.status, ["todo", "in_progress", "overdue"]),
       or(eq(s.tasks.conversationId, conversation.id),
@@ -117,10 +121,12 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
         ...(stay ? [eq(s.tasks.stayId, stay.id)] : [])))),
     candidateReservationIds.length ? db.select({ id: s.guestStays.id }).from(s.guestStays).where(and(
       inArray(s.guestStays.reservationId, candidateReservationIds), eq(s.guestStays.operationalStatus, "checked_out"))) : Promise.resolve([]),
+    db.select({ proposalMessageId: s.agentActionExecutions.proposalMessageId }).from(s.agentActionExecutions)
+      .where(eq(s.agentActionExecutions.conversationId, conversation.id)),
   ]);
   const offer = offers[0];
   const serviceConditions = [eq(s.serviceReservations.customerId, trustedCustomerId)];
-  if (reservation) serviceConditions.push(eq(s.serviceReservations.reservationId, reservation.id));
+  if (reservation && reservationIsBooker) serviceConditions.push(eq(s.serviceReservations.reservationId, reservation.id));
   const serviceRows = await db.select().from(s.serviceReservations).where(and(
     eq(s.serviceReservations.propertyId, conversation.propertyId),
     inArray(s.serviceReservations.status, ["scheduled", "completed"]), or(...serviceConditions),
@@ -197,17 +203,30 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
     servicesToday: serviceRows.filter((service) => propertyDate(service.startAt, timezone) === today)
       .map((service) => ({ id: service.id, name: catalogById.get(service.catalogItemId)?.name ?? "Услуга",
         startAt: service.startAt, status: service.status })),
-    openGuestRequests: openTasks.filter((task) => task.type === "guest_request")
+    openGuestRequests: openTasks.filter((task) => task.type === "guest_request" && task.guestId === trustedCustomerId)
       .map((task) => ({ id: task.id, title: task.title, status: task.status })),
   } : null;
 
+  const consumedProposalIds = new Set(executedActions.map((action) => action.proposalMessageId));
+  const activeProposalMessage = automationMode === "ai" ? messageRows.find((message) => {
+    const proposal = message.metadata?.proposedAction as { actionType?: string; payload?: unknown; expiresAt?: string } | undefined;
+    const expiresAt = proposal?.expiresAt;
+    return message.direction === "out" && message.senderType === "ai" && message.deliveryStatus === "sent" &&
+      Boolean(proposal?.actionType && proposal.payload && expiresAt) &&
+      Date.parse(expiresAt ?? "") > Date.now() && !consumedProposalIds.has(message.id);
+  }) : undefined;
+  const activeProposalMetadata = activeProposalMessage?.metadata?.proposedAction as
+    { actionType: string; payload: Record<string, unknown>; expiresAt: string } | undefined;
+
   return {
-    contractVersion: "1" as const,
+    contractVersion: AGENT_API_VERSION,
     property: { id: property.id, name: property.name, timezone },
     conversation: {
       id: conversation.id, channel: conversation.channel, automationMode,
-      assigneeId: conversation.assigneeId, handoffReasonCode: conversation.handoffReasonCode,
-      handoffNote: conversation.handoffNote, requestedAction: conversation.requestedAction,
+      assigneeId: conversation.assigneeId,
+      handoffReasonCode: automationMode === "needs_human" ? conversation.handoffReasonCode : null,
+      handoffNote: automationMode === "needs_human" ? conversation.handoffNote : null,
+      requestedAction: automationMode === "needs_human" ? conversation.requestedAction : null,
       summary: conversation.summary, classification: conversationClassification,
     },
     customer: {
@@ -236,8 +255,17 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
     })),
     folio: folio ? { id: folio.id, status: folio.status, totalAmount: folio.totalAmount,
       paidAmount: folio.paidAmount, balance: folio.balance, currency: folio.currency } : null,
-    recentMessages: messageRows.reverse().map((message) => ({ id: message.id, senderType: message.senderType,
+    recentMessages: messageRows.slice(0, 12).reverse()
+      .filter((message) => message.direction !== "out" || message.deliveryStatus === "sent")
+      .map((message) => ({ id: message.id, senderType: message.senderType,
       direction: message.direction, text: message.text, at: message.sentAt })),
+    activeProposal: activeProposalMessage && activeProposalMetadata ? {
+      messageId: activeProposalMessage.id,
+      actionType: activeProposalMetadata.actionType,
+      payload: activeProposalMetadata.payload,
+      expiresAt: activeProposalMetadata.expiresAt,
+      sentAt: activeProposalMessage.sentAt,
+    } : null,
     allowedActions: actions,
     aiReplyAllowed: automationMode === "ai",
   };

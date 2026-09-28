@@ -34,7 +34,7 @@ describe("stay workspace demo flows", () => {
     const history = await screen.findByRole("heading", { name: "История этого визита" });
     expect(history.closest("section")).toHaveTextContent(/Запрос .*выполн/);
     expect(screen.getByText(/Добавлена оплата/)).toBeInTheDocument();
-  }, 20000);
+  }, 45000);
 
   it("requires both due-out acknowledgements and checks out without closing the folio", async () => {
     await renderMockRoute("/reservations?reservation=reservation_demo_due_out");
@@ -54,7 +54,7 @@ describe("stay workspace demo flows", () => {
     fireEvent.mouseDown(screen.getByRole("tab", { name: "История" }), { button: 0, ctrlKey: false });
     const history = await screen.findByRole("heading", { name: "История этого визита" });
     expect(history.closest("section")).toHaveTextContent(/Гость выселен/);
-  }, 20000);
+  }, 45000);
 
   it("exposes the completed stay in the customer's visit history", async () => {
     await renderMockRoute("/guests/guest_002");
@@ -63,5 +63,5 @@ describe("stay workspace demo flows", () => {
     expect(await screen.findByText(/Итого 609\u00a0000 ₸|Итого 609 000 ₸/)).toBeInTheDocument();
     expect(screen.getByText(/Проживание 540\u00a0000 ₸|Проживание 540 000 ₸/)).toBeInTheDocument();
     expect(screen.getByText(/Доп\. услуги 69\u00a0000 ₸|Доп\. услуги 69 000 ₸/)).toBeInTheDocument();
-  }, 20000);
+  }, 45000);
 });

@@ -1,0 +1,377 @@
+{
+  "name": "Guestra CRM Telegram Guest Agent",
+  "nodes": [
+    {
+      "parameters": { "updates": ["message"], "additionalFields": {} },
+      "id": "8f087963-78e6-4e12-8fde-aaa468ee3e01",
+      "name": "TG • Incoming Message",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.5,
+      "position": [-1500, -260],
+      "webhookId": "9c22f54a-4aa9-4408-a32c-0c0a0a024001",
+      "credentials": { "telegramApi": { "name": "Guestra Telegram Bot" } }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "t01", "name": "telegram", "value": "={{ { externalUserId: String($json.message.from.id), externalChatId: String($json.message.chat.id), externalMessageId: String($json.message.message_id), externalUpdateId: String($json.update_id ?? $json.updateId ?? $json.message.message_id), username: $json.message.from.username ?? null, firstName: $json.message.from.first_name ?? null, text: $json.message.text ?? $json.message.caption ?? '[unsupported_media]' } }}", "type": "object" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d630aa4b-70d6-4ab8-8120-bd2d849cd002",
+      "name": "Normalize • Telegram",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-1280, -260]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "c01", "name": "config", "value": "={{ { CRM_BASE_URL: 'https://YOUR-GUESTRA-CRM-DOMAIN', PROPERTY_ID: 'les_borovoe' } }}", "type": "object" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b4ca13e4-c5d9-4d2b-9115-af7d05703003",
+      "name": "CONFIG • Guestra",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-1060, -260],
+      "notes": "Edit CRM_BASE_URL here once after import. PROPERTY_ID is the local pilot property les_borovoe. Secrets never belong in this node."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.config.CRM_BASE_URL + '/api/integrations/agent/messages/inbound' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { channel: 'telegram', externalUserId: $json.telegram.externalUserId, externalChatId: $json.telegram.externalChatId, externalMessageId: $json.telegram.externalMessageId, externalUpdateId: $json.telegram.externalUpdateId, username: $json.telegram.username, firstName: $json.telegram.firstName, text: $json.telegram.text, propertyId: $json.config.PROPERTY_ID } }}",
+        "options": { "response": { "response": { "neverError": false, "responseFormat": "json", "fullResponse": false } } }
+      },
+      "id": "a1644d09-0eee-46a2-8540-20a35fec5004",
+      "name": "CRM • Ingest Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [-820, -260],
+      "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": {
+        "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "id": "g01", "leftValue": "={{ $json.duplicate }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }], "combinator": "and" },
+        "options": {}
+      },
+      "id": "eece7d84-3e8f-4112-88cc-14f853b36005",
+      "name": "Guard • Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-600, -260],
+      "notes": "True branch intentionally stops. Telegram retries must not generate another AI reply."
+    },
+    {
+      "parameters": {
+        "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "id": "g02", "leftValue": "={{ $json.aiReplyAllowed }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true", "singleValue": true } }], "combinator": "and" },
+        "options": {}
+      },
+      "id": "dd0bbe7c-7a88-4eb6-8fc1-b513b31f9006",
+      "name": "Guard • AI Allowed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-380, -260],
+      "notes": "False branch intentionally stops while a human owns the conversation or staff attention is required."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a01", "name": "trusted", "value": "={{ { propertyId: $('CONFIG • Guestra').item.json.config.PROPERTY_ID, externalUserId: $('CONFIG • Guestra').item.json.telegram.externalUserId, externalChatId: $('CONFIG • Guestra').item.json.telegram.externalChatId, conversationId: $('CRM • Ingest Message').item.json.context.conversation.id, currentInboundMessageId: $('CRM • Ingest Message').item.json.messageId } }}", "type": "object" },
+            { "id": "a02", "name": "agentInput", "value": "={{ JSON.stringify({ currentUserMessage: $('CONFIG • Guestra').item.json.telegram.text, context: $('CRM • Ingest Message').item.json.context }, null, 2) }}", "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d016ea9c-3ba2-452b-9b66-ea1d75927007",
+      "name": "Prepare • Agent Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-150, -260],
+      "notes": "Trusted identity and action IDs are wired here. The model receives context but never selects identity or message IDs."
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.agentInput }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are Guestra AI Guest Agent for a resort. Reply in the guest language, Russian if unclear, concisely and naturally. Never mention CRM, tools, lifecycle, database, folio IDs, or physical room numbers. The supplied Guestra context is authoritative. Use only tools listed in context.allowedActions; never work around a missing action. Do not invent availability, prices, rules, or facts. Use Property Knowledge and Accommodation Options for descriptions, and live availability before saying a dated stay or service is available. Guests choose an accommodation category; backend assigns the unit. A non-target conversation is not a sales request. Respect service booking modes: live_booking may be checked and proposed, request_only is never confirmed, info_only is information only. In-house towels or maintenance are guest requests, not sales requests. Hand off discounts, refunds, complaints, complex events, unsupported actions, material uncertainty, and explicit requests for a human; after handoff perform no more actions. If context.activeProposal exists and the current guest text is explicit confirmation, call only the matching transactional tool; its trusted proposal and confirmation IDs are already wired. Reuse exact proposed payload; if absent, expired, changed or not allowed, re-check and make a new proposal. Never execute book_accommodation, book_service, reschedule_service, cancel_service or extend_stay in the same turn that you create the proposal. Return structured output with replyText and proposedAction. proposedAction must be null unless you have checked conditions and are asking the guest to confirm a specific protected action. When price is not authoritative, never quote it as final."
+        }
+      },
+      "id": "5e17cb1c-43a6-4e0d-b594-afc2a01a5008",
+      "name": "AI • Guestra Guest Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [120, -260]
+    },
+    {
+      "parameters": { "model": { "__rl": true, "mode": "list", "value": "gpt-5.4" }, "options": { "temperature": 0.2 } },
+      "id": "57e35c38-2961-4c20-9136-86a9937d1009",
+      "name": "Model • OpenAI Chat",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [0, -20],
+      "credentials": { "openAiApi": { "name": "Guestra OpenAI API" } }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"replyText\": { \"type\": \"string\" },\n    \"proposedAction\": {\n      \"anyOf\": [\n        { \"type\": \"null\" },\n        { \"type\": \"object\", \"properties\": {\n          \"actionType\": { \"type\": \"string\", \"enum\": [\"book_accommodation\", \"book_service\", \"reschedule_service\", \"cancel_service\", \"extend_stay\"] },\n          \"payload\": { \"type\": \"object\" }\n        }, \"required\": [\"actionType\", \"payload\"], \"additionalProperties\": false }\n      ]\n    }\n  },\n  \"required\": [\"replyText\", \"proposedAction\"],\n  \"additionalProperties\": false\n}",
+        "autoFix": false
+      },
+      "id": "3e43ad4a-2e8c-4d2b-8a21-91b706fb6010",
+      "name": "Output • Guest Reply Schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [250, -20]
+    },
+    {
+      "parameters": { "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/messages/outbound/prepare' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, text: $json.output.replyText, idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':ai-reply', ...($json.output.proposedAction ? { proposedAction: $json.output.proposedAction } : {}) } }}", "options": { "response": { "response": { "neverError": false, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "7d4d5850-6833-44ee-902a-ca0c4cd04011",
+      "name": "CRM • Prepare Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [430, -260],
+      "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "resource": "message", "operation": "sendMessage", "chatId": "={{ $json.externalChatId }}", "text": "={{ $json.text }}", "additionalFields": {} },
+      "id": "29480bf6-64d0-4ab2-8f6c-36d9c075d012",
+      "name": "TG • Send AI Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [670, -260],
+      "onError": "continueErrorOutput",
+      "credentials": { "telegramApi": { "name": "Guestra Telegram Bot" } }
+    },
+    {
+      "parameters": { "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/messages/outbound/result' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, messageId: $('CRM • Prepare Reply').item.json.messageId, idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':ai-reply', success: true, externalMessageId: String($json.message_id) } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "04885d0b-6cfe-49a3-9888-5755126b5013",
+      "name": "CRM • Delivery Success",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [910, -330],
+      "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/messages/outbound/result' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, messageId: $('CRM • Prepare Reply').item.json.messageId, idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':ai-reply', success: false, error: 'Telegram delivery failed. Inspect this n8n execution for the transport error.' } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "caec463c-6e8a-43b6-9916-0a04dd59d014",
+      "name": "CRM • Delivery Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [910, -190],
+      "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "httpMethod": "POST", "path": "guestra-telegram-outbound", "responseMode": "responseNode", "authentication": "headerAuth", "options": {} },
+      "id": "d078ba87-bf7a-471b-89af-e65a5e968015",
+      "name": "Webhook • CRM Human Outbound",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-420, 360],
+      "webhookId": "3d5b7e41-5c59-4d2c-840f-34ef2c910016",
+      "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Outbound Webhook" } }
+    },
+    {
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "id": "h01", "leftValue": "={{ $json.body.event }}", "rightValue": "guestra.telegram.send_message", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "options": {} },
+      "id": "23af1908-758b-4c93-bda7-86b45517e017",
+      "name": "Guard • Human Outbound Event",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-180, 360]
+    },
+    {
+      "parameters": { "resource": "message", "operation": "sendMessage", "chatId": "={{ $json.body.externalChatId }}", "text": "={{ $json.body.text }}", "additionalFields": {} },
+      "id": "b5e7f3e8-5208-4c44-96e7-87f39e00e018",
+      "name": "TG • Send Human Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [60, 330],
+      "onError": "continueErrorOutput",
+      "credentials": { "telegramApi": { "name": "Guestra Telegram Bot" } }
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{ { ok: true, externalMessageId: String($json.message_id) } }}", "options": { "responseCode": 200 } },
+      "id": "9b938dc5-1ecc-423e-8808-525a4a6a9019",
+      "name": "Webhook • Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [300, 300]
+    },
+    {
+      "parameters": { "respondWith": "json", "responseBody": "={{ { ok: false, error: 'Telegram delivery failed' } }}", "options": { "responseCode": 502 } },
+      "id": "f8c6cbb6-a24c-4f4c-a431-89ca5f7e1020",
+      "name": "Webhook • Failure Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [300, 430]
+    },
+    {
+      "parameters": { "content": "## INBOUND\nTelegram → normalized IDs → CRM idempotent ingestion.\nDuplicate and human-owned conversations stop before the model.", "height": 170, "width": 500, "color": 5 },
+      "id": "530e0c27-ec7e-4e5b-a32b-3961eb43e021",
+      "name": "Note • Inbound",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1540, -470]
+    },
+    {
+      "parameters": { "content": "## AI TOOLS\nAll business state stays in Guestra. Tool identity fields are trusted expressions; the model supplies only business facts.", "height": 170, "width": 860, "color": 4 },
+      "id": "f075a5e9-353b-4a1a-b739-26b6dd0f7022",
+      "name": "Note • AI Tools",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-120, 60]
+    },
+    {
+      "parameters": { "content": "## OUTBOUND\nCRM persists every AI reply before Telegram send, then records sent or failed delivery.", "height": 170, "width": 650, "color": 6 },
+      "id": "66e7e91c-03b6-435b-bd2a-d60b2c26a023",
+      "name": "Note • Outbound",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [390, -530]
+    },
+    {
+      "parameters": { "content": "## HUMAN TAKEOVER\nCRM Inbox posts here with Header Auth. This branch only transports a human message and returns Telegram delivery status.", "height": 170, "width": 720, "color": 7 },
+      "id": "30aeb8e1-9f45-4387-bf62-19f49d650024",
+      "name": "Note • Human Takeover",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-460, 570]
+    },
+    {
+      "parameters": { "toolDescription": "Get identity-scoped current Guestra context. Use only if the current context may have changed after another tool. It is authoritative for lifecycle, allowed actions and active proposal.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/context' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "342dc907-ebcb-4338-80dd-54654d4f0025", "name": "Tool • Context", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [-80, 260], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Search active property knowledge, FAQ and policies. Use for rules, check-in/out, directions, amenities and facts. Do not invent property information.", "method": "GET", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/property-knowledge' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendQuery": true, "specifyQuery": "json", "jsonQuery": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, q: $fromAI('query', 'Short FAQ search query', 'string'), language: 'ru', limit: 8 } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "aa08e8f7-4d5a-4777-a8df-fd2b97ef0026", "name": "Tool • Property Knowledge", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [150, 260], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "List active accommodation categories and CRM structured descriptions for a given guest composition. Use to compare categories; never use it to select a physical room.", "method": "GET", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/accommodations/options' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendQuery": true, "specifyQuery": "json", "jsonQuery": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, adults: $fromAI('adults', 'Number of adults', 'number'), children: $fromAI('children', 'Number of children, zero if none', 'number') } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "cc40c17e-04df-4941-8301-ee5728050027", "name": "Tool • Accommodation Options", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [390, 260], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Check live CRM availability by accommodation category, dates and occupancy. Use before saying a dated category is available. It never selects a physical room.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/accommodations/availability' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, arrivalAt: $fromAI('arrivalAt', 'ISO 8601 datetime with offset', 'string'), departureAt: $fromAI('departureAt', 'ISO 8601 datetime with offset', 'string'), adults: $fromAI('adults', 'Number of adults', 'number'), children: $fromAI('children', 'Number of children', 'number') } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "d2ec2f00-e6c6-42ee-9662-f1ff4e1e0028", "name": "Tool • Accommodation Availability", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [650, 260], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Classify the current conversation for CRM analytics. Classification is not a commercial request. Use for vacancy, supplier, spam, partnership or a clear commercial direction.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/conversations/classify' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, direction: $fromAI('direction', 'One supported direction: accommodation, spa, massage, bathhouse, karaoke, activities, transfer, corporate_event, wedding_or_banquet, partnership, supplier, vacancy, spam, wrong_contact, other', 'string'), quality: $fromAI('quality', 'target, needs_qualification or non_target', 'string'), summary: $fromAI('summary', 'Brief factual classification summary', 'string') } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "68bbde92-faf8-4de8-b8b8-e1f343950029", "name": "Tool • Classify Conversation", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [910, 260], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Create or update a genuine commercial CRM request. Use for accommodation or commercial resort service intent, never for a non-target message or operational in-house request.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/requests/upsert' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':request-upsert', direction: $fromAI('direction', 'Supported commercial direction', 'string'), checkIn: $fromAI('checkIn', 'ISO 8601 datetime with offset or null', 'json'), checkOut: $fromAI('checkOut', 'ISO 8601 datetime with offset or null', 'json'), adults: $fromAI('adults', 'Number of adults or null', 'json'), children: $fromAI('children', 'Number of children or null', 'json'), category: $fromAI('category', 'Accommodation category name or null', 'json'), specialRequest: $fromAI('specialRequest', 'Guest request or null', 'json') } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "454f5b1b-515e-4ac0-a7d4-563baf0f4030", "name": "Tool • Create or Update Request", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [-80, 470], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Create a CRM offer from an eligible current commercial request and authoritative catalog rate. Use after dates, occupancy and category are known. Do not invent prices.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/offers/create' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, category: $fromAI('category', 'Selected accommodation category', 'string'), idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':offer-create' } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "98521f61-0bd4-4fa6-8c27-ef8aeea00031", "name": "Tool • Create Offer", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [180, 470], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "List guest-safe service catalog entries and their agent booking modes. Use before checking or promising service booking.", "method": "GET", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/services/options' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendQuery": true, "specifyQuery": "json", "jsonQuery": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, language: 'ru' } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "bed2a427-64da-4f7e-891d-35f4b1cb0032", "name": "Tool • Service Options", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [420, 470], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Check live CRM availability for a resource-controlled service. Use only after Service Options confirms live_booking and before proposing a slot. CRM resolves the catalog service duration.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/services/availability' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, catalogItemId: $fromAI('catalogItemId', 'CRM catalog item ID returned by Service Options', 'string'), startAt: $fromAI('startAt', 'ISO 8601 datetime with offset', 'string'), participants: $fromAI('participants', 'Number of people', 'number'), quantity: $fromAI('quantity', 'Booking quantity, normally 1', 'number') } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "0865ec49-e5e3-4e0b-b471-a117691b0033", "name": "Tool • Service Availability", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [660, 470], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Get permitted stay details for the linked verified guest. Use for current or future stay questions only.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/stay-context' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "1b67ee5d-2583-4943-8c9d-153432ff0034", "name": "Tool • Stay Context", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [910, 470], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Get a permitted folio summary for the linked identity. Use only when the current context allows it; never disclose balance to an unverified or participant identity.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/folio-summary' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "f8c58ef7-3db4-45da-9b83-60b065340035", "name": "Tool • Folio Summary", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [-80, 680], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Create an operational guest request during an active in-house stay, grounded in the current inbound message. Use for towels, maintenance, reception, spa or transport help. Do not use as a sales request.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/guest-requests' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, sourceMessageId: $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId, title: $fromAI('title', 'Short operational request title', 'string'), description: $fromAI('description', 'Short factual request description', 'string'), department: $fromAI('department', 'reception, housekeeping, maintenance, restaurant, spa, transport or other', 'string'), priority: $fromAI('priority', 'low, medium, high or urgent', 'string'), idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':guest-request' } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "d9c4c1b7-d4a3-4a11-8f53-d1d6d2c05036", "name": "Tool • Create Guest Request", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [180, 680], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Preview whether the current booker can extend the stay and return the authoritative added charge. Use before proposing a stay extension.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/stays/extension/preview' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, departureAt: $fromAI('departureAt', 'Requested new departure ISO 8601 datetime with offset', 'string') } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "c55c92a6-d186-4420-82ef-598f8c050037", "name": "Tool • Check Stay Extension", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [450, 680], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Hand the conversation to staff for discounts, refunds/payment problems, complaints, complex events, unsupported actions or guest-requested human help. After success do not perform more actions.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/handoff' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, reasonCode: $fromAI('reasonCode', 'custom_discount, refund_or_payment_issue, complaint_or_conflict, uncertain_intent, unavailable_nonstandard_solution, corporate_or_event_complex, guest_requested_human or unsupported_action', 'string'), summary: $fromAI('summary', 'Concise staff handoff summary', 'string'), requestedAction: $fromAI('requestedAction', 'Specific staff action requested', 'string'), priority: $fromAI('priority', 'low, medium, high or urgent', 'string') } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "0d442499-3e1a-410c-949d-68a8bc4c0038", "name": "Tool • Handoff", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [720, 680], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Verify an unlinked Telegram account with a booking reference and phone. Use only when the guest explicitly supplies both values to access their existing private booking.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/identity/verify' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, bookingReference: $fromAI('bookingReference', 'Guest-provided booking reference', 'string'), phone: $fromAI('phone', 'Guest-provided phone number', 'string'), idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':identity-verify' } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "6f748f2e-74a0-4ca0-9b49-8ab15b2c0039", "name": "Tool • Verify Identity", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [980, 680], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Execute only a later explicit guest confirmation for an active book_accommodation proposal. CRM uses the trusted proposal payload and rechecks availability; do not call to create a proposal.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/accommodations/book' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, offerId: $('CRM • Ingest Message').item.json.context.activeProposal.payload.offerId, proposalMessageId: $('CRM • Ingest Message').item.json.context.activeProposal.messageId, confirmationMessageId: $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId, idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':book-accommodation' } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "06c5bd84-b78b-4b1e-91bf-5d5edc1b0040", "name": "Tool • Book Accommodation", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [-80, 900], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Execute only a later explicit guest confirmation for an active book_service proposal. It uses the trusted exact proposal payload; do not call to create a proposal.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/services/book' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, proposalMessageId: $('CRM • Ingest Message').item.json.context.activeProposal.messageId, confirmationMessageId: $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId, ...$('CRM • Ingest Message').item.json.context.activeProposal.payload, idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':book-service' } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "f9689cbd-31aa-49f8-9187-a6fe98cf0041", "name": "Tool • Book Service", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [190, 900], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Execute only a later explicit guest confirmation for an active reschedule_service proposal. It uses the trusted exact proposal payload.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/services/reschedule' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, proposalMessageId: $('CRM • Ingest Message').item.json.context.activeProposal.messageId, confirmationMessageId: $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId, ...$('CRM • Ingest Message').item.json.context.activeProposal.payload, idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':reschedule-service' } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "faa9e1d6-ed96-469e-85eb-173159840042", "name": "Tool • Reschedule Service", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [460, 900], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Execute only a later explicit guest confirmation for an active cancel_service proposal. It uses the trusted exact proposal payload.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/services/cancel' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, proposalMessageId: $('CRM • Ingest Message').item.json.context.activeProposal.messageId, confirmationMessageId: $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId, ...$('CRM • Ingest Message').item.json.context.activeProposal.payload, idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':cancel-service' } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "dbd2e48b-3c4c-40c9-bbae-d2d996e90043", "name": "Tool • Cancel Service", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [730, 900], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    },
+    {
+      "parameters": { "toolDescription": "Execute only a later explicit guest confirmation for an active extend_stay proposal. It uses the trusted exact proposal payload and CRM rechecks availability and price.", "method": "POST", "url": "={{ $('CONFIG • Guestra').item.json.config.CRM_BASE_URL + '/api/integrations/agent/stays/extend' }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ { propertyId: $('Prepare • Agent Input').item.json.trusted.propertyId, externalUserId: $('Prepare • Agent Input').item.json.trusted.externalUserId, conversationId: $('Prepare • Agent Input').item.json.trusted.conversationId, proposalMessageId: $('CRM • Ingest Message').item.json.context.activeProposal.messageId, confirmationMessageId: $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId, ...$('CRM • Ingest Message').item.json.context.activeProposal.payload, idempotencyKey: $('Prepare • Agent Input').item.json.trusted.conversationId + ':' + $('Prepare • Agent Input').item.json.trusted.currentInboundMessageId + ':extend-stay' } }}", "options": { "response": { "response": { "neverError": true, "responseFormat": "json", "fullResponse": false } } } },
+      "id": "e0e8c4d4-9db0-4661-91eb-9a443bc10044", "name": "Tool • Extend Stay", "type": "n8n-nodes-base.httpRequestTool", "typeVersion": 4.5, "position": [990, 900], "credentials": { "httpHeaderAuth": { "name": "Guestra CRM Agent API" } }
+    }
+  ],
+  "connections": {
+    "TG • Incoming Message": { "main": [[{ "node": "Normalize • Telegram", "type": "main", "index": 0 }]] },
+    "Normalize • Telegram": { "main": [[{ "node": "CONFIG • Guestra", "type": "main", "index": 0 }]] },
+    "CONFIG • Guestra": { "main": [[{ "node": "CRM • Ingest Message", "type": "main", "index": 0 }]] },
+    "CRM • Ingest Message": { "main": [[{ "node": "Guard • Duplicate?", "type": "main", "index": 0 }]] },
+    "Guard • Duplicate?": { "main": [[], [{ "node": "Guard • AI Allowed?", "type": "main", "index": 0 }]] },
+    "Guard • AI Allowed?": { "main": [[{ "node": "Prepare • Agent Input", "type": "main", "index": 0 }], []] },
+    "Prepare • Agent Input": { "main": [[{ "node": "AI • Guestra Guest Agent", "type": "main", "index": 0 }]] },
+    "AI • Guestra Guest Agent": { "main": [[{ "node": "CRM • Prepare Reply", "type": "main", "index": 0 }]] },
+    "Model • OpenAI Chat": { "ai_languageModel": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "Output • Guest Reply Schema": { "ai_outputParser": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_outputParser", "index": 0 }]] },
+    "CRM • Prepare Reply": { "main": [[{ "node": "TG • Send AI Reply", "type": "main", "index": 0 }]] },
+    "TG • Send AI Reply": { "main": [[{ "node": "CRM • Delivery Success", "type": "main", "index": 0 }], [{ "node": "CRM • Delivery Failure", "type": "main", "index": 0 }]] },
+    "Webhook • CRM Human Outbound": { "main": [[{ "node": "Guard • Human Outbound Event", "type": "main", "index": 0 }]] },
+    "Guard • Human Outbound Event": { "main": [[{ "node": "TG • Send Human Reply", "type": "main", "index": 0 }], [{ "node": "Webhook • Failure Response", "type": "main", "index": 0 }]] },
+    "TG • Send Human Reply": { "main": [[{ "node": "Webhook • Success Response", "type": "main", "index": 0 }], [{ "node": "Webhook • Failure Response", "type": "main", "index": 0 }]] },
+    "Tool • Context": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Property Knowledge": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Accommodation Options": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Accommodation Availability": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Classify Conversation": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Create or Update Request": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Create Offer": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Service Options": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Service Availability": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Stay Context": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Folio Summary": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Create Guest Request": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Check Stay Extension": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Handoff": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Verify Identity": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Book Accommodation": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Book Service": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Reschedule Service": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Cancel Service": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] },
+    "Tool • Extend Stay": { "ai_tool": [[{ "node": "AI • Guestra Guest Agent", "type": "ai_tool", "index": 0 }]] }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveExecutionProgress": true, "saveManualExecutions": true, "saveExecutionDataSuccess": "all", "saveExecutionDataError": "all" },
+  "versionId": "5243f552-b966-4663-9190-654a007c0051",
+  "meta": { "templateCredsSetupCompleted": false, "instanceId": "" },
+  "tags": []
+}

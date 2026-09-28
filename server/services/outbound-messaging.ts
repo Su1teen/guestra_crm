@@ -8,7 +8,7 @@ type OutboundConfig = { webhookUrl?: string; webhookToken?: string };
 export const dispatchTelegramMessage = async (db: Pick<Database, "select" | "update">,
   messageId: string, config: OutboundConfig) => {
   const [message] = await db.select().from(s.messages).where(eq(s.messages.id, messageId)).limit(1);
-  if (!message) return { sent: false, error: "Сообщение не найдено" };
+  if (!message) return { sent: false, code: "MESSAGE_NOT_FOUND", error: "Сообщение не найдено" };
   const [conversation] = await db.select().from(s.conversations)
     .where(eq(s.conversations.id, message.conversationId)).limit(1);
   if (!conversation || conversation.channel !== "telegram" || !conversation.externalChatId) {
