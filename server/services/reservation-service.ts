@@ -29,125 +29,127 @@ export class ReservationConflict extends Error {
   constructor(message: string) { super(message); }
 }
 
+export type AgentReservationTx = Pick<Database, "select" | "insert" | "update" | "delete" | "execute">;
+
+export const bookAcceptedOfferByCategoryInTransaction = async (tx: AgentReservationTx, input: {
+  customerId: string; propertyId: string; offerId: string; idempotencyKey: string;
+}) => {
+  const [existing] = await tx.select().from(s.reservations)
+    .where(eq(s.reservations.idempotencyKey, input.idempotencyKey)).limit(1);
+  if (existing) {
+    if (existing.bookerCustomerId !== input.customerId || existing.propertyId !== input.propertyId) {
+      throw new ReservationConflict("Ключ повтора уже использован для другого клиента или объекта");
+    }
+    return { reservationId: existing.id, duplicate: true };
+  }
+  await tx.execute(sql`SELECT id FROM offers WHERE id = ${input.offerId} FOR UPDATE`);
+  const [offer] = await tx.select().from(s.offers).where(and(
+    eq(s.offers.id, input.offerId), eq(s.offers.guestId, input.customerId),
+    eq(s.offers.propertyId, input.propertyId),
+  )).limit(1);
+  if (!offer) throw new ReservationConflict("Предложение не найдено для этого Telegram-контакта");
+  if (["cancelled", "expired", "accepted"].includes(offer.status) || new Date(offer.expiresAt) <= new Date()) {
+    throw new ReservationConflict("Срок или состояние предложения не позволяют подтвердить бронь");
+  }
+  if (!offer.roomType || !offer.checkIn || !offer.checkOut || offer.total <= 0) {
+    throw new ReservationConflict("В предложении нет подтверждённой категории, дат или итоговой цены");
+  }
+  const [lead] = await tx.select().from(s.leads).where(and(
+    eq(s.leads.id, offer.leadId), eq(s.leads.guestId, input.customerId), eq(s.leads.propertyId, input.propertyId),
+  )).limit(1);
+  if (!lead) throw new ReservationConflict("Запрос, связанный с предложением, не найден");
+  const [unitType] = await tx.select().from(s.unitTypes).where(and(
+    eq(s.unitTypes.propertyId, input.propertyId), eq(s.unitTypes.name, offer.roomType), eq(s.unitTypes.active, true),
+  )).limit(1);
+  if (!unitType) throw new ReservationConflict("Выбранная категория размещения больше не продаётся");
+  const timestamp = now();
+  const reservationId = id("reservation");
+  const confirmationNumber = `G-${randomUUID().slice(0, 10).toUpperCase()}`;
+  const [reservation] = await tx.insert(s.reservations).values({
+    id: reservationId, code: `R-${randomUUID().slice(0, 10).toUpperCase()}`,
+    idempotencyKey: input.idempotencyKey, propertyId: input.propertyId,
+    bookerCustomerId: input.customerId, requestId: lead.id, unitTypeId: unitType.id,
+    roomTypeSnapshot: unitType.name, source: "telegram", status: "confirmed",
+    arrivalAt: offer.checkIn, departureAt: offer.checkOut, adults: offer.adults, children: offer.children,
+    currency: offer.currency, externalConfirmationNumber: confirmationNumber, confirmedAt: timestamp,
+  }).returning();
+  if (!reservation) throw new ReservationConflict("Не удалось создать бронирование");
+  const allocation = await autoAssignReservationUnit(tx, reservation, unitType.id);
+  const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, input.customerId)).limit(1);
+  await tx.insert(s.reservationGuests).values({ id: id("reservation_guest"), reservationId: reservation.id,
+    customerId: input.customerId, fullName: guest?.fullName ?? null, role: "primary", isPrimary: true,
+    isBooker: true, ageGroup: "adult" });
+  const nights = Math.max(1, Math.ceil((new Date(offer.checkOut).getTime() - new Date(offer.checkIn).getTime()) / 86_400_000));
+  const [stay] = await tx.insert(s.guestStays).values({
+    id: id("stay"), reservationId: reservation.id, reservationUnitId: allocation.id,
+    roomId: allocation.roomId, guestId: input.customerId, propertyId: input.propertyId,
+    roomType: unitType.name, checkIn: offer.checkIn, checkOut: offer.checkOut, nights,
+    adults: offer.adults, children: offer.children, amount: offer.total,
+    bookingReference: confirmationNumber, status: "confirmed", operationalStatus: "upcoming",
+  }).returning();
+  const folio = offer.folioId
+    ? (await tx.select().from(s.folios).where(eq(s.folios.id, offer.folioId)).limit(1))[0]
+    : await ensureFolio(tx, lead);
+  if (!folio || folio.guestId !== input.customerId || folio.propertyId !== input.propertyId ||
+      (folio.leadId && folio.leadId !== lead.id) || (folio.reservationId && folio.reservationId !== reservation.id)) {
+    throw new ReservationConflict("Счёт предложения уже связан с другим бронированием");
+  }
+  if (!offer.folioId && folio.totalAmount < offer.total) {
+    const existingLines = await tx.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
+    const hasOfferLine = existingLines.some((line) => line.metadata?.agentOfferId === offer.id);
+    if (!hasOfferLine) {
+      const adjustment = offer.total - folio.totalAmount;
+      await tx.insert(s.folioLines).values({ id: id("folio_line"), folioId: folio.id,
+        category: "accommodation", description: `${unitType.name} · ${nights} ночи`,
+        quantity: 1, unit: "accepted_offer", unitPrice: adjustment, lineTotal: adjustment,
+        status: "active", metadata: { agentOfferId: offer.id, idempotencyKey: input.idempotencyKey },
+      });
+    }
+  }
+  await tx.update(s.folios).set({ reservationId: reservation.id, stayId: stay.id, updatedAt: timestamp })
+    .where(eq(s.folios.id, folio.id));
+  await recalcFolio(tx, folio.id);
+  await tx.update(s.offers).set({ status: "accepted", updatedAt: timestamp }).where(eq(s.offers.id, offer.id));
+  await tx.update(s.leads).set({ stage: "confirmed", requestStatus: "won", probability: 100,
+    bookingReference: confirmationNumber, reservationId: reservation.id, roomType: unitType.name,
+    checkIn: offer.checkIn, checkOut: offer.checkOut, nights, adults: offer.adults, children: offer.children,
+    lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
+  if (lead.stage !== "confirmed") await tx.insert(s.leadStageHistory).values({
+    id: id("stage"), leadId: lead.id, stage: "confirmed", employeeId: null, changedAt: timestamp,
+  });
+  await tx.update(s.conversations).set({ reservationId: reservation.id, stayId: stay.id, updatedAt: timestamp })
+    .where(and(eq(s.conversations.guestId, input.customerId), eq(s.conversations.leadId, lead.id)));
+  await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "booking",
+    title: "Предложение принято, бронь подтверждена", description: confirmationNumber,
+    amount: offer.total, occurredAt: timestamp });
+  return { reservationId: reservation.id, stayId: stay.id, requestId: lead.id,
+    confirmationNumber, category: unitType.name, arrivalAt: offer.checkIn, departureAt: offer.checkOut,
+    total: offer.total, currency: offer.currency, duplicate: false };
+};
+
 export const bookAcceptedOfferByCategory = async (db: Database, input: {
   customerId: string; propertyId: string; offerId: string; idempotencyKey: string;
 }) => {
-  const existingForKey = await db.select().from(s.reservations)
+  const [existing] = await db.select().from(s.reservations)
     .where(eq(s.reservations.idempotencyKey, input.idempotencyKey)).limit(1);
-  if (existingForKey[0]) {
-    if (existingForKey[0].bookerCustomerId !== input.customerId || existingForKey[0].propertyId !== input.propertyId) {
+  if (existing) {
+    if (existing.bookerCustomerId !== input.customerId || existing.propertyId !== input.propertyId) {
       throw new ReservationConflict("Ключ повтора уже использован для другого клиента или объекта");
     }
-    return { reservationId: existingForKey[0].id, duplicate: true };
+    return { reservationId: existing.id, duplicate: true };
   }
   try {
-    return await db.transaction(async (tx) => {
-      const [existing] = await tx.select().from(s.reservations)
-        .where(eq(s.reservations.idempotencyKey, input.idempotencyKey)).limit(1);
-      if (existing) {
-        if (existing.bookerCustomerId !== input.customerId || existing.propertyId !== input.propertyId) {
-          throw new ReservationConflict("Ключ повтора уже использован для другого клиента или объекта");
-        }
-        return { reservationId: existing.id, duplicate: true };
-      }
-      // A guest can confirm an offer only once, even if separate retries use
-      // different idempotency keys. Serialize confirmations on the offer row.
-      await tx.execute(sql`SELECT id FROM offers WHERE id = ${input.offerId} FOR UPDATE`);
-      const [offer] = await tx.select().from(s.offers).where(and(
-        eq(s.offers.id, input.offerId), eq(s.offers.guestId, input.customerId),
-        eq(s.offers.propertyId, input.propertyId),
-      )).limit(1);
-      if (!offer) throw new ReservationConflict("Предложение не найдено для этого Telegram-контакта");
-      if (["cancelled", "expired", "accepted"].includes(offer.status) || new Date(offer.expiresAt) <= new Date()) {
-        throw new ReservationConflict("Срок или состояние предложения не позволяют подтвердить бронь");
-      }
-      if (!offer.roomType || !offer.checkIn || !offer.checkOut || offer.total <= 0) {
-        throw new ReservationConflict("В предложении нет подтверждённой категории, дат или итоговой цены");
-      }
-      const [lead] = await tx.select().from(s.leads).where(and(
-        eq(s.leads.id, offer.leadId), eq(s.leads.guestId, input.customerId), eq(s.leads.propertyId, input.propertyId),
-      )).limit(1);
-      if (!lead) throw new ReservationConflict("Запрос, связанный с предложением, не найден");
-      const [unitType] = await tx.select().from(s.unitTypes).where(and(
-        eq(s.unitTypes.propertyId, input.propertyId), eq(s.unitTypes.name, offer.roomType), eq(s.unitTypes.active, true),
-      )).limit(1);
-      if (!unitType) throw new ReservationConflict("Выбранная категория размещения больше не продаётся");
-      const timestamp = now();
-      const reservationId = id("reservation");
-      const confirmationNumber = `G-${randomUUID().slice(0, 10).toUpperCase()}`;
-      const [reservation] = await tx.insert(s.reservations).values({
-        id: reservationId, code: `R-${randomUUID().slice(0, 10).toUpperCase()}`,
-        idempotencyKey: input.idempotencyKey, propertyId: input.propertyId,
-        bookerCustomerId: input.customerId, requestId: lead.id, unitTypeId: unitType.id,
-        roomTypeSnapshot: unitType.name, source: "telegram", status: "confirmed",
-        arrivalAt: offer.checkIn, departureAt: offer.checkOut, adults: offer.adults, children: offer.children,
-        currency: offer.currency, externalConfirmationNumber: confirmationNumber, confirmedAt: timestamp,
-      }).returning();
-      if (!reservation) throw new ReservationConflict("Не удалось создать бронирование");
-      const allocation = await autoAssignReservationUnit(tx, reservation, unitType.id);
-      const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, input.customerId)).limit(1);
-      await tx.insert(s.reservationGuests).values({ id: id("reservation_guest"), reservationId: reservation.id,
-        customerId: input.customerId, fullName: guest?.fullName ?? null, role: "primary", isPrimary: true,
-        isBooker: true, ageGroup: "adult" });
-      const nights = Math.max(1, Math.ceil((new Date(offer.checkOut).getTime() - new Date(offer.checkIn).getTime()) / 86_400_000));
-      const [stay] = await tx.insert(s.guestStays).values({
-        id: id("stay"), reservationId: reservation.id, reservationUnitId: allocation.id,
-        roomId: allocation.roomId, guestId: input.customerId, propertyId: input.propertyId,
-        roomType: unitType.name, checkIn: offer.checkIn, checkOut: offer.checkOut, nights,
-        adults: offer.adults, children: offer.children, amount: offer.total,
-        bookingReference: confirmationNumber, status: "confirmed", operationalStatus: "upcoming",
-      }).returning();
-      const folio = offer.folioId
-        ? (await tx.select().from(s.folios).where(eq(s.folios.id, offer.folioId)).limit(1))[0]
-        : await ensureFolio(tx, lead);
-      if (!folio || folio.guestId !== input.customerId || folio.propertyId !== input.propertyId ||
-          (folio.leadId && folio.leadId !== lead.id) || (folio.reservationId && folio.reservationId !== reservation.id)) {
-        throw new ReservationConflict("Счёт предложения уже связан с другим бронированием");
-      }
-      if (!offer.folioId && folio.totalAmount < offer.total) {
-        const existingLines = await tx.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
-        const hasOfferLine = existingLines.some((line) => line.metadata?.agentOfferId === offer.id);
-        if (!hasOfferLine) {
-          const adjustment = offer.total - folio.totalAmount;
-          await tx.insert(s.folioLines).values({ id: id("folio_line"), folioId: folio.id,
-            category: "accommodation", description: `${unitType.name} · ${nights} ночи`,
-            quantity: 1, unit: "accepted_offer", unitPrice: adjustment, lineTotal: adjustment,
-            status: "active", metadata: { agentOfferId: offer.id, idempotencyKey: input.idempotencyKey },
-          });
-        }
-      }
-      await tx.update(s.folios).set({ reservationId: reservation.id, stayId: stay.id, updatedAt: timestamp })
-        .where(eq(s.folios.id, folio.id));
-      await recalcFolio(tx, folio.id);
-      await tx.update(s.offers).set({ status: "accepted", updatedAt: timestamp }).where(eq(s.offers.id, offer.id));
-      await tx.update(s.leads).set({ stage: "confirmed", requestStatus: "won", probability: 100,
-        bookingReference: confirmationNumber, reservationId: reservation.id, roomType: unitType.name,
-        checkIn: offer.checkIn, checkOut: offer.checkOut, nights, adults: offer.adults, children: offer.children,
-        lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
-      if (lead.stage !== "confirmed") await tx.insert(s.leadStageHistory).values({
-        id: id("stage"), leadId: lead.id, stage: "confirmed", employeeId: null, changedAt: timestamp,
-      });
-      await tx.update(s.conversations).set({ reservationId: reservation.id, stayId: stay.id, updatedAt: timestamp })
-        .where(and(eq(s.conversations.guestId, input.customerId), eq(s.conversations.leadId, lead.id)));
-      await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "booking",
-        title: "Предложение принято, бронь подтверждена", description: confirmationNumber,
-        amount: offer.total, occurredAt: timestamp });
-      return { reservationId: reservation.id, stayId: stay.id, requestId: lead.id,
-        confirmationNumber, category: unitType.name, arrivalAt: offer.checkIn, departureAt: offer.checkOut,
-        total: offer.total, currency: offer.currency, duplicate: false };
-    });
+    return await db.transaction((tx) => bookAcceptedOfferByCategoryInTransaction(tx, input));
   } catch (error) {
     if ((error as { code?: string }).code === "23505") {
-      const [existing] = await db.select().from(s.reservations)
-        .where(eq(s.reservations.idempotencyKey, input.idempotencyKey)).limit(1);
-      if (existing && existing.bookerCustomerId === input.customerId && existing.propertyId === input.propertyId) {
-        return { reservationId: existing.id, duplicate: true };
+      const [raced] = await db.select().from(s.reservations).where(eq(s.reservations.idempotencyKey, input.idempotencyKey)).limit(1);
+      if (raced && raced.bookerCustomerId === input.customerId && raced.propertyId === input.propertyId) {
+        return { reservationId: raced.id, duplicate: true };
       }
     }
     throw error;
   }
 };
-
 type ReservationDb = Pick<Database, "select" | "insert" | "update">;
 
 const duplicateBookingResult = async (db: Pick<Database, "select">, reservation: typeof s.reservations.$inferSelect, confirmationNumber: string) => {

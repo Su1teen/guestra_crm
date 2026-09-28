@@ -106,7 +106,7 @@ const buildItemValues = (
   };
 };
 
-export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEGRATION_API_KEY" | "AGENT_OUTBOUND_WEBHOOK_URL">) => {
+export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEGRATION_API_KEY" | "AGENT_OUTBOUND_WEBHOOK_URL" | "AGENT_OUTBOUND_WEBHOOK_TOKEN">) => {
   const router = Router();
   router.use(requireDatabaseMode);
 
@@ -1066,7 +1066,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     if ("conflict" in result && result.conflict) return response.status(409).json({ error: "Сначала возьмите диалог в работу" });
     if (result.conversation.channel === "telegram" && !asNote) {
       const delivery = await dispatchTelegramMessage(db, result.message.id, {
-        webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL, apiKey: config.CRM_INTEGRATION_API_KEY,
+        webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL, webhookToken: config.AGENT_OUTBOUND_WEBHOOK_TOKEN,
       });
       const [message] = await db.select().from(s.messages).where(eq(s.messages.id, result.message.id)).limit(1);
       return response.status(201).json({ ...result, message, deliveryStatus: message?.deliveryStatus,
@@ -1107,7 +1107,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     await db.update(s.messages).set({ deliveryStatus: "pending" }).where(eq(s.messages.id, message.id));
     const delivery = conversation.channel === "telegram"
       ? await dispatchTelegramMessage(db, message.id, { webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL,
-        apiKey: config.CRM_INTEGRATION_API_KEY }) : { sent: false, error: "Повторная отправка доступна только для Telegram" };
+        webhookToken: config.AGENT_OUTBOUND_WEBHOOK_TOKEN }) : { sent: false, error: "Повторная отправка доступна только для Telegram" };
     const [updated] = await db.select().from(s.messages).where(eq(s.messages.id, message.id)).limit(1);
     response.json({ message: updated, deliveryStatus: updated?.deliveryStatus,
       deliveryError: delivery.sent ? undefined : delivery.error });

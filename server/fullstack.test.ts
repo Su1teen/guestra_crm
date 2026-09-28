@@ -6,7 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { migrate as migratePglite } from "drizzle-orm/pglite/migrator";
 import request from "supertest";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
 import type { Database } from "./db/client.js";
@@ -15,11 +15,13 @@ import * as s from "./db/schema.js";
 import { assignReservationUnit, AvailabilityConflict } from "./services/availability-service.js";
 import { advanceLead } from "./services/lead-journey.js";
 import { recalcFolio } from "./services/folio.js";
+import { dispatchTelegramMessage } from "./services/outbound-messaging.js";
 
 const config: AppConfig = {
   DATABASE_URL: "postgresql://unused/test",
   SESSION_SECRET: "test-session-secret-that-is-at-least-32-characters",
   CRM_INTEGRATION_API_KEY: "test-integration-secret",
+  AGENT_OUTBOUND_WEBHOOK_TOKEN: "test-outbound-webhook-secret",
   SALES_BOOTSTRAP_EMAIL: "sales@guestra.com",
   SALES_BOOTSTRAP_PASSWORD: "sales123",
   ADMIN_BOOTSTRAP_EMAIL: "admin@guestra.com",
@@ -48,7 +50,7 @@ beforeAll(async () => {
   for (const statement of migration2.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
     await client.exec(statement);
   }
-  for (const name of ["0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey", "0006_task_context_and_followup_queue", "0007_service_resource_availability", "0008_stay_activity_context", "0009_agent_gateway"]) {
+  for (const name of ["0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey", "0006_task_context_and_followup_queue", "0007_service_resource_availability", "0008_stay_activity_context", "0009_agent_gateway", "0010_agent_contract_hardening"]) {
     const migration = await readFile(new URL(`../drizzle/${name}.sql`, import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) await client.exec(statement);
   }
@@ -60,7 +62,7 @@ beforeAll(async () => {
 describe("database migrations", () => {
   it("orders and applies the resort journey migration after the initial schema", async () => {
     const migrations = readMigrationFiles({ migrationsFolder: "drizzle" });
-    expect(migrations).toHaveLength(10);
+    expect(migrations).toHaveLength(11);
     expect(migrations[1].folderMillis).toBeGreaterThan(migrations[0].folderMillis);
     expect(migrations[2].folderMillis).toBeGreaterThan(migrations[1].folderMillis);
     expect(migrations[3].folderMillis).toBeGreaterThan(migrations[2].folderMillis);
@@ -69,6 +71,8 @@ describe("database migrations", () => {
     expect(migrations[6].folderMillis).toBeGreaterThan(migrations[5].folderMillis);
     expect(migrations[7].folderMillis).toBeGreaterThan(migrations[6].folderMillis);
     expect(migrations[8].folderMillis).toBeGreaterThan(migrations[7].folderMillis);
+    expect(migrations[9].folderMillis).toBeGreaterThan(migrations[8].folderMillis);
+    expect(migrations[10].folderMillis).toBeGreaterThan(migrations[9].folderMillis);
 
     const client = new PGlite();
     const migrationDb = drizzle(client);
@@ -96,6 +100,10 @@ describe("database migrations", () => {
     expect(unitColumns.rows.map((column) => column.column_name)).toContain("max_occupancy");
     const catalogColumns = await client.query<{ column_name: string }>("select column_name from information_schema.columns where table_name = 'service_catalog'");
     expect(catalogColumns.rows.map((column) => column.column_name)).toContain("agent_booking_mode");
+    const actionTables = await client.query<{ table_name: string }>("select table_name from information_schema.tables where table_name = 'agent_action_executions'");
+    expect(actionTables.rows).toHaveLength(1);
+    const propertyColumns = await client.query<{ column_name: string }>("select column_name from information_schema.columns where table_name = 'properties'");
+    expect(propertyColumns.rows.map((column) => column.column_name)).toContain("timezone");
     await bootstrapDatabase(migrationDb as unknown as Database, config);
     const folios = await client.query<{ id: string }>("select id from folios");
     expect(folios.rows.length).toBeGreaterThan(0);
@@ -104,7 +112,7 @@ describe("database migrations", () => {
     const seededStay = await client.query<{ reservation_id: string }>("select reservation_id from guest_stays where id = 'stay_live_1'");
     expect(seededStay.rows[0]?.reservation_id).toBeTruthy();
     await client.close();
-  });
+  }, 30_000);
 
   it("backfills only accommodation and stays once when rerun", async () => {
     const client = new PGlite();
@@ -139,7 +147,7 @@ describe("database migrations", () => {
     const [folio] = await migrationDb.select().from(s.folios).where(eq(s.folios.id, "folio_backfill_acc"));
     expect(folio.reservationId).toBe(accommodation[0].id);
     await client.close();
-  });
+  }, 30_000);
 });
 
 describe("authentication and database bootstrap", () => {
@@ -868,6 +876,20 @@ describe("AI Guest Agent gateway", () => {
     propertyId: "les_borovoe" };
   const api = (path: string) => request(app).post(`/api/integrations/agent${path}`)
     .set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY);
+  const sendProposal = async (externalUserId: string, conversationId: string, idempotencyKey: string,
+    proposedAction: unknown, text = "Подготовил вариант, подтвердите действие") => {
+    const prepared = await api("/messages/outbound/prepare").send({ propertyId: "les_borovoe", externalUserId,
+      conversationId, idempotencyKey, text, proposedAction }).expect(201);
+    await api("/messages/outbound/result").send({ propertyId: "les_borovoe", externalUserId, conversationId,
+      messageId: prepared.body.messageId, idempotencyKey, success: true,
+      externalMessageId: `telegram-sent-${idempotencyKey}` }).expect(200);
+    return prepared.body.messageId as string;
+  };
+  const confirmInbound = async (contact: typeof baseInbound, suffix: string, text: string) => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return api("/messages/inbound").send({ ...contact, externalMessageId: `tg_confirm_${suffix}`,
+      externalUpdateId: `tg_confirm_update_${suffix}`, text }).expect(201);
+  };
 
   it("ingests Telegram idempotently and does not invent a sales request", async () => {
     const first = await api("/messages/inbound").send(baseInbound).expect(201);
@@ -876,11 +898,224 @@ describe("AI Guest Agent gateway", () => {
     expect(first.body.messageId).toBeTruthy();
     const duplicate = await api("/messages/inbound").send(baseInbound).expect(200);
     expect(duplicate.body).toMatchObject({ duplicate: true, context: { conversation: { id: first.body.context.conversation.id } } });
+    const messageReplay = await api("/messages/inbound").send({ ...baseInbound, externalUpdateId: "tg_agent_update_001_retry" }).expect(200);
+    expect(messageReplay.body).toMatchObject({ duplicate: true, messageId: first.body.messageId });
+    const messageConflict = await api("/messages/inbound").send({ ...baseInbound, externalUpdateId: "tg_agent_update_001_conflict",
+      text: "Другой текст с тем же Telegram message id" }).expect(409);
+    expect(messageConflict.body.code).toBe("IDEMPOTENCY_CONFLICT");
     expect(await db.select().from(s.messages).where(eq(s.messages.idempotencyKey,
       "telegram:tg_agent_chat_001:tg_agent_guest_001:tg_agent_message_001"))).toHaveLength(1);
     expect(await db.select().from(s.leads).where(eq(s.leads.guestId, first.body.context.customer.id))).toHaveLength(0);
     await api("/context").send({ propertyId: "les_borovoe", externalUserId: "some_other_telegram_user",
       conversationId: first.body.context.conversation.id }).expect(404);
+  });
+
+  it("classifies vacancy and supplier conversations without creating a sales Request", async () => {
+    const contact = { ...baseInbound, externalUserId: "tg_agent_non_target_001", externalChatId: "tg_agent_non_target_chat",
+      externalMessageId: "tg_agent_non_target_message", externalUpdateId: "tg_agent_non_target_update" };
+    const inbound = await api("/messages/inbound").send(contact).expect(201);
+    const conversationId = inbound.body.context.conversation.id as string;
+    const classification = await api("/conversations/classify").send({ propertyId: "les_borovoe",
+      externalUserId: contact.externalUserId, conversationId, direction: "vacancy", quality: "non_target",
+      temperature: "cold", probability: 0, reasons: [{ code: "vacancy", label: "Вопрос о работе" }] }).expect(200);
+    expect(classification.body).toMatchObject({ requestCreated: false, requestId: null,
+      classification: { direction: "vacancy", quality: "non_target" } });
+    expect(await db.select().from(s.leads).where(eq(s.leads.guestId, inbound.body.context.customer.id))).toHaveLength(0);
+    await api("/requests/upsert").send({ propertyId: "les_borovoe", externalUserId: contact.externalUserId,
+      conversationId, idempotencyKey: "non-target-request-agent", direction: "accommodation" }).expect(409);
+
+    const manualContact = { ...contact, externalUserId: "tg_agent_manual_classification",
+      externalChatId: "tg_agent_manual_classification_chat", externalMessageId: "tg_agent_manual_classification_message",
+      externalUpdateId: "tg_agent_manual_classification_update" };
+    const manualInbound = await api("/messages/inbound").send(manualContact).expect(201);
+    await db.update(s.conversations).set({ classification: { manualOverride: true, classifiedBy: "human" } })
+      .where(eq(s.conversations.id, manualInbound.body.context.conversation.id));
+    const manual = await api("/conversations/classify").send({ propertyId: "les_borovoe",
+      externalUserId: manualContact.externalUserId, conversationId: manualInbound.body.context.conversation.id,
+      direction: "supplier", quality: "non_target" }).expect(409);
+    expect(manual.body.code).toBe("CLASSIFICATION_MANUAL_OVERRIDE");
+  });
+
+  it("records outbound delivery failure without claiming success and supports retry", async () => {
+    const contact = { ...baseInbound, externalUserId: "tg_agent_outbound_001", externalChatId: "tg_agent_outbound_chat",
+      externalMessageId: "tg_agent_outbound_in", externalUpdateId: "tg_agent_outbound_update" };
+    const inbound = await api("/messages/inbound").send(contact).expect(201);
+    const conversationId = inbound.body.context.conversation.id as string;
+    const prepared = await api("/messages/outbound/prepare").send({ propertyId: "les_borovoe",
+      externalUserId: contact.externalUserId, conversationId, idempotencyKey: "outbound-retry-test",
+      text: "Здравствуйте, чем помочь?" }).expect(201);
+    expect(prepared.body.deliveryStatus).toBe("pending");
+    const failure = await api("/messages/outbound/result").send({ propertyId: "les_borovoe",
+      externalUserId: contact.externalUserId, conversationId, messageId: prepared.body.messageId,
+      idempotencyKey: "outbound-retry-test", success: false,
+      error: "Telegram rejected token=secretvalue bot123456:abcdefghijklmnopqrstuvwxyz0123456789" }).expect(200);
+    expect(failure.body).toMatchObject({ deliveryStatus: "failed", code: "DELIVERY_FAILED", retryable: true });
+    expect(JSON.stringify(failure.body)).not.toMatch(/secretvalue|abcdefghijklmnopqrstuvwxyz/);
+    const [failedMessage] = await db.select().from(s.messages).where(eq(s.messages.id, prepared.body.messageId));
+    expect(failedMessage).toMatchObject({ deliveryStatus: "failed", externalMessageId: null });
+    expect(JSON.stringify(failedMessage.metadata)).not.toMatch(/secretvalue|abcdefghijklmnopqrstuvwxyz/);
+    const success = await api("/messages/outbound/result").send({ propertyId: "les_borovoe",
+      externalUserId: contact.externalUserId, conversationId, messageId: prepared.body.messageId,
+      idempotencyKey: "outbound-retry-test", success: true, externalMessageId: "telegram-outbound-message-1" }).expect(200);
+    expect(success.body).toMatchObject({ deliveryStatus: "sent", duplicate: false });
+    expect((await api("/messages/outbound/result").send({ propertyId: "les_borovoe",
+      externalUserId: contact.externalUserId, conversationId, messageId: prepared.body.messageId,
+      idempotencyKey: "outbound-retry-test", success: true, externalMessageId: "telegram-outbound-message-1" }).expect(200)).body.duplicate).toBe(true);
+  });
+
+  it("sends human outbound through the dedicated webhook token and records only acknowledged delivery", async () => {
+    const contact = { ...baseInbound, externalUserId: "tg_agent_human_outbound", externalChatId: "tg_agent_human_outbound_chat",
+      externalMessageId: "tg_agent_human_outbound_in", externalUpdateId: "tg_agent_human_outbound_update" };
+    const inbound = await api("/messages/inbound").send(contact).expect(201);
+    const conversationId = inbound.body.context.conversation.id as string;
+    const messageId = "message_agent_human_outbound_test";
+    await db.insert(s.messages).values({ id: messageId, conversationId, direction: "out", senderType: "human",
+      text: "Ответ сотрудника", sentAt: new Date().toISOString(), deliveryStatus: "pending",
+      idempotencyKey: "human-outbound-agent-test" });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: true, externalMessageId: "telegram-human-outbound-1",
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    try {
+      const delivered = await dispatchTelegramMessage(db, messageId, {
+        webhookUrl: "https://n8n.example.test/webhook/guestra-send", webhookToken: "outbound-secret-for-test",
+      });
+      expect(delivered).toMatchObject({ sent: true, externalMessageId: "telegram-human-outbound-1" });
+      const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
+      expect(headers.get("x-agent-webhook-token")).toBe("outbound-secret-for-test");
+      expect(headers.has("x-crm-api-key")).toBe(false);
+      expect((await db.select().from(s.messages).where(eq(s.messages.id, messageId)))[0].deliveryStatus).toBe("sent");
+    } finally {
+      fetchMock.mockRestore();
+    }
+
+    const failedId = "message_agent_human_outbound_failed_test";
+    await db.insert(s.messages).values({ id: failedId, conversationId, direction: "out", senderType: "human",
+      text: "Ответ с ошибкой", sentAt: new Date().toISOString(), deliveryStatus: "pending",
+      idempotencyKey: "human-outbound-agent-failed-test" });
+    const failedFetch = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(JSON.stringify({
+      ok: false, error: "token=private-secretvalue",
+    }), { status: 503, headers: { "content-type": "application/json" } }));
+    try {
+      const failed = await dispatchTelegramMessage(db, failedId, {
+        webhookUrl: "https://n8n.example.test/webhook/guestra-send", webhookToken: "outbound-secret-for-test",
+      });
+      expect(failed.sent).toBe(false);
+      expect(failed.error).not.toContain("private-secretvalue");
+      const [message] = await db.select().from(s.messages).where(eq(s.messages.id, failedId));
+      expect(message.deliveryStatus).toBe("failed");
+      expect(JSON.stringify(message.metadata)).not.toContain("private-secretvalue");
+    } finally {
+      failedFetch.mockRestore();
+    }
+  });
+
+  it("links a Telegram stub only with both an exact booking reference and normalized phone", async () => {
+    const contact = { ...baseInbound, externalUserId: "tg_agent_identity_link_001", externalChatId: "tg_agent_identity_link_chat",
+      externalMessageId: "tg_agent_identity_link_in", externalUpdateId: "tg_agent_identity_link_update" };
+    const inbound = await api("/messages/inbound").send(contact).expect(201);
+    const conversationId = inbound.body.context.conversation.id as string;
+    await api("/stay-context").send({ propertyId: "les_borovoe", externalUserId: contact.externalUserId, conversationId }).expect(409);
+    await api("/folio-summary").send({ propertyId: "les_borovoe", externalUserId: contact.externalUserId, conversationId }).expect(409);
+    const targetId = "guest_agent_identity_link_target";
+    await db.insert(s.guests).values({ id: targetId, organizationId: "org_les_live", firstName: "Тест",
+      lastName: "Личность", fullName: "Тест Личность", phone: "+7 799 123 45 67", normalizedPhone: "77991234567",
+      profileStatus: "active", preferredPropertyId: "les_borovoe" });
+    const arrivalAt = "2026-08-16T12:00:00.000Z";
+    const departureAt = "2026-08-18T12:00:00.000Z";
+    await db.insert(s.reservations).values({ id: "reservation_agent_identity_link_test", code: "R-AGENT-IDENTITY-LINK",
+      propertyId: "les_borovoe", bookerCustomerId: targetId, roomTypeSnapshot: "Glass House", source: "direct",
+      status: "completed", arrivalAt, departureAt, adults: 2, children: 0, externalConfirmationNumber: "IDENTITY-REF-001" });
+    await db.insert(s.guestStays).values({ id: "stay_agent_identity_link_test", reservationId: "reservation_agent_identity_link_test",
+      guestId: targetId, propertyId: "les_borovoe", roomType: "Glass House", checkIn: arrivalAt, checkOut: departureAt,
+      nights: 2, adults: 2, children: 0, bookingReference: "IDENTITY-REF-001",
+      status: "completed", operationalStatus: "checked_out" });
+    await db.insert(s.folios).values({ id: "folio_agent_identity_link_test", code: "F-AGENT-IDENTITY-LINK-TEST",
+      reservationId: "reservation_agent_identity_link_test", stayId: "stay_agent_identity_link_test",
+      guestId: targetId, propertyId: "les_borovoe", status: "open", currency: "KZT",
+      subtotal: 12345, totalAmount: 12345, balance: 12345 }).onConflictDoNothing();
+    const identityBase = { propertyId: "les_borovoe", externalUserId: contact.externalUserId,
+      bookingReference: "IDENTITY-REF-001" };
+    const rejected = await api("/identity/verify").send({ ...identityBase, phone: "+7 777 000 00 00",
+      idempotencyKey: "verify-wrong-phone" }).expect(409);
+    expect(rejected.body.code).toBe("IDENTITY_VERIFICATION_REQUIRED");
+    const linked = await api("/identity/verify").send({ ...identityBase, phone: "+7 799 123 45 67",
+      idempotencyKey: "verify-correct-phone" }).expect(200);
+    expect(linked.body).toMatchObject({ linked: true, customerId: targetId,
+      context: { lifecycle: "post_stay", reservation: { role: "booker", category: "Glass House" } } });
+    expect(JSON.stringify(linked.body)).not.toMatch(/B-001|A-101|A-102|A-103/);
+    expect((await api("/folio-summary").send({ propertyId: "les_borovoe", externalUserId: contact.externalUserId,
+      conversationId }).expect(200)).body.folio.balance).toBe(12345);
+    expect(await db.select().from(s.guests).where(eq(s.guests.id, inbound.body.context.customer.id))).toHaveLength(0);
+  });
+
+  it("shows a reservation participant stay without exposing the booker's Folio", async () => {
+    const participantId = "guest_agent_reservation_participant";
+    const reservationId = "reservation_agent_participant_privacy";
+    const contact = { ...baseInbound, externalUserId: "tg_agent_participant_privacy", externalChatId: "tg_agent_participant_chat",
+      externalMessageId: "tg_agent_participant_in", externalUpdateId: "tg_agent_participant_update" };
+    await db.insert(s.guests).values({ id: participantId, organizationId: "org_les_live", fullName: "Участник брони",
+      profileStatus: "active", preferredPropertyId: "les_borovoe" });
+    await db.insert(s.reservations).values({ id: reservationId, code: "R-AGENT-PARTICIPANT-PRIVACY",
+      propertyId: "les_borovoe", bookerCustomerId: "guest_live_1", roomTypeSnapshot: "Nest House",
+      source: "direct", status: "confirmed", arrivalAt: "2027-11-10T10:00:00.000Z",
+      departureAt: "2027-11-12T10:00:00.000Z", adults: 2, children: 1 });
+    await db.insert(s.reservationGuests).values({ id: "rg_agent_participant_privacy", reservationId,
+      customerId: participantId, fullName: "Участник брони", role: "companion", isPrimary: false,
+      isBooker: false, ageGroup: "adult" });
+    await db.insert(s.folios).values({ id: "folio_agent_participant_privacy", code: "F-AGENT-PARTICIPANT-PRIVACY",
+      reservationId, guestId: "guest_live_1", propertyId: "les_borovoe", status: "open",
+      currency: "KZT", subtotal: 500000, totalAmount: 500000, balance: 400000 });
+    await db.insert(s.guestContactIdentities).values({ id: "identity_agent_participant_privacy",
+      guestId: participantId, channel: "telegram", externalUserId: contact.externalUserId,
+      externalChatId: contact.externalChatId });
+    const inbound = await api("/messages/inbound").send(contact).expect(201);
+    expect(inbound.body.context).toMatchObject({ lifecycle: "pre_arrival",
+      reservation: { id: reservationId, role: "participant", category: "Nest House", balance: null } });
+    expect(inbound.body.context.allowedActions).not.toContain("get_folio_summary");
+    const denied = await api("/folio-summary").send({ propertyId: "les_borovoe",
+      externalUserId: contact.externalUserId, conversationId: inbound.body.context.conversation.id }).expect(409);
+    expect(denied.body.code).toBe("ACTION_NOT_ALLOWED");
+    expect(JSON.stringify(inbound.body.context)).not.toContain("400000");
+  });
+
+  it("previews and extends an in-house stay only for its booker and rejects a conflicting next arrival", async () => {
+    const extensionContact = { ...baseInbound, externalUserId: "tg_agent_extension_test", externalChatId: "tg_agent_extension_chat",
+      externalMessageId: "tg_agent_extension_in", externalUpdateId: "tg_agent_extension_update" };
+    await db.insert(s.guestContactIdentities).values({ id: "identity_agent_extension_test", guestId: "guest_demo_extension",
+      channel: "telegram", externalUserId: extensionContact.externalUserId, externalChatId: extensionContact.externalChatId });
+    const inbound = await api("/messages/inbound").send(extensionContact).expect(201);
+    const conversationId = inbound.body.context.conversation.id as string;
+    expect(inbound.body.context).toMatchObject({ lifecycle: "in_house", reservation: { role: "booker" } });
+    const reservationId = inbound.body.context.reservation.id as string;
+    const departureAt = new Date(Date.parse(inbound.body.context.reservation.departureAt) + 86_400_000).toISOString();
+    const preview = await api("/stays/extension/preview").send({ propertyId: "les_borovoe",
+      externalUserId: extensionContact.externalUserId, conversationId, departureAt }).expect(200);
+    expect(preview.body).toMatchObject({ reservationId, expectedAddedCharge: expect.any(Number), currency: "KZT" });
+    const proposalMessageId = await sendProposal(extensionContact.externalUserId, conversationId, "extend-stay-test",
+      { actionType: "extend_stay", payload: { reservationId, departureAt,
+        expectedAddedCharge: preview.body.expectedAddedCharge, currency: preview.body.currency } },
+      "Продлить проживание на одну ночь за указанную сумму?");
+    const confirmation = await confirmInbound(extensionContact, "extend-stay", "Подтверждаю продление.");
+    const extensionInput = { propertyId: "les_borovoe", externalUserId: extensionContact.externalUserId,
+      conversationId, reservationId, departureAt, expectedAddedCharge: preview.body.expectedAddedCharge,
+      currency: preview.body.currency, proposalMessageId, confirmationMessageId: confirmation.body.messageId,
+      idempotencyKey: "extend-stay-test" };
+    const extended = await api("/stays/extend").send(extensionInput).expect(200);
+    expect(extended.body).toMatchObject({ reservationId, addedCharge: preview.body.expectedAddedCharge, duplicate: false });
+    expect(Date.parse(extended.body.departureAt)).toBe(Date.parse(departureAt));
+    expect((await api("/stays/extend").send(extensionInput).expect(200)).body.duplicate).toBe(true);
+
+    const conflictContact = { ...extensionContact, externalUserId: "tg_agent_extension_conflict_test",
+      externalChatId: "tg_agent_extension_conflict_chat", externalMessageId: "tg_agent_extension_conflict_in",
+      externalUpdateId: "tg_agent_extension_conflict_update" };
+    await db.insert(s.guestContactIdentities).values({ id: "identity_agent_extension_conflict_test", guestId: "guest_demo_conflict",
+      channel: "telegram", externalUserId: conflictContact.externalUserId, externalChatId: conflictContact.externalChatId });
+    const conflictInbound = await api("/messages/inbound").send(conflictContact).expect(201);
+    const conflictDeparture = new Date(Date.parse(conflictInbound.body.context.reservation.departureAt) + 86_400_000).toISOString();
+    const unavailable = await api("/stays/extension/preview").send({ propertyId: "les_borovoe",
+      externalUserId: conflictContact.externalUserId, conversationId: conflictInbound.body.context.conversation.id,
+      departureAt: conflictDeparture }).expect(409);
+    expect(unavailable.body.code).toBe("NO_AVAILABILITY");
   });
 
   it("derives the seeded lifecycle states and keeps room identifiers private", async () => {
@@ -915,6 +1150,12 @@ describe("AI Guest Agent gateway", () => {
   });
 
   it("provides category availability without a room number", async () => {
+    const capabilities = await request(app).get("/api/integrations/agent/capabilities")
+      .set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).expect(200);
+    expect(capabilities.body).toMatchObject({ contractVersion: "agent-api-v1",
+      featureFlags: { actionBoundConfirmation: true, vacancyAutomation: false } });
+    expect(capabilities.body.supportedTools).toContain("extend_stay");
+    await request(app).get("/api/integrations/agent/capabilities").expect(401);
     const availability = await api("/accommodations/availability").send({ propertyId: "les_borovoe",
       arrivalAt: "2027-03-10T10:00:00.000Z", departureAt: "2027-03-12T10:00:00.000Z",
       adults: 2, children: 1 }).expect(200);
@@ -923,6 +1164,10 @@ describe("AI Guest Agent gateway", () => {
     ]));
     expect(JSON.stringify(availability.body)).not.toContain("A-101");
     expect(availability.body.items.find((item: { name: string }) => item.name === "Nest House").priceAvailability).toBe("demo_only");
+    const familyOverflow = await request(app).get("/api/integrations/agent/accommodations/options")
+      .set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).query({ propertyId: "les_borovoe", adults: 3, children: 0 }).expect(200);
+    expect(familyOverflow.body.items.map((item: { name: string }) => item.name)).not.toContain("Nest House");
+    expect(familyOverflow.body.items.map((item: { name: string }) => item.name)).not.toContain("Glass House");
     const knowledge = await request(app).get("/api/integrations/agent/property-knowledge")
       .set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).query({ propertyId: "les_borovoe", language: "ru" }).expect(200);
     expect(knowledge.body.items).toEqual(expect.arrayContaining([
@@ -967,51 +1212,107 @@ describe("AI Guest Agent gateway", () => {
       "agent:guest_demo_nurlan:les_borovoe:guest-request-agent-demo-001"))).toHaveLength(1);
   });
 
-  it("books inventory-controlled service through the resource model and rejects request-only service", async () => {
+  it("books inventory-controlled services only after an action-bound confirmation", async () => {
     const agentContact = { ...baseInbound, externalUserId: "tg_agent_service_001", externalChatId: "tg_agent_service_chat",
       externalMessageId: "tg_agent_service_message", externalUpdateId: "tg_agent_service_update" };
     const inbound = await api("/messages/inbound").send(agentContact).expect(201);
-    const bookingInput = { propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
-      conversationId: inbound.body.context.conversation.id,
-      confirmationMessageId: inbound.body.messageId, confirmedByGuest: true,
-      catalogItemId: "svc_spa_visit", startAt: "2027-05-01T05:00:00.000Z", endAt: "2027-05-01T07:00:00.000Z",
-      participants: 2, quantity: 2, idempotencyKey: "spa-visit-agent-001" };
-    await api("/services/book").send(bookingInput).expect(409);
+    const conversationId = inbound.body.context.conversation.id as string;
+    const startAt = "2027-05-01T05:00:00.000Z";
+    const endAt = "2027-05-01T07:00:00.000Z";
+    const proposalPayload = { catalogItemId: "svc_spa_visit", startAt, endAt, participants: 2, quantity: 2 };
+    const options = await request(app).get("/api/integrations/agent/services/options")
+      .set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).query({ propertyId: "les_borovoe" }).expect(200);
+    expect(options.body.items.find((item: { catalogItemId: string }) => item.catalogItemId === "svc_restaurant_sova"))
+      .toMatchObject({ agentBookingMode: "request_only", bookingEligible: false });
+    await api("/messages/outbound/prepare").send({ propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
+      conversationId, idempotencyKey: "spa-demo-rate-proposal", text: "Подтвердите SPA",
+      proposedAction: { actionType: "book_service", payload: proposalPayload } }).expect(409);
     const [spaCatalog] = await db.select().from(s.serviceCatalog).where(eq(s.serviceCatalog.id, "svc_spa_visit"));
     await db.update(s.serviceCatalog).set({ metadata: { ...(spaCatalog.metadata ?? {}), demoRate: false } })
       .where(eq(s.serviceCatalog.id, spaCatalog.id));
-    const confirmation = await api("/messages/inbound").send({ ...agentContact, externalMessageId: "tg_agent_service_confirmation",
-      externalUpdateId: "tg_agent_service_confirmation_update", text: "Подтверждаю." }).expect(201);
-    bookingInput.confirmationMessageId = confirmation.body.messageId;
+    const proposalMessageId = await sendProposal(agentContact.externalUserId, conversationId,
+      "spa-visit-agent-001", { actionType: "book_service", payload: proposalPayload }, "Записать вас в SPA на 10:00? ");
+    const confirmation = await confirmInbound(agentContact, "spa-book", "Подтверждаю запись.");
+    const bookingInput = { propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
+      conversationId, proposalMessageId, confirmationMessageId: confirmation.body.messageId,
+      ...proposalPayload, idempotencyKey: "spa-visit-agent-001" };
     const booking = await api("/services/book").send(bookingInput).expect(201);
     const service = (await db.select().from(s.serviceReservations).where(eq(s.serviceReservations.id, booking.body.id)))[0];
     expect(service).toMatchObject({ status: "scheduled", reservationId: null, folioId: expect.any(String) });
     const folio = (await db.select().from(s.folios).where(eq(s.folios.id, service.folioId!)))[0];
     expect(folio.reservationId).toBeNull();
-    const moveConfirmation = await api("/messages/inbound").send({ ...agentContact, externalMessageId: "tg_agent_service_move_confirmation",
-      externalUpdateId: "tg_agent_service_move_update", text: "Подтверждаю перенос." }).expect(201);
+    expect((await api("/services/book").send(bookingInput).expect(200)).body.duplicate).toBe(true);
+
+    const moveStartAt = "2027-05-01T08:00:00.000Z";
+    const moveEndAt = "2027-05-01T10:00:00.000Z";
+    const movePayload = { serviceReservationId: service.id, startAt: moveStartAt, endAt: moveEndAt };
+    const moveProposal = await sendProposal(agentContact.externalUserId, conversationId,
+      "spa-service-move-001", { actionType: "reschedule_service", payload: movePayload });
+    const moveConfirmation = await confirmInbound(agentContact, "spa-move", "Подтверждаю перенос.");
     const moveInput = { propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
-      conversationId: inbound.body.context.conversation.id, serviceReservationId: service.id,
-      confirmationMessageId: moveConfirmation.body.messageId, confirmedByGuest: true,
-      startAt: "2027-05-01T08:00:00.000Z", endAt: "2027-05-01T10:00:00.000Z",
+      conversationId, serviceReservationId: service.id, proposalMessageId: moveProposal,
+      confirmationMessageId: moveConfirmation.body.messageId, startAt: moveStartAt, endAt: moveEndAt,
       idempotencyKey: "spa-service-move-001" };
     const moved = await api("/services/reschedule").send(moveInput).expect(200);
     expect(moved.body).toMatchObject({ status: "scheduled", duplicate: false });
-    expect(new Date(moved.body.startAt).getTime()).toBe(new Date(moveInput.startAt).getTime());
+    expect(new Date(moved.body.startAt).getTime()).toBe(new Date(moveStartAt).getTime());
     expect((await api("/services/reschedule").send(moveInput).expect(200)).body.duplicate).toBe(true);
-    const cancelConfirmation = await api("/messages/inbound").send({ ...agentContact, externalMessageId: "tg_agent_service_cancel_confirmation",
-      externalUpdateId: "tg_agent_service_cancel_update", text: "Подтверждаю отмену." }).expect(201);
+
+    const cancelProposal = await sendProposal(agentContact.externalUserId, conversationId,
+      "spa-service-cancel-001", { actionType: "cancel_service", payload: { serviceReservationId: service.id } });
+    const cancelConfirmation = await confirmInbound(agentContact, "spa-cancel", "Подтверждаю отмену.");
     const cancelInput = { propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
-      conversationId: inbound.body.context.conversation.id, serviceReservationId: service.id,
-      confirmationMessageId: cancelConfirmation.body.messageId, confirmedByGuest: true,
-      idempotencyKey: "spa-service-cancel-001" };
-    expect((await api("/services/cancel").send(cancelInput).expect(200)).body).toMatchObject({ status: "cancelled", duplicate: false });
+      conversationId, serviceReservationId: service.id, proposalMessageId: cancelProposal,
+      confirmationMessageId: cancelConfirmation.body.messageId, idempotencyKey: "spa-service-cancel-001" };
+    expect((await api("/services/cancel").send(cancelInput).expect(200)).body)
+      .toMatchObject({ status: "cancelled", duplicate: false });
     expect((await api("/services/cancel").send(cancelInput).expect(200)).body.duplicate).toBe(true);
-    await api("/services/book").send({ propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
-      conversationId: inbound.body.context.conversation.id, confirmationMessageId: cancelConfirmation.body.messageId,
-      confirmedByGuest: true, catalogItemId: "svc_restaurant_sova", startAt: "2027-05-01T12:00:00.000Z",
-      participants: 2, quantity: 1, idempotencyKey: "restaurant-agent-001" }).expect(409);
+    await api("/messages/outbound/prepare").send({ propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
+      conversationId, idempotencyKey: "restaurant-proposal", text: "Подтвердите столик",
+      proposedAction: { actionType: "book_service", payload: { catalogItemId: "svc_restaurant_sova",
+        startAt: "2027-05-01T12:00:00.000Z", participants: 2, quantity: 1 } } }).expect(409);
     await db.update(s.serviceCatalog).set({ metadata: spaCatalog.metadata }).where(eq(s.serviceCatalog.id, spaCatalog.id));
+  });
+
+  it("rejects early, mismatched, and expired action confirmations", async () => {
+    const contact = { ...baseInbound, externalUserId: "tg_agent_confirmation_guard", externalChatId: "tg_agent_confirmation_guard_chat",
+      externalMessageId: "tg_agent_confirmation_guard_in", externalUpdateId: "tg_agent_confirmation_guard_update" };
+    const inbound = await api("/messages/inbound").send(contact).expect(201);
+    const conversationId = inbound.body.context.conversation.id as string;
+    const [spaCatalog] = await db.select().from(s.serviceCatalog).where(eq(s.serviceCatalog.id, "svc_spa_visit"));
+    await db.update(s.serviceCatalog).set({ metadata: { ...(spaCatalog.metadata ?? {}), demoRate: false } })
+      .where(eq(s.serviceCatalog.id, spaCatalog.id));
+    try {
+      const startAt = "2027-05-03T05:00:00.000Z";
+      const endAt = "2027-05-03T07:00:00.000Z";
+      const payload = { catalogItemId: "svc_spa_visit", startAt, endAt, participants: 1, quantity: 1 };
+      const mutationBase = { propertyId: "les_borovoe", externalUserId: contact.externalUserId, conversationId,
+        catalogItemId: payload.catalogItemId, startAt, endAt, participants: 1, quantity: 1,
+        idempotencyKey: "confirmation-guard-booking" };
+      const early = await api("/services/book").send({ ...mutationBase,
+        proposalMessageId: inbound.body.messageId, confirmationMessageId: inbound.body.messageId }).expect(409);
+      expect(early.body.code).toBe("CONFIRMATION_REQUIRED");
+
+      const proposalMessageId = await sendProposal(contact.externalUserId, conversationId,
+        "confirmation-guard-proposal", { actionType: "book_service", payload });
+      const confirmation = await confirmInbound(contact, "confirmation-guard", "Подтверждаю запись.");
+      const mismatch = await api("/services/book").send({ ...mutationBase, proposalMessageId,
+        confirmationMessageId: confirmation.body.messageId, startAt: "2027-05-03T06:00:00.000Z" }).expect(409);
+      expect(mismatch.body.code).toBe("CONFIRMATION_PAYLOAD_MISMATCH");
+
+      const [proposal] = await db.select().from(s.messages).where(eq(s.messages.id, proposalMessageId));
+      const proposedAction = proposal.metadata?.proposedAction as Record<string, unknown>;
+      await db.update(s.messages).set({ metadata: { ...proposal.metadata,
+        proposedAction: { ...proposedAction, expiresAt: new Date(Date.now() - 60_000).toISOString() } } })
+        .where(eq(s.messages.id, proposalMessageId));
+      const expired = await api("/services/book").send({ ...mutationBase, proposalMessageId,
+        confirmationMessageId: confirmation.body.messageId }).expect(409);
+      expect(expired.body.code).toBe("CONFIRMATION_STALE");
+      expect(await db.select().from(s.serviceReservations).where(eq(s.serviceReservations.customerId,
+        inbound.body.context.customer.id))).toHaveLength(0);
+    } finally {
+      await db.update(s.serviceCatalog).set({ metadata: spaCatalog.metadata }).where(eq(s.serviceCatalog.id, spaCatalog.id));
+    }
   });
 
   it("uses a guest confirmation and assigns the first eligible unit in the accepted category", async () => {
@@ -1034,22 +1335,23 @@ describe("AI Guest Agent gateway", () => {
       checkIn: "2027-06-10T10:00:00.000Z", checkOut: "2027-06-12T10:00:00.000Z",
       nights: 2, adults: 2, children: 0, status: "viewed", ownerId: lead.ownerId,
       expiresAt: "2027-06-01T10:00:00.000Z", total: 260000, deposit: 100000, currency: "KZT" });
-    const confirmation = await api("/messages/inbound").send({ ...baseInbound,
-      ...agentContact, externalMessageId: "tg_agent_booking_message_2", externalUpdateId: "tg_agent_booking_update_2",
-      text: "Подтверждаю это предложение" }).expect(201);
+    const proposalMessageId = await sendProposal(agentContact.externalUserId, inbound.body.context.conversation.id,
+      "accepted-offer-agent-001", { actionType: "book_accommodation", payload: { offerId } },
+      "Подтверждаете бронирование A-Frame с 10 по 12 июня?");
+    const confirmation = await confirmInbound(agentContact, "booking", "Подтверждаю бронь.");
     const booked = await api("/accommodations/book").send({ propertyId: "les_borovoe",
       externalUserId: agentContact.externalUserId, conversationId: inbound.body.context.conversation.id,
-      offerId, confirmationMessageId: confirmation.body.messageId, confirmedByGuest: true,
+      offerId, proposalMessageId, confirmationMessageId: confirmation.body.messageId,
       idempotencyKey: "accepted-offer-agent-001" }).expect(201);
     expect(booked.body).toMatchObject({ category: "A-Frame", duplicate: false });
     expect(JSON.stringify(booked.body)).not.toMatch(/A-10\d/);
     const duplicate = await api("/accommodations/book").send({ propertyId: "les_borovoe",
       externalUserId: agentContact.externalUserId, conversationId: inbound.body.context.conversation.id,
-      offerId, confirmationMessageId: confirmation.body.messageId, confirmedByGuest: true,
+      offerId, proposalMessageId, confirmationMessageId: confirmation.body.messageId,
       idempotencyKey: "accepted-offer-agent-001" }).expect(200);
     expect(duplicate.body).toMatchObject({ duplicate: true, reservationId: booked.body.reservationId });
     expect(await db.select().from(s.reservations).where(eq(s.reservations.idempotencyKey,
-      `agent:${inbound.body.context.customer.id}:les_borovoe:accepted-offer-agent-001`))).toHaveLength(1);
+      `agent-confirm:${proposalMessageId}`))).toHaveLength(1);
     expect(await db.select().from(s.reservationUnits).where(eq(s.reservationUnits.reservationId, booked.body.reservationId))).toHaveLength(1);
     const refreshed = await api("/context").send({ propertyId: "les_borovoe",
       externalUserId: agentContact.externalUserId, conversationId: inbound.body.context.conversation.id }).expect(200);
@@ -1081,17 +1383,16 @@ describe("AI Guest Agent gateway", () => {
         checkIn: "2027-09-10T10:00:00.000Z", checkOut: "2027-09-12T10:00:00.000Z",
         nights: 2, adults: 2, children: 0, status: "viewed", ownerId: lead.ownerId,
         expiresAt: "2027-09-09T10:00:00.000Z", total: 100000, deposit: 0, currency: "KZT" });
-      const confirmation = await api("/messages/inbound").send({ ...contact,
-        externalMessageId: "tg_agent_race_confirm_" + suffix,
-        externalUpdateId: "tg_agent_race_confirm_update_" + suffix,
-        text: "Подтверждаю бронь." }).expect(201);
-      return { contact, inbound, offerId, confirmation };
+      const proposalMessageId = await sendProposal(contact.externalUserId, inbound.body.context.conversation.id,
+        "agent-race-proposal-" + suffix, { actionType: "book_accommodation", payload: { offerId } });
+      const confirmation = await confirmInbound(contact, "race-" + suffix, "Подтверждаю бронь.");
+      return { contact, inbound, offerId, proposalMessageId, confirmation };
     };
     const candidates = await Promise.all([makeCandidate("a"), makeCandidate("b")]);
     const attempts = await Promise.all(candidates.map((candidate, index) => api("/accommodations/book").send({
       propertyId: "les_borovoe", externalUserId: candidate.contact.externalUserId,
       conversationId: candidate.inbound.body.context.conversation.id, offerId: candidate.offerId,
-      confirmationMessageId: candidate.confirmation.body.messageId, confirmedByGuest: true,
+      proposalMessageId: candidate.proposalMessageId, confirmationMessageId: candidate.confirmation.body.messageId,
       idempotencyKey: "agent-race-booking-" + index,
     })));
     expect(attempts.map((result) => result.status).sort()).toEqual([201, 409]);

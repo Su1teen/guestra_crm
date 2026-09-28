@@ -1,0 +1,22 @@
+{
+  "contractVersion": "agent-api-v1",
+  "basePath": "/api/integrations/agent",
+  "auth": { "header": "x-crm-api-key", "environment": "CRM_INTEGRATION_API_KEY" },
+  "channels": ["telegram"],
+  "lifecycles": ["new_contact", "active_request", "offer", "pending_payment", "reserved", "pre_arrival", "in_house", "due_out", "post_stay", "service_only", "non_target"],
+  "bookingModes": ["live_booking", "request_only", "info_only", "disabled"],
+  "tools": ["get_context", "classify_conversation", "get_property_knowledge", "get_accommodation_options", "check_accommodation_availability", "create_or_update_request", "create_offer", "book_accommodation", "get_service_options", "check_service_availability", "book_service", "reschedule_service", "cancel_service", "get_stay_context", "get_folio_summary", "create_guest_request", "check_stay_extension", "extend_stay", "handoff_to_human"],
+  "confirmation": { "requiredFor": ["book_accommodation", "book_service", "reschedule_service", "cancel_service", "extend_stay"], "sentProposalRequired": true, "laterInboundConfirmationRequired": true, "maximumAgeMinutes": 30, "oneUse": true },
+  "errors": ["UNAUTHORIZED", "VALIDATION_ERROR", "INTERNAL_ERROR", "IDENTITY_NOT_FOUND", "IDENTITY_VERIFICATION_REQUIRED", "CONVERSATION_NOT_FOUND", "CONVERSATION_HUMAN_OWNED", "ACTION_NOT_ALLOWED", "CONFIRMATION_REQUIRED", "CONFIRMATION_STALE", "CONFIRMATION_PAYLOAD_MISMATCH", "IDEMPOTENCY_CONFLICT", "NO_AVAILABILITY", "PRICE_NOT_AUTHORITATIVE", "SERVICE_NOT_LIVE_BOOKABLE", "RESOURCE_CONFLICT", "REQUEST_NOT_FOUND", "OFFER_EXPIRED", "HANDOFF_REQUIRED", "DELIVERY_FAILED", "CLASSIFICATION_MANUAL_OVERRIDE"],
+  "endpoints": [
+    ["GET", "/capabilities"], ["POST", "/messages/inbound"], ["POST", "/context"], ["GET", "/property-knowledge"],
+    ["GET", "/accommodations/options"], ["POST", "/accommodations/availability"], ["POST", "/conversations/classify"],
+    ["POST", "/requests/upsert"], ["POST", "/offers/create"], ["GET", "/services/options"], ["POST", "/services/availability"],
+    ["POST", "/services/book"], ["POST", "/services/reschedule"], ["POST", "/services/cancel"],
+    ["POST", "/accommodations/book"], ["POST", "/guest-requests"], ["POST", "/handoff"], ["POST", "/stay-context"],
+    ["POST", "/folio-summary"], ["POST", "/identity/verify"], ["POST", "/messages/outbound/prepare"],
+    ["POST", "/messages/outbound/result"], ["POST", "/stays/extension/preview"], ["POST", "/stays/extend"]
+  ],
+  "outbound": { "webhookTokenEnvironment": "AGENT_OUTBOUND_WEBHOOK_TOKEN", "confirmDeliveryRequired": true },
+  "featureFlags": { "restaurantTableInventory": false, "autonomousDiscounts": false, "autonomousRefunds": false, "roomMove": false, "vacancyAutomation": false }
+}

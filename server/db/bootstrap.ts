@@ -340,15 +340,18 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   for (const category of categories.values()) {
     const key = `${category.propertyId}:${category.name}`;
     const verified = category.propertyId === "les_borovoe"
-      ? lesBorovoeUnitTypes.find((unit) => unit.name === category.name) : undefined;
+      ? lesBorovoeUnitTypes.find((unit) => unit.name === category.name) as
+        (typeof lesBorovoeUnitTypes[number] & { maxAdults?: number; maxChildren?: number }) | undefined
+      : undefined;
     const categoryId = `ut_${createHash("md5").update(key).digest("hex")}`;
     await db.insert(s.unitTypes).values({ id: categoryId, ...category,
-      maxOccupancy: verified?.capacity,
+      maxAdults: verified?.maxAdults ?? null, maxChildren: verified?.maxChildren ?? null, maxOccupancy: verified?.capacity,
       metadata: verified ? { capacity: verified.capacity, ...verified.agentKnowledge } : {},
     }).onConflictDoNothing();
     if (verified) {
       const [existing] = await db.select().from(s.unitTypes).where(eq(s.unitTypes.id, categoryId)).limit(1);
-      await db.update(s.unitTypes).set({ maxOccupancy: existing?.maxOccupancy ?? verified.capacity,
+      await db.update(s.unitTypes).set({ maxAdults: existing?.maxAdults ?? verified.maxAdults ?? null,
+        maxChildren: existing?.maxChildren ?? verified.maxChildren ?? null, maxOccupancy: existing?.maxOccupancy ?? verified.capacity,
         metadata: { capacity: verified.capacity, ...verified.agentKnowledge, ...(existing?.metadata ?? {}) },
       }).where(eq(s.unitTypes.id, categoryId));
     }

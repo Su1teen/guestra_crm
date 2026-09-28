@@ -28,6 +28,7 @@ export const properties = pgTable("properties", {
   name: text("name").notNull(),
   shortName: text("short_name").notNull(),
   city: text("city").notNull(),
+  timezone: text("timezone").notNull().default("Asia/Qyzylorda"),
   roomTypes: jsonb("room_types").$type<string[]>().notNull().default([]),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -720,6 +721,23 @@ export const integrationEvents = pgTable("integration_events", {
   payloadHash: text("payload_hash").notNull(),
   createdAt: createdAt(),
 }, (table) => [uniqueIndex("integration_event_provider_type_external_uidx").on(table.provider, table.eventType, table.externalEventId)]);
+
+export const agentActionExecutions = pgTable("agent_action_executions", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id").notNull().references(() => properties.id),
+  guestId: text("guest_id").notNull().references(() => guests.id),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  proposalMessageId: text("proposal_message_id").notNull().references(() => messages.id, { onDelete: "cascade" }),
+  confirmationMessageId: text("confirmation_message_id").notNull().references(() => messages.id, { onDelete: "cascade" }),
+  actionType: text("action_type").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  result: jsonb("result").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: createdAt(),
+}, (table) => [
+  uniqueIndex("agent_action_execution_confirmation_uidx").on(table.confirmationMessageId),
+  uniqueIndex("agent_action_execution_proposal_uidx").on(table.proposalMessageId, table.actionType),
+  index("agent_action_execution_conversation_idx").on(table.conversationId, table.createdAt),
+]);
 
 export const leadInterests = pgTable("lead_interests", {
   id: text("id").primaryKey(),

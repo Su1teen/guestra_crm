@@ -39,7 +39,7 @@ export const findCustomerCandidates = async (
 /** Stable ID plus identity unique key makes retries safe without merging people. */
 export const resolveOrCreateExternalCustomer = async (
   db: DbLike,
-  input: { channel: string; externalUserId: string; propertyId: string; firstName?: string | null; externalChatId?: string | null; username?: string | null },
+  input: { channel: string; externalUserId: string; propertyId: string; firstName?: string | null; externalChatId?: string | null; username?: string | null; createAsStub?: boolean },
 ) => {
   const [property] = await db.select().from(s.properties).where(eq(s.properties.id, input.propertyId)).limit(1);
   if (!property) throw new Error("Объект размещения не найден");
@@ -57,7 +57,7 @@ export const resolveOrCreateExternalCustomer = async (
     firstName: input.firstName?.trim() || null,
     fullName: input.firstName?.trim() || `Контакт ${input.channel} ${input.externalUserId}`,
     preferredPropertyId: input.propertyId, preferredChannel: input.channel,
-    profileStatus: input.firstName?.trim() ? "active" : "stub",
+    profileStatus: input.createAsStub ? "stub" : input.firstName?.trim() ? "active" : "stub",
   }).onConflictDoNothing();
   await db.insert(s.guestContactIdentities).values({
     id: `identity_${hash}`, guestId: customerId, channel: input.channel,

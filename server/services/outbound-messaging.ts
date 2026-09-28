@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 
-type OutboundConfig = { webhookUrl?: string; apiKey: string };
+type OutboundConfig = { webhookUrl?: string; webhookToken?: string };
 
 /** Sends a durable CRM message through n8n and records only confirmed delivery. */
 export const dispatchTelegramMessage = async (db: Pick<Database, "select" | "update">,
@@ -23,6 +23,12 @@ export const dispatchTelegramMessage = async (db: Pick<Database, "select" | "upd
       .where(eq(s.messages.id, message.id));
     return { sent: false, error };
   }
+  if (!config.webhookToken) {
+    const error = "Не настроен AGENT_OUTBOUND_WEBHOOK_TOKEN";
+    await db.update(s.messages).set({ deliveryStatus: "failed", metadata: { ...message.metadata, deliveryError: error } })
+      .where(eq(s.messages.id, message.id));
+    return { sent: false, error };
+  }
 
   const payload = {
     event: "guestra.telegram.send_message", idempotencyKey: `crm-message:${message.id}`,
@@ -32,12 +38,13 @@ export const dispatchTelegramMessage = async (db: Pick<Database, "select" | "upd
   };
   try {
     const response = await fetch(config.webhookUrl, {
-      method: "POST", headers: { "content-type": "application/json", "x-crm-api-key": config.apiKey },
+      method: "POST", headers: { "content-type": "application/json", "x-agent-webhook-token": config.webhookToken },
       body: JSON.stringify(payload), signal: AbortSignal.timeout(12_000),
     });
     const body = await response.json().catch(() => ({})) as { ok?: boolean; externalMessageId?: string; error?: string };
     if (!response.ok || body.ok !== true || !body.externalMessageId) {
-      const error = body.error || `Outbound webhook returned HTTP ${response.status}`;
+      const error = (body.error || `Outbound webhook returned HTTP ${response.status}`)
+        .replace(/bot\d+:[A-Za-z0-9_-]{20,}|Bearer\s+\S+|(?:token|secret|api[_-]?key)[=: ]+\S+/giu, "[redacted]").slice(0, 1000);
       await db.update(s.messages).set({ deliveryStatus: "failed",
         metadata: { ...message.metadata, deliveryError: error } }).where(eq(s.messages.id, message.id));
       return { sent: false, error };
@@ -46,7 +53,8 @@ export const dispatchTelegramMessage = async (db: Pick<Database, "select" | "upd
       metadata: { ...message.metadata, deliveryError: null } }).where(eq(s.messages.id, message.id));
     return { sent: true, externalMessageId: body.externalMessageId };
   } catch (error) {
-    const messageText = error instanceof Error ? error.message : "Webhook недоступен";
+    const messageText = (error instanceof Error ? error.message : "Webhook недоступен")
+      .replace(/bot\d+:[A-Za-z0-9_-]{20,}|Bearer\s+\S+|(?:token|secret|api[_-]?key)[=: ]+\S+/giu, "[redacted]").slice(0, 1000);
     await db.update(s.messages).set({ deliveryStatus: "failed",
       metadata: { ...message.metadata, deliveryError: messageText } }).where(eq(s.messages.id, message.id));
     return { sent: false, error: messageText };
