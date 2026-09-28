@@ -217,7 +217,7 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   }).onConflictDoNothing();
 
   await db.insert(s.properties).values([
-    { id: "les_borovoe", organizationId: "org_les_live", name: "ЛЕС Боровое", shortName: "Боровое", city: "Боровое, Акмолинская область", roomTypes: lesBorovoeUnitTypes.map((unit) => unit.name) },
+    { id: "les_borovoe", organizationId: "org_les_live", name: "ЛЕС Боровое", shortName: "Боровое", city: "Боровое, Акмолинская область", timezone: "Asia/Almaty", roomTypes: lesBorovoeUnitTypes.map((unit) => unit.name) },
     { id: "les_astana", organizationId: "org_les_live", name: "ЛЕС Астана", shortName: "Астана", city: "Астана", roomTypes: ["Делюкс-номер", "Люкс"] },
   ]).onConflictDoNothing();
   await db.insert(s.propertyKnowledge).values([

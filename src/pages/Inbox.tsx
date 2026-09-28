@@ -11,7 +11,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { CreateTaskDialog } from "@/components/crm/CreateTaskDialog";
 import { CreateReservationDialog } from "@/components/crm/CreateReservationDialog";
 import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
 import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDialog";
@@ -40,6 +39,17 @@ const quickFilters = [
 ] as const;
 type QuickFilter = typeof quickFilters[number]["key"];
 type InboxQueue = "all" | ConversationQueueState;
+
+const handoffReasonLabels: Record<string, string> = {
+  custom_discount: "Нужна помощь с условиями",
+  refund_or_payment_issue: "Вопрос по оплате",
+  complaint_or_conflict: "Требуется внимание к обращению",
+  uncertain_intent: "Нужно уточнить запрос",
+  unavailable_nonstandard_solution: "Нужна индивидуальная помощь",
+  corporate_or_event_complex: "Запрос для группы или мероприятия",
+  guest_requested_human: "Гость просит сотрудника",
+  unsupported_action: "Нужна помощь сотрудника",
+};
 
 const localDateTime = (value: string) => {
   const date = new Date(value);
@@ -277,7 +287,7 @@ const Inbox = () => {
   };
 
   const commandPanel = selected && guest ? (
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-card">
+    <div className="flex h-full min-h-0 flex-col overflow-x-hidden overflow-y-auto bg-card">
       <div className="border-b border-border px-4 py-3">
         <p className="text-sm font-semibold">Контекст гостя</p>
         <div className="mt-2 flex items-center gap-2.5">
@@ -292,10 +302,10 @@ const Inbox = () => {
 
       <div className="space-y-4 p-4">
         {selected.automationMode === "needs_human" && <section className="rounded-xl border border-amber-200 bg-amber-50 p-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-amber-900">Нужен сотрудник · {selected.handoffReasonCode ?? "требуется помощь"}</p>
-          {selected.handoffNote && <p className="mt-2 text-sm text-amber-950">{selected.handoffNote}</p>}
-          {selected.requestedAction && <p className="mt-2 text-xs text-amber-900">Следующий шаг: {selected.requestedAction}</p>}
-          <Button size="sm" className="mt-3" onClick={() => void changeAutomationMode()}>Взять диалог</Button>
+          <p className="text-sm font-semibold text-amber-950">Нужен сотрудник</p>
+          <p className="mt-1 text-xs text-amber-800">{handoffReasonLabels[selected.handoffReasonCode ?? ""] ?? "Нужна помощь с запросом гостя"}</p>
+          {(selected.requestedAction ?? selected.handoffNote) && <p className="mt-2 text-sm leading-5 text-amber-950">{selected.requestedAction ?? selected.handoffNote}</p>}
+          <Button size="sm" className="mt-3 w-full" onClick={() => void changeAutomationMode()}>Взять диалог</Button>
         </section>}
         {nextTask ? (
           <section className="rounded-xl bg-brand-50/70 p-3">
@@ -313,12 +323,7 @@ const Inbox = () => {
               <FilterSelect value={nextTask.ownerId} onChange={(value) => void reassignTask(nextTask, value)} options={data.employees.map((employee) => ({ value: employee.id, label: employee.name }))} className="w-full" ariaLabel="Ответственный за задачу" />
             </div>
           </section>
-        ) : (
-          <CreateTaskDialog propertyId={selected.propertyId} guestId={guest.id} leadId={request?.id}
-            conversationId={selected.id} reservationId={reservation?.id} stayId={stay?.id} roomId={room?.id}
-            defaultTitle={`Связаться с гостем: ${guest.fullName}`}
-            trigger={<Button variant="outline" className="w-full justify-start"><span className="mr-2 text-lg leading-none">＋</span>Создать задачу</Button>} />
-        )}
+        ) : null}
 
         {isInHouse && reservation ? (
           <section className="space-y-2 border-b border-border pb-4">
@@ -328,12 +333,12 @@ const Inbox = () => {
             <p className="text-xs">Баланс: {formatTenge(balance)}</p>
             <p className="text-xs text-muted-foreground">Услуги: {bookedServices.length} · Открытые запросы: {guestRequests.length}</p>
             {stayAttention?.issues.length ? <p className="text-xs text-amber-700">{stayAttention.issues.slice(0, 2).join(" · ")}</p> : <p className="text-xs text-emerald-700">По гостю всё в порядке</p>}
-            <div className="rounded-md bg-secondary/60 p-2"><p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Сегодня</p>{stayAgenda.length ? stayAgenda.slice(0, 3).map((item) => <p key={item.id} className="text-xs"><strong>{propertyTime(item.at, "Asia/Qyzylorda")}</strong> · {item.kind === "request" ? "Запрос: " : ""}{item.title}</p>) : <p className="text-xs text-muted-foreground">Ничего не запланировано</p>}</div>
-            <div className="grid grid-cols-2 gap-2">
-              <Button size="sm" variant="outline" onClick={() => setServiceOpen(true)}>Добавить услугу</Button>
-              <Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>Добавить запрос</Button>
-              {balance > 0 && <Button size="sm" variant="outline" onClick={() => { setPaymentAmount(String(balance)); setPaymentOpen(true); }}>Оплата</Button>}
-              <Button size="sm" variant="outline" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть проживание</Button>
+            <div className="rounded-md bg-secondary/60 p-2"><p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Сегодня</p>{stayAgenda.length ? stayAgenda.slice(0, 3).map((item) => <p key={item.id} className="text-xs"><strong>{propertyTime(item.at, "Asia/Almaty")}</strong> · {item.kind === "request" ? "Запрос: " : ""}{item.title}</p>) : <p className="text-xs text-muted-foreground">Ничего не запланировано</p>}</div>
+            <div className="grid min-w-0 grid-cols-1 gap-2">
+              <Button size="sm" variant="outline" className="w-full whitespace-normal" onClick={() => setServiceOpen(true)}>Добавить услугу</Button>
+              <Button size="sm" variant="outline" className="w-full whitespace-normal" onClick={() => setRequestOpen(true)}>Добавить запрос</Button>
+              {balance > 0 && <Button size="sm" variant="outline" className="w-full whitespace-normal" onClick={() => { setPaymentAmount(String(balance)); setPaymentOpen(true); }}>Оплата</Button>}
+              <Button size="sm" variant="outline" className="w-full whitespace-normal" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть проживание</Button>
             </div>
           </section>
         ) : reservation ? (
@@ -344,24 +349,24 @@ const Inbox = () => {
             <p className="text-xs text-muted-foreground">{formatStayRange(reservation.arrivalAt, reservation.departureAt)} · {occupancyLabel(reservation.adults, reservation.children)}</p>
             <p className="text-xs">Оплачено {formatTenge(paidAmount)} · Остаток {formatTenge(balance)}</p>
             {readiness?.warnings[0] && <p className="text-xs text-amber-700">Готовность: {readiness.warnings[0]}</p>}
-            <div className="grid grid-cols-2 gap-2">
-              <Button size="sm" variant="outline" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
-              <Button size="sm" variant="outline" onClick={() => { setDraft(""); document.getElementById("inbox-message-draft")?.focus(); }}>Написать</Button>
-              {reservation.status === "confirmed" && <><Button size="sm" variant="outline" onClick={() => setServiceOpen(true)}>Добавить услугу</Button><Button size="sm" variant="outline" onClick={() => setRequestOpen(true)}>Добавить запрос</Button></>}
+            <div className="grid min-w-0 grid-cols-1 gap-2">
+              <Button size="sm" variant="outline" className="w-full whitespace-normal" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
+              <Button size="sm" variant="outline" className="w-full whitespace-normal" onClick={() => { setDraft(""); document.getElementById("inbox-message-draft")?.focus(); }}>Написать</Button>
+              {reservation.status === "confirmed" && <><Button size="sm" variant="outline" className="w-full whitespace-normal" onClick={() => setServiceOpen(true)}>Добавить услугу</Button><Button size="sm" variant="outline" className="w-full whitespace-normal" onClick={() => setRequestOpen(true)}>Добавить запрос</Button></>}
             </div>
           </section>
         ) : request ? (
           <section className="space-y-2 border-b border-border pb-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Сейчас · обращение</p>
-            <div className="flex items-center justify-between gap-2"><p className="text-sm font-semibold">{request.code}</p><button type="button" onClick={openFacts} className="text-xs text-brand-700 hover:underline">Изменить</button></div>
+            <div className="flex items-center justify-end gap-2"><button type="button" onClick={openFacts} className="text-xs text-brand-700 hover:underline">Изменить данные</button></div>
             <p className="text-sm">{request.classification.direction === "accommodation" ? "Проживание" : "Запрос гостя"}</p>
             {request.classification.direction === "accommodation" && <><p className="text-xs text-muted-foreground">{formatStayRange(request.checkIn, request.checkOut)} · {occupancyLabel(request.adults, request.children)}</p>
               <p className="text-xs">Категория: {request.roomType || "не выбрана"}</p>
-              {!request.roomType && <p className="text-xs text-amber-700">Не хватает категории размещения</p>}</>}
+              {!request.roomType && <p className="text-xs text-amber-700">Выберите формат размещения</p>}</>}
             <Button size="sm" variant="outline" className="w-full" onClick={() => navigate(`/requests/${request.id}`)}>Открыть обращение полностью</Button>
             <Button size="sm" variant="outline" className="w-full" onClick={() => setServiceOpen(true)}>Забронировать услугу</Button>
-            {request.classification.direction === "accommodation" && <div className="grid grid-cols-2 gap-2">
-              <Button size="sm" onClick={() => void createOffer()}>{offer ? "Обновить предложение" : "Создать предложение"}</Button>
+            {request.classification.direction === "accommodation" && <div className="grid min-w-0 grid-cols-1 gap-2">
+              <Button size="sm" className="w-full whitespace-normal" onClick={() => void createOffer()}>{offer ? "Обновить предложение" : "Создать предложение"}</Button>
               {!reservation && <CreateReservationDialog request={request} stayInContext />}
             </div>}
             {offer && <div className="mt-2 rounded-lg border border-border p-3">
@@ -382,10 +387,9 @@ const Inbox = () => {
 
         <section className="space-y-2">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Кратко о госте</p>
-          <p className="text-xs">{guest.staysCount > 0 ? `Повторный гость · ${guest.staysCount} проживаний` : "Первый визит"}</p>
-          <p className="text-xs">Язык: {guest.language || "не указан"}</p>
-          <p className="text-xs">Предпочтение: {guest.preferences.roomPreference || "не указано"}</p>
-          <p className="text-xs">Телефон: {guest.phone}</p>
+          <p className="text-xs">{guest.staysCount > 0 ? `Повторный гость · ${guest.staysCount} проживаний` : "Первый визит"}{guest.language ? ` · ${guest.language}` : ""}</p>
+          {guest.preferences.roomPreference && <p className="text-xs text-muted-foreground">Предпочитает: {guest.preferences.roomPreference}</p>}
+          {guest.phone && <p className="text-xs text-muted-foreground">{guest.phone}</p>}
           {!reservation && <Button size="sm" variant="outline" className="w-full" onClick={() => setQuickReservationOpen(true)}>+ Добавить проживание</Button>}
           <Link to={`/guests/${guest.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline">Открыть профиль <ArrowRight className="h-3 w-3" /></Link>
         </section>
@@ -421,7 +425,7 @@ const Inbox = () => {
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-2.5 xl:grid-cols-[250px_minmax(0,1fr)_292px]">
+      <div className="grid min-h-0 flex-1 gap-2.5 xl:grid-cols-[250px_minmax(0,1fr)_320px]">
         <section className="flex min-h-[190px] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card xl:min-h-0">
           <div className="border-b border-border px-3 py-2"><p className="text-xs font-medium text-muted-foreground">Диалоги · {visibleConversations.length}</p></div>
           <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto">

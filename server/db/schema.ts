@@ -28,7 +28,7 @@ export const properties = pgTable("properties", {
   name: text("name").notNull(),
   shortName: text("short_name").notNull(),
   city: text("city").notNull(),
-  timezone: text("timezone").notNull().default("Asia/Qyzylorda"),
+  timezone: text("timezone").notNull().default("Asia/Almaty"),
   roomTypes: jsonb("room_types").$type<string[]>().notNull().default([]),
   createdAt: createdAt(),
   updatedAt: updatedAt(),

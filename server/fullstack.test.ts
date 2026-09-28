@@ -1427,6 +1427,10 @@ describe("AI Guest Agent gateway", () => {
       requestedAction: "Проверить возможность с руководителем", priority: "high" }).expect(200);
     expect((await api("/context").send({ propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
       conversationId }).expect(200)).body).toMatchObject({ aiReplyAllowed: false, allowedActions: [] });
+    await api("/messages/outbound/prepare").send({ propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
+      conversationId, text: "Передаю запрос ответственному коллеге.", idempotencyKey: "handoff-final-reply" }).expect(201);
+    await api("/messages/outbound/prepare").send({ propertyId: "les_borovoe", externalUserId: agentContact.externalUserId,
+      conversationId, text: "Второй ответ не должен уйти.", idempotencyKey: "handoff-second-reply" }).expect(409);
     const staff = request.agent(app);
     await staff.post("/api/auth/login").send({ email: config.ADMIN_BOOTSTRAP_EMAIL, password: config.ADMIN_BOOTSTRAP_PASSWORD }).expect(200);
     await staff.post(`/api/crm/conversations/${conversationId}/messages`).send({ text: "Проверю условия" }).expect(409);

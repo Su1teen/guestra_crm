@@ -998,7 +998,6 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
           eq(s.conversations.propertyId, input.propertyId), eq(s.conversations.channel, "telegram"),
         )).limit(1);
         if (!conversation) throw new AgentActionError("CONVERSATION_NOT_FOUND", "Conversation not found for this Telegram identity", 404);
-        if (conversation.automationMode !== "ai") throw new AgentActionError("CONVERSATION_HUMAN_OWNED", "Conversation is owned by a human");
         const [prior] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, idempotencyKey)).limit(1);
         if (prior) {
           if (prior.conversationId !== conversation.id || prior.metadata?.requestPayloadHash !== requestPayloadHash) {
@@ -1006,8 +1005,24 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
           }
           return { message: prior, duplicate: true };
         }
+        // The agent can finish the same turn that created a handoff with one short
+        // acknowledgement. Later inbound messages are still stopped by aiReplyAllowed.
+        const handoffAcknowledgement = conversation.automationMode === "needs_human" && !input.proposedAction &&
+          Boolean(conversation.handoffRequestedAt);
+        if (conversation.automationMode !== "ai" && !handoffAcknowledgement) {
+          throw new AgentActionError("CONVERSATION_HUMAN_OWNED", "Conversation is owned by a human");
+        }
+        if (handoffAcknowledgement) {
+          const [priorHandoffReply] = await tx.select({ id: s.messages.id }).from(s.messages).where(and(
+            eq(s.messages.conversationId, conversation.id), eq(s.messages.direction, "out"),
+            eq(s.messages.senderType, "ai"), gte(s.messages.sentAt, conversation.handoffRequestedAt!),
+          )).limit(1);
+          if (priorHandoffReply) throw new AgentActionError("CONVERSATION_HUMAN_OWNED", "Conversation is owned by a human");
+        }
         const context = await getAgentContext(tx, conversation.id, identity.guestId);
-        if (!context?.aiReplyAllowed) throw new AgentActionError("CONVERSATION_HUMAN_OWNED", "AI replies are paused");
+        if (!context || (!context.aiReplyAllowed && !handoffAcknowledgement)) {
+          throw new AgentActionError("CONVERSATION_HUMAN_OWNED", "AI replies are paused");
+        }
         let proposedAction: Record<string, unknown> | undefined;
         if (input.proposedAction) {
           if (!context.allowedActions.includes(input.proposedAction.actionType as never)) {
