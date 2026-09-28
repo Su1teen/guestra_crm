@@ -51,6 +51,7 @@ const Inbox = () => {
   const {
     status, reload, data, guestById, leadById, currentEmployee, employeeById, propertyById,
     sendMessage, markConversationRead, setConversationStatus, assignConversation,
+    takeConversation, resumeAi, retryMessage,
     toggleTaskDone, updateTask, createOfferFromLead, setOfferStatus, recordPayment,
     updateLead, folioByLeadId, recordReservationPayment,
   } = useCrm();
@@ -107,6 +108,8 @@ const Inbox = () => {
   }, [channel, currentEmployee.id, data.reservations, guestById, leadById, quick.mine, quick.unassigned, quick.unread, queue, scoped.conversations, search]);
 
   const selected: Conversation | undefined = visibleConversations.find((item) => item.id === selectedId) ?? visibleConversations[0];
+  const automationMode = selected?.automationMode ?? "human";
+  const replyDisabled = Boolean(selected?.channel === "telegram" && automationMode !== "human");
   const selectedConversationId = selected?.id;
   const selectedUnreadCount = selected?.unreadCount ?? 0;
 
@@ -184,6 +187,23 @@ const Inbox = () => {
     } catch (error) {
       toast({ title: "Не удалось отправить сообщение", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
     } finally { setBusy(false); }
+  };
+  const retryFailedMessage = async (messageId: string) => {
+    if (!selected) return;
+    try { await retryMessage(selected.id, messageId); toast({ title: "Сообщение доставлено" }); }
+    catch (error) { toast({ title: "Не удалось отправить сообщение", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); }
+  };
+  const changeAutomationMode = async () => {
+    if (!selected) return;
+    try {
+      if (automationMode === "human" && selected.assigneeId === currentEmployee.id) {
+        await resumeAi(selected.id);
+        toast({ title: "ИИ снова отвечает в диалоге" });
+      } else {
+        await takeConversation(selected.id);
+        toast({ title: "Диалог передан вам" });
+      }
+    } catch (error) { toast({ title: "Не удалось изменить режим диалога", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); }
   };
   const changeConversationStatus = async () => {
     if (!selected) return;
@@ -271,6 +291,12 @@ const Inbox = () => {
       </div>
 
       <div className="space-y-4 p-4">
+        {selected.automationMode === "needs_human" && <section className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-amber-900">Нужен сотрудник · {selected.handoffReasonCode ?? "требуется помощь"}</p>
+          {selected.handoffNote && <p className="mt-2 text-sm text-amber-950">{selected.handoffNote}</p>}
+          {selected.requestedAction && <p className="mt-2 text-xs text-amber-900">Следующий шаг: {selected.requestedAction}</p>}
+          <Button size="sm" className="mt-3" onClick={() => void changeAutomationMode()}>Взять диалог</Button>
+        </section>}
         {nextTask ? (
           <section className="rounded-xl bg-brand-50/70 p-3">
             <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-brand-800"><Circle className="h-3 w-3 fill-current" />Следующее действие</div>
@@ -405,12 +431,15 @@ const Inbox = () => {
               const linkedRequest = conversation.leadId ? leadById(conversation.leadId) : undefined;
               const linkedReservation = conversation.reservationId ? data.reservations.find((item) => item.id === conversation.reservationId) : undefined;
               const label = conversationQueueState(conversation);
+              const mode = conversation.automationMode ?? "human";
+              const ownerLabel = mode === "ai" ? "ИИ отвечает" : mode === "needs_human" ? "Нужен сотрудник" : "Сотрудник отвечает";
               return <button key={conversation.id} type="button" onClick={() => setSelectedId(conversation.id)} className={cn("w-full border-l-[3px] px-3 py-3 text-left transition-colors", selected?.id === conversation.id ? "border-brand-500 bg-brand-50/60" : "border-transparent hover:bg-secondary/50")}>
                 <div className="flex items-center justify-between gap-2"><span className="flex min-w-0 items-center gap-2"><InitialsAvatar name={person?.fullName ?? "Гость"} size="sm" /><span className="truncate text-sm font-medium">{person?.fullName ?? "Гость"}</span></span><span className="shrink-0 text-[10px] text-muted-foreground">{formatRelative(conversation.lastMessageAt)}</span></div>
                 <p className="mt-1.5 line-clamp-1 text-xs text-muted-foreground">{last?.text}</p>
                 <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10px]">
                   <span className="shrink-0 text-muted-foreground">{channelLabels[conversation.channel]}</span><span className="text-muted-foreground">·</span>
                   <span className={cn("truncate font-medium", label === "needs_answer" ? "text-amber-700" : label === "closed" ? "text-muted-foreground" : "text-emerald-700")}>{conversationQueueLabel[label]}</span>
+                  <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 font-medium", mode === "ai" ? "bg-sky-100 text-sky-800" : mode === "needs_human" ? "bg-amber-100 text-amber-900" : "bg-secondary text-muted-foreground")}>{ownerLabel}</span>
                   {conversation.unreadCount > 0 && <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-brand-500" title="Непрочитано" />}
                 </div>
                 {(linkedRequest || linkedReservation) && <p className="mt-1 truncate text-[10px] text-muted-foreground">{linkedReservation ? `Бронь ${linkedReservation.code}` : `${linkedRequest?.code} · ${linkedRequest?.roomType ?? "Проживание"} · ${formatStayRange(linkedRequest?.checkIn ?? "", linkedRequest?.checkOut ?? "")}`}</p>}
@@ -423,9 +452,10 @@ const Inbox = () => {
 
         {selected && guest ? <section className="flex min-h-[460px] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card xl:min-h-0">
           <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
-            <div className="min-w-0"><p className="truncate text-sm font-semibold">{guest.fullName}</p><p className="text-xs text-muted-foreground">{channelLabels[selected.channel]} · {propertyById(selected.propertyId)?.shortName ?? selected.propertyId} · {conversationQueueLabel[conversationQueueState(selected)]}</p></div>
+            <div className="min-w-0"><p className="truncate text-sm font-semibold">{guest.fullName}</p><p className="text-xs text-muted-foreground">{channelLabels[selected.channel]} · {propertyById(selected.propertyId)?.shortName ?? selected.propertyId} · {conversationQueueLabel[conversationQueueState(selected)]} · {automationMode === "ai" ? "ИИ отвечает" : automationMode === "needs_human" ? "Нужен сотрудник" : "Сотрудник отвечает"}</p></div>
             <div className="flex items-center gap-2">
-              {!selected.assigneeId && <Button size="sm" variant="outline" className="gap-1.5" onClick={() => { void assignConversation(selected.id, currentEmployee.id).then(() => toast({ title: "Диалог назначен на вас" })).catch(() => toast({ title: "Не удалось назначить диалог", variant: "destructive" })); }}><UserPlus className="h-3.5 w-3.5" />Взять</Button>}
+              {automationMode === "human" && selected.assigneeId === currentEmployee.id ? <Button size="sm" variant="outline" onClick={() => void changeAutomationMode()}>Вернуть ИИ</Button>
+                : <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void changeAutomationMode()}><UserPlus className="h-3.5 w-3.5" />Взять диалог</Button>}
               <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void changeConversationStatus()}><Check className="h-3.5 w-3.5" />{conversationQueueState(selected) === "closed" ? "Открыть" : "Закрыть"}</Button>
             </div>
           </header>
@@ -435,12 +465,15 @@ const Inbox = () => {
               <p className="whitespace-pre-wrap">{message.text}</p>
               {message.attachmentName && <p className={cn("mt-2 flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs", message.direction === "out" ? "bg-white/15" : "bg-secondary")}><Paperclip className="h-3 w-3" />{message.attachmentName}</p>}
               <p className={cn("mt-1 text-[10px]", message.direction === "out" ? "text-white/70" : "text-muted-foreground")}>{formatTime(message.at)}{message.employeeId ? ` · ${employeeById(message.employeeId)?.shortName ?? "Сотрудник"}` : ""}</p>
+              {message.deliveryStatus === "pending" && <p className="mt-1 text-[10px] opacity-75">Отправляется…</p>}
+              {message.deliveryStatus === "failed" && <div className="mt-2 flex items-center justify-between gap-2"><span className="text-xs font-medium text-red-700">Не доставлено</span><Button size="sm" variant="outline" className="h-7 bg-white px-2 text-xs" onClick={() => void retryFailedMessage(message.id)}>Повторить</Button></div>}
             </div>)}
           </div>
           <div className="border-t border-border bg-card px-4 py-3">
-            <div className="mb-2 flex gap-1"><Button size="sm" variant={!asNote ? "secondary" : "ghost"} className="h-7 px-2 text-xs" onClick={() => setAsNote(false)}>Ответ гостю</Button><Button size="sm" variant={asNote ? "secondary" : "ghost"} className="h-7 px-2 text-xs" onClick={() => setAsNote(true)}>Внутренняя заметка</Button></div>
-            <Textarea id="inbox-message-draft" value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} className="resize-none" placeholder={asNote ? "Заметка видна только команде" : "Напишите сообщение гостю"} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submitMessage(); } }} />
-            <div className="mt-2 flex items-center justify-between"><Button variant="ghost" size="sm" className="h-8 gap-1.5 text-muted-foreground" disabled><Paperclip className="h-3.5 w-3.5" />Вложение</Button><Button size="sm" className="h-8 gap-1.5" onClick={() => void submitMessage()} disabled={!draft.trim() || busy}><Send className="h-3.5 w-3.5" />{busy ? "Отправляем…" : asNote ? "Сохранить заметку" : "Отправить"}</Button></div>
+            {replyDisabled && <p className="mb-2 rounded-md bg-secondary px-2.5 py-2 text-xs text-muted-foreground">{automationMode === "needs_human" ? "ИИ остановлен и ждёт сотрудника." : "Возьмите диалог в работу, чтобы ответить гостю."}</p>}
+            <div className="mb-2 flex gap-1"><Button size="sm" variant={!asNote ? "secondary" : "ghost"} className="h-7 px-2 text-xs" disabled={replyDisabled} onClick={() => setAsNote(false)}>Ответ гостю</Button><Button size="sm" variant={asNote ? "secondary" : "ghost"} className="h-7 px-2 text-xs" onClick={() => setAsNote(true)}>Внутренняя заметка</Button></div>
+            <Textarea id="inbox-message-draft" value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} className="resize-none" disabled={!asNote && replyDisabled} placeholder={asNote ? "Заметка видна только команде" : replyDisabled ? "Сначала возьмите диалог в работу" : "Напишите сообщение гостю"} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submitMessage(); } }} />
+            <div className="mt-2 flex items-center justify-between"><Button variant="ghost" size="sm" className="h-8 gap-1.5 text-muted-foreground" disabled><Paperclip className="h-3.5 w-3.5" />Вложение</Button><Button size="sm" className="h-8 gap-1.5" onClick={() => void submitMessage()} disabled={!draft.trim() || busy || (!asNote && replyDisabled)}><Send className="h-3.5 w-3.5" />{busy ? "Отправляем…" : asNote ? "Сохранить заметку" : "Отправить"}</Button></div>
           </div>
         </section> : <EmptyState title="Диалог не выбран" description="Выберите переписку из списка." icon={InboxIcon} />}
 

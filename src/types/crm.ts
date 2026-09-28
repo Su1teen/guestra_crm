@@ -421,6 +421,8 @@ export interface UnitType {
   propertyId: PropertyId;
   name: string;
   active: boolean;
+  maxOccupancy?: number;
+  metadata?: Record<string, unknown>;
 }
 
 export interface LeadStageHistory {
@@ -565,6 +567,7 @@ export interface ServiceCatalogEntry {
   /** Длительность по умолчанию (например массаж 60 минут). */
   defaultDurationMinutes?: number;
   bookingMode?: ServiceBookingMode;
+  agentBookingMode?: "live_booking" | "request_only" | "info_only" | "disabled";
   slotIntervalMinutes?: number;
   displayOrder?: number;
   currency: string;
@@ -773,6 +776,9 @@ export interface Message {
   text: string;
   at: string;
   attachmentName?: string;
+  senderType?: "contact" | "ai" | "human" | "system";
+  externalMessageId?: string;
+  deliveryStatus?: "received" | "pending" | "sent" | "failed";
 }
 
 export interface Conversation {
@@ -799,6 +805,14 @@ export interface Conversation {
   firstResponseAt?: string;
   /** Результат закрытия разговора. */
   closeResult?: "booked" | "qualified" | "lost" | "non_target" | "transferred" | "other";
+  automationMode?: "ai" | "human" | "needs_human";
+  handoffReasonCode?: string;
+  handoffPriority?: "low" | "medium" | "high" | "urgent";
+  handoffNote?: string;
+  requestedAction?: string;
+  handoffRequestedAt?: string;
+  handoffResolvedAt?: string;
+  aiResumedAt?: string;
 }
 
 export interface ConversationSummary {

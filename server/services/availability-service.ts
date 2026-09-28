@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, gt, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 
@@ -73,4 +73,76 @@ export const assignReservationUnit = async (
     arrivalAt: reservation.arrivalAt, departureAt: reservation.departureAt,
   }).returning();
   return allocation;
+};
+
+/**
+ * Lists available inventory by sellable category. It deliberately returns no
+ * room numbers; callers may disclose only the category and count to guests.
+ */
+export const findAvailableUnitsByCategory = async (tx: Tx, input: {
+  propertyId: string; arrivalAt: string; departureAt: string; adults: number; children: number;
+  unitTypeId?: string;
+}) => {
+  if (!(new Date(input.departureAt) > new Date(input.arrivalAt))) {
+    throw new AvailabilityConflict("Дата выезда должна быть позже даты заезда");
+  }
+  const categories = await tx.select().from(s.unitTypes).where(and(
+    eq(s.unitTypes.propertyId, input.propertyId), eq(s.unitTypes.active, true),
+    ...(input.unitTypeId ? [eq(s.unitTypes.id, input.unitTypeId)] : []),
+  )).orderBy(asc(s.unitTypes.name));
+  const results = [];
+  for (const category of categories) {
+    const guests = input.adults + input.children;
+    if (!category.maxOccupancy || guests < 1 || guests > category.maxOccupancy ||
+        (category.maxAdults !== null && input.adults > category.maxAdults) ||
+        (category.maxChildren !== null && input.children > category.maxChildren)) continue;
+    const rooms = await tx.select().from(s.rooms).where(and(
+      eq(s.rooms.propertyId, input.propertyId),
+      or(eq(s.rooms.unitTypeId, category.id), and(isNull(s.rooms.unitTypeId), eq(s.rooms.category, category.name))),
+    )).orderBy(asc(s.rooms.number));
+    let availableUnits = 0;
+    for (const room of rooms) {
+      try {
+        await assertRoomAvailable(tx, { roomId: room.id, propertyId: input.propertyId,
+          arrivalAt: input.arrivalAt, departureAt: input.departureAt });
+        availableUnits += 1;
+      } catch (error) {
+        if (!(error instanceof AvailabilityConflict)) throw error;
+      }
+    }
+    if (availableUnits > 0) results.push({
+      id: category.id, name: category.name, capacityFit: true, maxOccupancy: category.maxOccupancy,
+      availableUnits, metadata: category.metadata,
+    });
+  }
+  return results;
+};
+
+/** Stable first-fit assignment; the selected room row is locked and rechecked. */
+export const autoAssignReservationUnit = async (
+  tx: Tx,
+  reservation: typeof s.reservations.$inferSelect,
+  unitTypeId: string,
+) => {
+  const [category] = await tx.select().from(s.unitTypes).where(and(
+    eq(s.unitTypes.id, unitTypeId), eq(s.unitTypes.propertyId, reservation.propertyId), eq(s.unitTypes.active, true),
+  )).limit(1);
+  if (!category || reservation.unitTypeId !== category.id) throw new AvailabilityConflict("Категория размещения недоступна");
+  if (reservation.adults + reservation.children > (category.maxOccupancy ?? 0) ||
+      (category.maxAdults !== null && reservation.adults > category.maxAdults) ||
+      (category.maxChildren !== null && reservation.children > category.maxChildren)) {
+    throw new AvailabilityConflict("Количество гостей превышает вместимость категории");
+  }
+  const rooms = await tx.select().from(s.rooms).where(and(
+    eq(s.rooms.propertyId, reservation.propertyId),
+    or(eq(s.rooms.unitTypeId, category.id), and(isNull(s.rooms.unitTypeId), eq(s.rooms.category, category.name))),
+  )).orderBy(asc(s.rooms.number));
+  for (const room of rooms) {
+    try {
+      return await assignReservationUnit(tx, reservation, room.id);
+    } catch (error) {
+      if (!(error instanceof AvailabilityConflict)) throw error;
+    }
+  }
+  throw new AvailabilityConflict("В выбранной категории больше нет свободных единиц на эти даты");
 };

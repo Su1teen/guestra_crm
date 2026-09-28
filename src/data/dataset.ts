@@ -1994,27 +1994,38 @@ conversations.push({
   offerId: undefined,
   reservationId: undefined,
   stayId: undefined,
-  channel: "whatsapp",
+  channel: "telegram",
   propertyId: "les_borovoe",
   assigneeId: employees[0].id,
   status: "open",
   unreadCount: 1,
   lastMessageAt: sultanConversationTime,
+  automationMode: "ai",
   messages: [
-    { id: sultanConversationId + "_m1", conversationId: sultanConversationId, direction: "in", text: "Здравствуйте! Хочу забронировать номер на 29–30 сентября.", at: minutesAgo(12) },
-    { id: sultanConversationId + "_m2", conversationId: sultanConversationId, direction: "out", employeeId: employees[0].id, text: "Добрый день, Султан! Подскажите, пожалуйста, сколько будет гостей?", at: minutesAgo(7) },
-    { id: sultanConversationId + "_m3", conversationId: sultanConversationId, direction: "in", text: "Нас двое взрослых.", at: sultanConversationTime },
+    { id: sultanConversationId + "_m1", conversationId: sultanConversationId, direction: "in", senderType: "contact", text: "Здравствуйте! Хочу забронировать проживание на 29–30 сентября.", at: minutesAgo(12), deliveryStatus: "received" },
+    { id: sultanConversationId + "_m2", conversationId: sultanConversationId, direction: "out", senderType: "ai", text: "Добрый день, Султан! Подскажите, пожалуйста, сколько будет гостей?", at: minutesAgo(7), deliveryStatus: "sent" },
+    { id: sultanConversationId + "_m3", conversationId: sultanConversationId, direction: "in", senderType: "contact", text: "Нас двое взрослых.", at: sultanConversationTime, deliveryStatus: "received" },
   ],
-  summary: { text: "Бронирование номера на 29–30 сентября", dates: "29–30 сентября", guests: 2, category: "Номер", wishes: [], nextAction: "Подобрать свободный номер" },
+  summary: { text: "Подбор формата размещения на 29–30 сентября", dates: "29–30 сентября", guests: 2, wishes: [], nextAction: "Уточнить предпочтения и проверить категорию" },
   firstResponseAt: minutesAgo(7),
   closeResult: undefined,
 });
 
+const demoHandoffConversationId = conversations.find((conversation) => Boolean(conversation.leadId))?.id;
+const demoHumanConversationId = conversations.find((conversation) => Boolean(conversation.leadId) && conversation.id !== demoHandoffConversationId)?.id;
 const demoConversations = conversations.map((conversation) => {
   const reservation = conversation.leadId ? demoReservations.find((item) => item.requestId === conversation.leadId) : undefined;
   const stay = reservation ? stays.find((item) => item.reservationId === reservation.id) : undefined;
   return { ...conversation, reservationId: conversation.reservationId ?? reservation?.id,
-    stayId: conversation.stayId ?? stay?.id };
+    stayId: conversation.stayId ?? stay?.id,
+    automationMode: conversation.id === demoHandoffConversationId ? "needs_human" as const
+      : conversation.id === demoHumanConversationId ? "human" as const : "ai" as const,
+    ...(conversation.id === demoHandoffConversationId ? {
+      handoffReasonCode: "custom_discount", handoffPriority: "high" as const,
+      handoffNote: "Гость просит нестандартную скидку; требуется решение сотрудника.",
+      requestedAction: "Проверить условия и ответить гостю.",
+    } : {}),
+  };
 });
 const legacyFollowUpTasks: Task[] = followUps.filter((followUp) =>
   !tasks.some((task) => task.type === "follow_up" && task.leadId === followUp.leadId && task.guestId === followUp.guestId),

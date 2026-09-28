@@ -62,7 +62,14 @@ export const bookService = async (tx: Tx, input: ServiceBookingInput) => {
   const [existing] = await tx.select().from(s.serviceReservations)
     .where(eq(s.serviceReservations.idempotencyKey, input.idempotencyKey)).limit(1);
   if (existing) {
+    const sameInstant = (left: string | Date | null | undefined, right: string | Date | null | undefined) =>
+      left == null || right == null ? left === right :
+        (typeof left === "string" ? new Date(left).getTime() : left.getTime()) ===
+        (typeof right === "string" ? new Date(right).getTime() : right.getTime());
     if (existing.customerId !== input.customerId || existing.catalogItemId !== input.catalogItemId ||
+        existing.propertyId !== input.propertyId || !sameInstant(existing.startAt, input.startAt) ||
+        (input.endAt !== undefined && !sameInstant(existing.endAt, input.endAt)) ||
+        existing.participants !== input.participants || existing.quantity !== input.quantity ||
         (input.reservationId !== undefined && existing.reservationId !== input.reservationId) ||
         (input.requestId !== undefined && existing.requestId !== input.requestId)) throw new ServiceConflict("Ключ запроса уже использован для другой услуги");
     return { service: existing, duplicate: true };
