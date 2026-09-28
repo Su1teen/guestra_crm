@@ -365,9 +365,10 @@ export const tasks = pgTable("tasks", {
   propertyId: text("property_id").notNull().references(() => properties.id),
   description: text("description"),
   completedAt: timestamp("completed_at", { withTimezone: true, mode: "string" }),
+  idempotencyKey: text("idempotency_key"),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
-}, (table) => [index("tasks_due_at_idx").on(table.dueAt)]);
+}, (table) => [index("tasks_due_at_idx").on(table.dueAt), uniqueIndex("tasks_idempotency_uidx").on(table.idempotencyKey)]);
 
 export const followUps = pgTable("follow_ups", {
   id: text("id").primaryKey(),
@@ -411,9 +412,18 @@ export const conversations = pgTable("conversations", {
   slaMinutes: integer("sla_minutes").notNull().default(30),
   firstResponseAt: timestamp("first_response_at", { withTimezone: true, mode: "string" }),
   closeResult: text("close_result"),
+  automationMode: text("automation_mode").notNull().default("human"),
+  externalChatId: text("external_chat_id"),
+  handoffReasonCode: text("handoff_reason_code"),
+  handoffPriority: text("handoff_priority"),
+  handoffNote: text("handoff_note"),
+  requestedAction: text("requested_action"),
+  handoffRequestedAt: timestamp("handoff_requested_at", { withTimezone: true, mode: "string" }),
+  handoffResolvedAt: timestamp("handoff_resolved_at", { withTimezone: true, mode: "string" }),
+  aiResumedAt: timestamp("ai_resumed_at", { withTimezone: true, mode: "string" }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
-});
+}, (table) => [uniqueIndex("conversations_channel_property_guest_chat_uidx").on(table.channel, table.propertyId, table.guestId, table.externalChatId)]);
 
 export const messages = pgTable("messages", {
   id: text("id").primaryKey(),
@@ -423,8 +433,27 @@ export const messages = pgTable("messages", {
   text: text("text").notNull(),
   sentAt: timestamp("sent_at", { withTimezone: true, mode: "string" }).notNull(),
   attachmentName: text("attachment_name"),
+  senderType: text("sender_type").notNull().default("human"),
+  externalMessageId: text("external_message_id"),
+  externalUpdateId: text("external_update_id"),
+  deliveryStatus: text("delivery_status").notNull().default("sent"),
+  idempotencyKey: text("idempotency_key"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: createdAt(),
-});
+}, (table) => [uniqueIndex("messages_idempotency_uidx").on(table.idempotencyKey)]);
+
+export const propertyKnowledge = pgTable("property_knowledge", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id").notNull().references(() => properties.id, { onDelete: "cascade" }),
+  topic: text("topic").notNull(),
+  title: text("title").notNull(),
+  content: text("content").notNull(),
+  tags: jsonb("tags").$type<string[]>().notNull().default([]),
+  language: text("language").notNull().default("ru"),
+  active: boolean("active").notNull().default(true),
+  source: text("source"),
+  updatedAt: updatedAt(),
+}, (table) => [uniqueIndex("property_knowledge_property_topic_language_uidx").on(table.propertyId, table.topic, table.language)]);
 
 export const segments = pgTable("segments", {
   id: text("id").primaryKey(),
@@ -489,6 +518,10 @@ export const unitTypes = pgTable("unit_types", {
   propertyId: text("property_id").notNull().references(() => properties.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   active: boolean("active").notNull().default(true),
+  maxAdults: integer("max_adults"),
+  maxChildren: integer("max_children"),
+  maxOccupancy: integer("max_occupancy"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, (table) => [uniqueIndex("unit_types_property_name_uidx").on(table.propertyId, table.name)]);
@@ -514,6 +547,7 @@ export const reservations = pgTable("reservations", {
   specialRequest: text("special_request"),
   etaAt: timestamp("eta_at", { withTimezone: true, mode: "string" }),
   externalReservationId: text("external_reservation_id"),
+  idempotencyKey: text("idempotency_key"),
   externalConfirmationNumber: text("external_confirmation_number"),
   confirmedAt: timestamp("confirmed_at", { withTimezone: true, mode: "string" }),
   cancelledAt: timestamp("cancelled_at", { withTimezone: true, mode: "string" }),
@@ -521,6 +555,7 @@ export const reservations = pgTable("reservations", {
   updatedAt: updatedAt(),
 }, (table) => [
   uniqueIndex("reservations_code_uidx").on(table.code),
+  uniqueIndex("reservations_idempotency_uidx").on(table.idempotencyKey),
   uniqueIndex("reservations_property_external_id_uidx").on(table.propertyId, table.externalReservationId),
   uniqueIndex("reservations_property_confirmation_uidx").on(table.propertyId, table.externalConfirmationNumber),
   index("reservations_property_arrival_idx").on(table.propertyId, table.arrivalAt),
@@ -751,6 +786,7 @@ export const serviceCatalog = pgTable("service_catalog", {
   pricingUnit: text("pricing_unit"),
   defaultDurationMinutes: integer("default_duration_minutes"),
   bookingMode: text("booking_mode").notNull().default("manual"),
+  agentBookingMode: text("agent_booking_mode").notNull().default("disabled"),
   slotIntervalMinutes: integer("slot_interval_minutes").notNull().default(60),
   displayOrder: integer("display_order").notNull().default(0),
   currency: text("currency").notNull().default("KZT"),

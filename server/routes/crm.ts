@@ -3,6 +3,7 @@ import { Router } from "express";
 import { and, eq, gt, inArray, lt, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
+import type { AppConfig } from "../config.js";
 import * as s from "../db/schema.js";
 import { requireDatabaseMode, type AuthenticatedRequest } from "../auth/middleware.js";
 import { loadCrmDataset } from "../services/crm-bootstrap.js";
@@ -24,6 +25,7 @@ import { addStayPayment, changeDepartureTime, checkInStay, checkOutStay, extendS
   requestStayHousekeeping, StayConflict } from "../services/stay-service.js";
 import { bookService, changeServiceStatus, linkServiceToReservation, rescheduleService, ServiceConflict } from "../services/service-reservation-service.js";
 import { assessServiceSlot, loadServiceCatalogItem, lockServiceGroups, ServiceAvailabilityConflict } from "../services/service-availability-service.js";
+import { dispatchTelegramMessage } from "../services/outbound-messaging.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
@@ -104,7 +106,7 @@ const buildItemValues = (
   };
 };
 
-export const createCrmRouter = (db: Database) => {
+export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEGRATION_API_KEY" | "AGENT_OUTBOUND_WEBHOOK_URL">) => {
   const router = Router();
   router.use(requireDatabaseMode);
 
@@ -1045,18 +1047,70 @@ export const createCrmRouter = (db: Database) => {
     const result = await db.transaction(async (tx) => {
       const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.id, request.params.id)).limit(1);
       if (!conversation) return null;
+      if (!asNote && conversation.channel === "telegram" && conversation.automationMode !== "human") {
+        return { conflict: "Сначала возьмите диалог в работу" as const };
+      }
       const [message] = await tx.insert(s.messages).values({ id: id("message"), conversationId: conversation.id,
-        direction: asNote ? "note" : "out", employeeId, text, sentAt: timestamp }).returning();
+        direction: asNote ? "note" : "out", employeeId, text, sentAt: timestamp,
+        senderType: "human", deliveryStatus: !asNote && conversation.channel === "telegram" ? "pending" : "sent",
+        metadata: {}, }).returning();
       const [updated] = await tx.update(s.conversations).set({
         unreadCount: 0,
         lastMessageAt: timestamp,
         ...(!asNote ? { status: "pending", firstResponseAt: conversation.firstResponseAt ?? timestamp } : {}),
         updatedAt: timestamp,
       }).where(eq(s.conversations.id, conversation.id)).returning();
-      return { message, conversation: updated };
+      return { message, conversation: updated, conflict: null };
     });
     if (!result) return response.status(404).json({ error: "Диалог не найден" });
+    if ("conflict" in result && result.conflict) return response.status(409).json({ error: "Сначала возьмите диалог в работу" });
+    if (result.conversation.channel === "telegram" && !asNote) {
+      const delivery = await dispatchTelegramMessage(db, result.message.id, {
+        webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL, apiKey: config.CRM_INTEGRATION_API_KEY,
+      });
+      const [message] = await db.select().from(s.messages).where(eq(s.messages.id, result.message.id)).limit(1);
+      return response.status(201).json({ ...result, message, deliveryStatus: message?.deliveryStatus,
+        deliveryError: delivery.sent ? undefined : delivery.error });
+    }
     response.status(201).json(result);
+  });
+
+  router.post("/conversations/:id/takeover", async (request, response) => {
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
+    const timestamp = now();
+    const [conversation] = await db.update(s.conversations).set({ automationMode: "human", assigneeId: employeeId,
+      handoffResolvedAt: timestamp, updatedAt: timestamp }).where(eq(s.conversations.id, request.params.id)).returning();
+    if (!conversation) return response.status(404).json({ error: "Диалог не найден" });
+    response.json(conversation);
+  });
+
+  router.post("/conversations/:id/resume-ai", async (request, response) => {
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
+    const timestamp = now();
+    const [conversation] = await db.update(s.conversations).set({ automationMode: "ai", handoffResolvedAt: timestamp,
+      aiResumedAt: timestamp, updatedAt: timestamp }).where(eq(s.conversations.id, request.params.id)).returning();
+    if (!conversation) return response.status(404).json({ error: "Диалог не найден" });
+    response.json(conversation);
+  });
+
+  router.post("/conversations/:id/messages/:messageId/retry", async (request, response) => {
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
+    const [message] = await db.select().from(s.messages).where(and(eq(s.messages.id, request.params.messageId),
+      eq(s.messages.conversationId, request.params.id), eq(s.messages.direction, "out"),
+      eq(s.messages.deliveryStatus, "failed"))).limit(1);
+    if (!message) return response.status(404).json({ error: "Не найдено недоставленное сообщение" });
+    const [conversation] = await db.select().from(s.conversations).where(eq(s.conversations.id, request.params.id)).limit(1);
+    if (!conversation || conversation.automationMode !== "human") return response.status(409).json({ error: "Сначала возьмите диалог в работу" });
+    await db.update(s.messages).set({ deliveryStatus: "pending" }).where(eq(s.messages.id, message.id));
+    const delivery = conversation.channel === "telegram"
+      ? await dispatchTelegramMessage(db, message.id, { webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL,
+        apiKey: config.CRM_INTEGRATION_API_KEY }) : { sent: false, error: "Повторная отправка доступна только для Telegram" };
+    const [updated] = await db.select().from(s.messages).where(eq(s.messages.id, message.id)).limit(1);
+    response.json({ message: updated, deliveryStatus: updated?.deliveryStatus,
+      deliveryError: delivery.sent ? undefined : delivery.error });
   });
 
   router.patch("/conversations/:id", async (request, response) => {

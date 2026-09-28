@@ -203,6 +203,9 @@ interface CrmContextValue {
   markConversationRead: (conversationId: string) => Promise<void>;
   setConversationStatus: (conversationId: string, status: Conversation["status"]) => Promise<void>;
   assignConversation: (conversationId: string, employeeId: string | null) => Promise<void>;
+  takeConversation: (conversationId: string) => Promise<void>;
+  resumeAi: (conversationId: string) => Promise<void>;
+  retryMessage: (conversationId: string, messageId: string) => Promise<void>;
   setOfferStatus: (offerId: string, status: OfferStatus) => void;
   duplicateOffer: (offerId: string) => Promise<string>;
   addGuestNote: (guestId: string, text: string) => void;
@@ -1459,7 +1462,8 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
 
   const sendMessage = useCallback(async (conversationId: string, text: string, asNote = false) => {
     if (dataMode === "database") {
-      await persist(`/api/crm/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text, asNote }) });
+      const result = await persist<{ deliveryStatus?: string; deliveryError?: string }>(`/api/crm/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text, asNote }) });
+      if (result.deliveryStatus === "failed") throw new Error(result.deliveryError ?? "Сообщение не доставлено");
       return;
     }
     setData((previous) => ({
@@ -1525,6 +1529,40 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         conversation.id === conversationId ? { ...conversation, assigneeId: employeeId ?? undefined } : conversation,
       ),
     }));
+  }, [dataMode, persist]);
+
+  const takeConversation = useCallback(async (conversationId: string) => {
+    if (dataMode === "database") {
+      await persist(`/api/crm/conversations/${conversationId}/takeover`, { method: "POST", body: JSON.stringify({}) });
+      return;
+    }
+    const timestamp = nowIso();
+    setData((previous) => ({ ...previous, conversations: previous.conversations.map((conversation) =>
+      conversation.id === conversationId ? { ...conversation, automationMode: "human", assigneeId: actorId,
+        handoffResolvedAt: timestamp } : conversation) }));
+  }, [actorId, dataMode, persist]);
+
+  const resumeAi = useCallback(async (conversationId: string) => {
+    if (dataMode === "database") {
+      await persist(`/api/crm/conversations/${conversationId}/resume-ai`, { method: "POST", body: JSON.stringify({}) });
+      return;
+    }
+    const timestamp = nowIso();
+    setData((previous) => ({ ...previous, conversations: previous.conversations.map((conversation) =>
+      conversation.id === conversationId ? { ...conversation, automationMode: "ai", handoffResolvedAt: timestamp,
+        aiResumedAt: timestamp } : conversation) }));
+  }, [dataMode, persist]);
+
+  const retryMessage = useCallback(async (conversationId: string, messageId: string) => {
+    if (dataMode === "database") {
+      const result = await persist<{ deliveryStatus?: string; deliveryError?: string }>(
+        `/api/crm/conversations/${conversationId}/messages/${messageId}/retry`, { method: "POST", body: JSON.stringify({}) });
+      if (result.deliveryStatus === "failed") throw new Error(result.deliveryError ?? "Повторная отправка не удалась");
+      return;
+    }
+    setData((previous) => ({ ...previous, conversations: previous.conversations.map((conversation) =>
+      conversation.id === conversationId ? { ...conversation, messages: conversation.messages.map((message) =>
+        message.id === messageId ? { ...message, deliveryStatus: "sent" } : message) } : conversation) }));
   }, [dataMode, persist]);
 
   const setOfferStatus = useCallback((offerId: string, offerStatus: OfferStatus) => {
@@ -2503,6 +2541,9 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       markConversationRead,
       setConversationStatus,
       assignConversation,
+      takeConversation,
+      resumeAi,
+      retryMessage,
       setOfferStatus,
       duplicateOffer,
       addGuestNote,
@@ -2546,6 +2587,9 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       addLeadSpecialRequest,
       advanceLead,
       assignConversation,
+      takeConversation,
+      resumeAi,
+      retryMessage,
       assignReservationRoom,
       assignPackage,
       addReservationNote,

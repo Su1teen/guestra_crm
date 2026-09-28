@@ -4,6 +4,7 @@ const productionSchema = z.object({
   DATABASE_URL: z.string().min(1),
   SESSION_SECRET: z.string().min(32),
   CRM_INTEGRATION_API_KEY: z.string().min(16),
+  AGENT_OUTBOUND_WEBHOOK_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
   SALES_BOOTSTRAP_EMAIL: z.string().email().default("sales@guestra.com"),
   SALES_BOOTSTRAP_PASSWORD: z.string().min(8),
   ADMIN_BOOTSTRAP_EMAIL: z.string().email().default("admin@guestra.com"),
