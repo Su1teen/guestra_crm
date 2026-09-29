@@ -78,6 +78,20 @@
       "when": 1790583731001,
       "tag": "0010_agent_contract_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790611200000,
+      "tag": "0011_les_borovoe_timezone",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790697600000,
+      "tag": "0012_hospitality_lifecycle_alerts_and_folio_documents",
+      "breakpoints": true
     }
   ]
 }

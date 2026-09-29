@@ -297,7 +297,7 @@ export const addStayPayment = async (tx: Tx, reservationId: string, input: {
 };
 
 export const checkOutStay = async (tx: Tx, reservationId: string, input: {
-  employeeId?: string; acknowledgeBalance?: boolean; acknowledgeOpenServices?: boolean;
+  employeeId?: string;
 }) => {
   // Service bookings take the same reservation lock before reading stay state.
   await tx.execute(sql`SELECT id FROM reservations WHERE id = ${reservationId} FOR UPDATE`);
@@ -311,14 +311,26 @@ export const checkOutStay = async (tx: Tx, reservationId: string, input: {
     throw new StayConflict("Выселить можно только проживающего гостя");
   }
   const [folio] = await tx.select().from(s.folios).where(eq(s.folios.reservationId, reservationId)).limit(1);
-  if ((folio?.balance ?? 0) > 0 && !input.acknowledgeBalance) throw new StayConflict("По счёту есть остаток. Подтвердите выселение с задолженностью");
+  if (!folio) throw new StayConflict("У брони нет фолио: сначала откройте расчёт");
+  if (folio.balance > 0) throw new StayConflict("Сначала проведите settlement: остаток по фолио должен быть равен нулю");
   const [openService] = await tx.select({ id: s.serviceReservations.id }).from(s.serviceReservations)
     .where(and(eq(s.serviceReservations.stayId, stay.id), eq(s.serviceReservations.status, "scheduled"))).limit(1);
-  if (openService && !input.acknowledgeOpenServices) throw new StayConflict("Есть запланированные услуги. Подтвердите выселение с открытыми услугами");
+  if (openService) throw new StayConflict("Есть незавершённые услуги. Завершите или отмените их до выселения");
   const roomId = stay.roomId;
   if (!roomId) throw new StayConflict("У проживания нет назначенного домика");
   await tx.execute(sql`SELECT id FROM rooms WHERE id = ${roomId} FOR UPDATE`);
   const at = timestamp();
+  // Final bill is a versioned immutable snapshot; the live folio stays the accounting source of truth.
+  const lines = await tx.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
+  const version = folio.finalVersion + 1;
+  const snapshot = { version, kind: "final", generatedAt: at, folio: {
+    code: folio.code, currency: folio.currency, subtotal: folio.subtotal, discountAmount: folio.discountAmount,
+    totalAmount: folio.totalAmount, paidAmount: folio.paidAmount, balance: folio.balance,
+  }, reservation: { code: reservation.code, arrivalAt: reservation.arrivalAt, departureAt: reservation.departureAt }, lines };
+  await tx.insert(s.folioDocuments).values({ id: id("folio_document"), folioId: folio.id, version, kind: "final",
+    snapshot, createdByEmployeeId: input.employeeId ?? null, createdAt: at });
+  await tx.update(s.folios).set({ status: "closed", closedAt: at, finalVersion: version, finalisedAt: at, updatedAt: at })
+    .where(eq(s.folios.id, folio.id));
   const [updated] = await tx.update(s.guestStays).set({ operationalStatus: "checked_out", status: "completed",
     actualCheckOut: at, updatedAt: at }).where(eq(s.guestStays.id, stay.id)).returning();
   const [otherActive] = await tx.select({ id: s.guestStays.id }).from(s.guestStays).where(and(
@@ -353,9 +365,7 @@ export const checkOutStay = async (tx: Tx, reservationId: string, input: {
     dueAt: new Date(new Date(at).getTime() + 86_400_000).toISOString(), ownerId,
     guestId: stay.guestId, reservationId, stayId: stay.id, propertyId: stay.propertyId });
   await recordStayActivity(tx, updated, { employeeId: input.employeeId, type: "check_out", title: "Гость выселен",
-    description: [folio?.balance ? `Остаток ${folio.balance} KZT подтверждён` : null,
-      openService ? "Открытые услуги подтверждены" : null].filter(Boolean).join("; ") || reservation.code,
-    metadata: { roomId, housekeepingTaskId: cleaning?.id, balance: folio?.balance ?? 0,
-      openServicesAcknowledged: Boolean(openService && input.acknowledgeOpenServices) }, at });
+    description: `${reservation.code} · final folio v${version}`,
+    metadata: { roomId, housekeepingTaskId: cleaning?.id, balance: 0, folioId: folio.id, folioVersion: version }, at });
   return { stay: updated, housekeepingTaskId: cleaning?.id, duplicate: false };
 };

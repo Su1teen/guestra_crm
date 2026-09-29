@@ -177,6 +177,13 @@ export const guestNotes = pgTable("guest_notes", {
   guestId: text("guest_id").notNull().references(() => guests.id, { onDelete: "cascade" }),
   authorId: text("author_id").notNull().references(() => employees.id),
   text: text("text").notNull(),
+  propertyId: text("property_id").references(() => properties.id, { onDelete: "set null" }),
+  priority: text("priority").notNull().default("normal"),
+  pinned: boolean("pinned").notNull().default(false),
+  alert: boolean("alert").notNull().default(false),
+  validFrom: timestamp("valid_from", { withTimezone: true, mode: "string" }),
+  validUntil: timestamp("valid_until", { withTimezone: true, mode: "string" }),
+  displayAreas: jsonb("display_areas").$type<string[]>().notNull().default([]),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -205,6 +212,8 @@ export const leads = pgTable("leads", {
   source: text("source").notNull(),
   stage: text("stage").notNull(),
   requestStatus: text("request_status").notNull().default("new"),
+  /** Canonical Kanban lifecycle; request_status remains the legacy compatibility field. */
+  requestLifecycle: text("request_lifecycle").notNull().default("enquire"),
   intent: text("intent").notNull().default("warm"),
   roomType: text("room_type"),
   checkIn: timestamp("check_in", { withTimezone: true, mode: "string" }),
@@ -261,6 +270,18 @@ export const leadStageHistory = pgTable("lead_stage_history", {
   changedAt: timestamp("changed_at", { withTimezone: true, mode: "string" }).notNull(),
   createdAt: createdAt(),
 }, (table) => [index("lead_stage_history_lead_idx").on(table.leadId)]);
+
+/** Immutable Request lifecycle audit; legacy stage history is retained for integrations and analytics. */
+export const requestLifecycleHistory = pgTable("request_lifecycle_history", {
+  id: text("id").primaryKey(),
+  leadId: text("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  fromStatus: text("from_status"),
+  toStatus: text("to_status").notNull(),
+  employeeId: text("employee_id").references(() => employees.id, { onDelete: "set null" }),
+  source: text("source").notNull().default("manual"),
+  reason: text("reason"),
+  changedAt: timestamp("changed_at", { withTimezone: true, mode: "string" }).notNull(),
+}, (table) => [index("request_lifecycle_history_lead_idx").on(table.leadId, table.changedAt)]);
 
 export const leadActivities = pgTable("lead_activities", {
   id: text("id").primaryKey(),
@@ -597,6 +618,13 @@ export const reservationNotes = pgTable("reservation_notes", {
   reservationId: text("reservation_id").notNull().references(() => reservations.id, { onDelete: "cascade" }),
   authorId: text("author_id").references(() => employees.id, { onDelete: "set null" }),
   text: text("text").notNull(),
+  propertyId: text("property_id").references(() => properties.id, { onDelete: "set null" }),
+  priority: text("priority").notNull().default("normal"),
+  pinned: boolean("pinned").notNull().default(false),
+  alert: boolean("alert").notNull().default(false),
+  validFrom: timestamp("valid_from", { withTimezone: true, mode: "string" }),
+  validUntil: timestamp("valid_until", { withTimezone: true, mode: "string" }),
+  displayAreas: jsonb("display_areas").$type<string[]>().notNull().default([]),
   createdAt: createdAt(),
 }, (table) => [index("reservation_notes_reservation_idx").on(table.reservationId)]);
 
@@ -972,6 +1000,8 @@ export const folios = pgTable("folios", {
   paidAmount: integer("paid_amount").notNull().default(0),
   balance: integer("balance").notNull().default(0),
   closedAt: timestamp("closed_at", { withTimezone: true, mode: "string" }),
+  finalVersion: integer("final_version").notNull().default(0),
+  finalisedAt: timestamp("finalised_at", { withTimezone: true, mode: "string" }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, (table) => [
@@ -981,6 +1011,17 @@ export const folios = pgTable("folios", {
   index("folios_property_idx").on(table.propertyId),
   index("folios_reservation_idx").on(table.reservationId),
 ]);
+
+/** Render snapshots make an interim/final document reproducible after the live folio evolves. */
+export const folioDocuments = pgTable("folio_documents", {
+  id: text("id").primaryKey(),
+  folioId: text("folio_id").notNull().references(() => folios.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  kind: text("kind").notNull(),
+  snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+  createdByEmployeeId: text("created_by_employee_id").references(() => employees.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+}, (table) => [uniqueIndex("folio_documents_version_uidx").on(table.folioId, table.version), index("folio_documents_folio_idx").on(table.folioId)]);
 
 export const folioLines = pgTable("folio_lines", {
   id: text("id").primaryKey(),

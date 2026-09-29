@@ -113,6 +113,8 @@ const GuestDetail = () => {
   const currentFolio = context.reservation ? folioForReservation(data, context.reservation, context.stay) : undefined;
   const currentAgenda = context.reservation && context.stay && context.state === "in_house"
     ? todayForStay(data, context.reservation, context.stay) : [];
+  const deskAlerts = related.notes.filter((note) => note.alert && (!note.validFrom || note.validFrom <= new Date().toISOString()) &&
+    (!note.validUntil || note.validUntil >= new Date().toISOString())).sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt));
 
   const tabs: { value: TabKey; label: string; count?: number }[] = [
     { value: "overview", label: "Обзор" },
@@ -169,6 +171,12 @@ const GuestDetail = () => {
           )}
         </div>
       </div>
+
+      {deskAlerts.length > 0 && <SectionCard title="Важные сообщения для команды" description="Показываются первыми на профиле, брони и действиях front desk." className="border-amber-300 bg-amber-50/70">
+        <div className="space-y-3">{deskAlerts.map((note) => <div key={note.id} className="rounded-lg border border-amber-200 bg-background p-3">
+          <p className="font-semibold text-amber-950">{note.text}</p><p className="mt-1 text-xs text-muted-foreground">{employeeById(note.authorId)?.name ?? "Сотрудник"} · {formatDateNumeric(note.createdAt)}{note.validUntil ? ` · до ${formatDateNumeric(note.validUntil)}` : ""}</p>
+        </div>)}</div>
+      </SectionCard>}
 
       <SectionCard title="Что происходит сейчас" description="Контекст гостя и ближайшее действие">
         <div className="flex flex-wrap items-start justify-between gap-4">

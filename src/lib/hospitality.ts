@@ -2,11 +2,13 @@ import type { CrmDataset, Guest, GuestStay, Lead, RequestStatus, Reservation, Re
 import { propertyDate } from "@/lib/service-time";
 
 export const requestStatusLabels: Record<RequestStatus, string> = {
-  new: "Новое", active: "В работе", waiting_customer: "Ждём гостя",
+  enquire: "Enquire · запрос", tentative: "Tentative · думает", definite: "Definite · готов",
   won: "Успешно", lost: "Потеряно", closed: "Закрыто",
+  // Legacy aliases are intentionally retained while downstream integrations migrate.
+  new: "Enquire · запрос", active: "Tentative · думает", waiting_customer: "Tentative · думает",
 };
 
-export const requestStatusOf = (request: Lead): RequestStatus => request.requestStatus ?? (
+export const requestStatusOf = (request: Lead): RequestStatus => request.requestLifecycle ?? (request.requestStatus === "new" ? "enquire" : request.requestStatus === "active" || request.requestStatus === "waiting_customer" ? "tentative" : request.requestStatus) ?? (
   request.stage === "new" ? "new" : request.stage === "confirmed" ? "won" : request.stage === "completed" ? "closed" :
     ["lost", "cancelled"].includes(request.stage) ? "lost" : "active"
 );

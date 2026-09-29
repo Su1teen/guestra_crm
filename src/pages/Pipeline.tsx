@@ -13,11 +13,10 @@ import { requestStatusLabels, requestStatusOf } from "@/lib/hospitality";
 import { formatTengeCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import type { RequestStatus } from "@/types/crm";
 
-const statuses: RequestStatus[] = ["new", "active", "waiting_customer", "won", "lost", "closed"];
-const editable = (status: RequestStatus): status is "new" | "active" | "waiting_customer" =>
-  status === "new" || status === "active" || status === "waiting_customer";
+const statuses = ["enquire", "tentative", "definite"] as const;
+const outcomes = ["won", "lost", "closed"] as const;
+const editable = (status: string) => !outcomes.includes(status as (typeof outcomes)[number]);
 
 const Pipeline = () => {
   const { status, reload, updateRequestStatus } = useCrm();
@@ -26,17 +25,16 @@ const Pipeline = () => {
   const { toast } = useToast();
   const ownerOptions = useOwnerOptions();
   const { filters, setFilter, reset, isDirty, filtered } = useLeadFilters(scoped.leads);
-  const [dragOver, setDragOver] = useState<RequestStatus | null>(null);
+  const [dragOver, setDragOver] = useState<(typeof statuses)[number] | null>(null);
   const columns = useMemo(() => statuses.map((requestStatus) => ({
     status: requestStatus,
     requests: filtered.filter((request) => requestStatusOf(request) === requestStatus)
       .sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt)),
   })), [filtered]);
-  const move = async (requestId: string, next: RequestStatus) => {
+  const move = async (requestId: string, next: (typeof statuses)[number]) => {
     setDragOver(null);
-    if (!editable(next)) return;
     const request = filtered.find((item) => item.id === requestId);
-    if (!request || !editable(requestStatusOf(request)) || requestStatusOf(request) === next) return;
+    if (!request || requestStatusOf(request) === next) return;
     try {
       await updateRequestStatus(requestId, next);
       toast({ title: `Обращение: ${requestStatusLabels[next]}` });
@@ -60,17 +58,17 @@ const Pipeline = () => {
     </FilterBar>
     {filtered.length === 0 ? <EmptyState title="Обращений не найдено" description="Измените фильтры или поисковый запрос." icon={Layers} action={{ label: "Сбросить фильтры", onClick: reset }} /> :
       <div className="flex gap-3 overflow-x-auto pb-3" aria-label="Воронка обращений">{columns.map((column) => <section key={column.status}
-        onDragOver={(event) => { if (editable(column.status)) { event.preventDefault(); setDragOver(column.status); } }}
+        onDragOver={(event) => { event.preventDefault(); setDragOver(column.status); }}
         onDragLeave={() => setDragOver(null)}
         onDrop={(event) => { event.preventDefault(); void move(event.dataTransfer.getData("text/plain"), column.status); }}
         className={cn("flex min-h-[420px] min-w-[260px] max-w-[280px] flex-1 flex-col rounded-2xl border border-border bg-secondary/25", dragOver === column.status && "border-brand-400 bg-brand-50")}>
         <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-3"><div><p className="text-sm font-semibold">{requestStatusLabels[column.status]}</p>
           <p className="text-xs text-muted-foreground">{formatTengeCompact(column.requests.reduce((sum, item) => sum + item.totalAmount, 0))}</p></div>
           <StatusPill tone="neutral">{column.requests.length}</StatusPill></header>
-        <div className="flex-1 space-y-2 p-2">{column.requests.map((request) => <LeadCard key={request.id} lead={request} draggable={editable(column.status)} onOpen={() => navigate(`/requests/${request.id}`)} />)}
+        <div className="flex-1 space-y-2 p-2">{column.requests.map((request) => <LeadCard key={request.id} lead={request} draggable onOpen={() => navigate(`/requests/${request.id}`)} />)}
           {column.requests.length === 0 && <p className="rounded-xl border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">Нет обращений</p>}</div>
       </section>)}</div>}
-    <p className="text-xs text-muted-foreground">Перетащите открытое обращение между «Новое», «В работе» и «Ждём гостя». Закрытие и бронирование выполняются в карточке обращения.</p>
+    <div className="rounded-xl border border-border bg-secondary/30 p-3 text-xs text-muted-foreground"><strong className="text-foreground">Жизненный цикл обращения:</strong> Enquire → Tentative → Definite. Карточку можно вернуть в любую рабочую колонку; это не меняет профиль гостя, quality/temperature/probability или legacy stage. Успех, потеря и закрытие — отдельные terminal outcomes из карточки обращения.</div>
   </div>;
 };
 

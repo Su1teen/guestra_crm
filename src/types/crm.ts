@@ -250,6 +250,13 @@ export interface GuestNote {
   authorId: string;
   createdAt: string;
   text: string;
+  propertyId?: string;
+  priority?: "normal" | "important" | "critical";
+  pinned?: boolean;
+  alert?: boolean;
+  validFrom?: string;
+  validUntil?: string;
+  displayAreas?: string[];
 }
 
 export interface GuestIdentity {
@@ -356,7 +363,8 @@ export interface GuestReview {
 
 /** Physical table remains `guests` until all legacy FKs can migrate safely. */
 export type Customer = Guest;
-export type RequestStatus = "new" | "active" | "waiting_customer" | "won" | "lost" | "closed";
+/** Request lifecycle is independent from guest profile and legacy sales stage. */
+export type RequestStatus = "enquire" | "tentative" | "definite" | "won" | "lost" | "closed" | "new" | "active" | "waiting_customer";
 export type ReservationStatus = "pending" | "tentative" | "pending_payment" | "confirmed" | "cancelled" | "no_show" | "completed";
 export type StayStatus = "upcoming" | "pre_arrival" | "due_in" | "in_house" | "due_out" | "checked_out" | "no_show" | "cancelled";
 
@@ -393,6 +401,13 @@ export interface ReservationNote {
   authorId?: string;
   text: string;
   createdAt: string;
+  propertyId?: string;
+  priority?: "normal" | "important" | "critical";
+  pinned?: boolean;
+  alert?: boolean;
+  validFrom?: string;
+  validUntil?: string;
+  displayAreas?: string[];
 }
 
 export interface ReservationUnit {
@@ -614,6 +629,8 @@ export interface Folio {
   paidAmount: number;
   balance: number;
   closedAt?: string;
+  finalVersion?: number;
+  finalisedAt?: string;
   createdAt: string;
   updatedAt: string;
   lines: FolioLine[];
@@ -654,6 +671,7 @@ export interface Lead {
   source: LeadSource;
   stage: LeadStage;
   requestStatus?: RequestStatus;
+  requestLifecycle?: RequestStatus;
   intent: LeadIntent;
   roomType: string | null;
   checkIn: string | null;

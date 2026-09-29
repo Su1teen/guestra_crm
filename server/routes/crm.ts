@@ -127,7 +127,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
   });
 
   router.post("/reservations/:id/check-out", async (request, response) => {
-    const body = z.object({ acknowledgeBalance: z.boolean().optional(), acknowledgeOpenServices: z.boolean().optional() }).parse(request.body ?? {});
+    const body = z.object({}).parse(request.body ?? {});
     try {
       const result = await db.transaction((tx) => checkOutStay(tx, request.params.id, {
         ...body, employeeId: (request as AuthenticatedRequest).authUser?.employeeId ?? undefined,
@@ -432,14 +432,17 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
   });
 
   router.post("/reservations/:id/notes", async (request, response) => {
-    const { text } = z.object({ text: z.string().trim().min(2) }).parse(request.body);
+    const { text, priority, pinned, alert, validFrom, validUntil, displayAreas } = z.object({ text: z.string().trim().min(2),
+      priority: z.enum(["normal", "important", "critical"]).optional(), pinned: z.boolean().optional(), alert: z.boolean().optional(),
+      validFrom: z.string().datetime().optional(), validUntil: z.string().datetime().optional(), displayAreas: z.array(z.string()).max(10).optional() }).parse(request.body);
     const [reservation] = await db.select().from(s.reservations).where(eq(s.reservations.id, request.params.id)).limit(1);
     if (!reservation) return response.status(404).json({ error: "Бронь не найдена" });
     const at = now();
     const note = await db.transaction(async (tx) => {
       const [created] = await tx.insert(s.reservationNotes).values({ id: id("reservation_note"),
         reservationId: reservation.id, authorId: (request as AuthenticatedRequest).authUser?.employeeId,
-        text, createdAt: at }).returning();
+        text, propertyId: reservation.propertyId, priority: priority ?? "normal", pinned: pinned ?? false, alert: alert ?? false,
+        validFrom: validFrom ?? null, validUntil: validUntil ?? null, displayAreas: displayAreas ?? ["reservation"], createdAt: at }).returning();
       const [stay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservation.id)).limit(1);
       await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: stay?.guestId ?? reservation.bookerCustomerId,
         reservationId: reservation.id, stayId: stay?.id, propertyId: reservation.propertyId,
@@ -488,19 +491,27 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
   });
 
   router.patch("/requests/:id/status", async (request, response) => {
-    const { status } = z.object({ status: z.enum(["new", "active", "waiting_customer"]) }).parse(request.body);
+    const { status, reason } = z.object({
+      status: z.enum(["enquire", "tentative", "definite", "won", "lost", "closed"]),
+      reason: z.string().trim().max(1000).optional(),
+    }).parse(request.body);
     const result = await db.transaction(async (tx) => {
       const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
       if (!lead) return null;
-      if (["confirmed", "completed", "lost", "cancelled"].includes(lead.stage) || ["won", "lost", "closed"].includes(lead.requestStatus)) {
+      if (["confirmed", "completed", "lost", "cancelled"].includes(lead.stage) || ["won", "lost", "closed"].includes(lead.requestLifecycle)) {
         return { conflict: true as const };
       }
       const changedAt = now();
-      const [updated] = await tx.update(s.leads).set({ requestStatus: status, lastActivityAt: changedAt,
+      // Do not mutate legacy request_status: Agent API, n8n and historical analytics retain its semantics.
+      const [updated] = await tx.update(s.leads).set({ requestLifecycle: status, lastActivityAt: changedAt,
         updatedAt: changedAt }).where(eq(s.leads.id, lead.id)).returning();
-      if (lead.requestStatus !== status) await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id,
-        type: "status_change", title: `Статус обращения: ${status === "new" ? "Новое" : status === "active" ? "В работе" : "Ждём гостя"}`,
-        occurredAt: changedAt });
+      if (lead.requestLifecycle !== status) {
+        const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+        await tx.insert(s.requestLifecycleHistory).values({ id: id("request_lifecycle"), leadId: lead.id,
+          fromStatus: lead.requestLifecycle, toStatus: status, employeeId, source: "manual", reason: reason || null, changedAt });
+        await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, employeeId,
+          type: "request_lifecycle_change", title: `Воронка обращения: ${status}`, description: reason || null, occurredAt: changedAt });
+      }
       return { lead: updated };
     });
     if (!result) return response.status(404).json({ error: "Обращение не найдено" });
@@ -896,6 +907,29 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     response.json(updated);
   });
 
+  /** Guest-safe folio payload. Final renders use immutable snapshots; interim renders reflect the live ledger. */
+  router.get("/folios/:id/guest-view", async (request, response) => {
+    const [folio] = await db.select().from(s.folios).where(eq(s.folios.id, request.params.id)).limit(1);
+    if (!folio) return response.status(404).json({ error: "Фолио не найдено" });
+    const [guest] = await db.select({ fullName: s.guests.fullName }).from(s.guests).where(eq(s.guests.id, folio.guestId)).limit(1);
+    const [property] = await db.select({ name: s.properties.name }).from(s.properties).where(eq(s.properties.id, folio.propertyId)).limit(1);
+    const lines = await db.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
+    response.json({ documentKind: folio.status === "closed" ? "final" : "interim", folio, guestName: guest?.fullName,
+      propertyName: property?.name, lines: lines.filter((line) => line.status !== "cancelled") });
+  });
+
+  /** Print-ready HTML is intentionally dependency-free: the browser's print dialog produces the downloadable PDF. */
+  router.get("/folios/:id/print", async (request, response) => {
+    const [folio] = await db.select().from(s.folios).where(eq(s.folios.id, request.params.id)).limit(1);
+    if (!folio) return response.status(404).send("Folio not found");
+    const [guest] = await db.select({ fullName: s.guests.fullName }).from(s.guests).where(eq(s.guests.id, folio.guestId)).limit(1);
+    const [property] = await db.select({ name: s.properties.name }).from(s.properties).where(eq(s.properties.id, folio.propertyId)).limit(1);
+    const lines = await db.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
+    const esc = (value: unknown) => String(value ?? "").replace(/[&<>\"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]!);
+    const money = (value: number) => new Intl.NumberFormat("ru-RU").format(value) + ` ${folio.currency}`;
+    response.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(folio.code)}</title><style>body{font-family:Arial,sans-serif;max-width:760px;margin:36px auto;color:#172033}table{width:100%;border-collapse:collapse;margin:24px 0}th,td{border-bottom:1px solid #ddd;padding:9px;text-align:left}th:last-child,td:last-child{text-align:right}.muted{color:#667085}.total{font-size:18px;font-weight:700}@media print{body{margin:18px}}</style></head><body><h1>${folio.status === "closed" ? "Final Folio" : "Interim Folio"} · ${esc(folio.code)}</h1><p class="muted">${esc(property?.name)} · ${esc(guest?.fullName)} · ${esc(folio.createdAt)}</p><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Сумма</th></tr></thead><tbody>${lines.filter((line) => line.status !== "cancelled").map((line) => `<tr><td>${esc(line.description)}</td><td>${line.quantity}</td><td>${money(line.lineTotal)}</td></tr>`).join("")}</tbody></table><p>Итого: ${money(folio.totalAmount)}<br>Оплачено: ${money(folio.paidAmount)}</p><p class="total">Остаток: ${money(folio.balance)}</p>${folio.finalVersion ? `<p class="muted">Immutable final version ${folio.finalVersion} · ${esc(folio.finalisedAt)}</p>` : ""}</body></html>`);
+  });
+
   router.post("/leads/:id/activities", async (request, response) => {
     const body = z.object({ title: z.string().min(1), description: z.string().optional() }).parse(request.body);
     const timestamp = now();
@@ -1123,11 +1157,15 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
   });
 
   router.post("/guests/:id/notes", async (request, response) => {
-    const { text } = z.object({ text: z.string().min(1) }).parse(request.body);
+    const { text, propertyId, priority, pinned, alert, validFrom, validUntil, displayAreas } = z.object({ text: z.string().min(1), propertyId: z.string().optional(),
+      priority: z.enum(["normal", "important", "critical"]).optional(), pinned: z.boolean().optional(), alert: z.boolean().optional(),
+      validFrom: z.string().datetime().optional(), validUntil: z.string().datetime().optional(), displayAreas: z.array(z.string()).max(10).optional() }).parse(request.body);
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
     if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
     const timestamp = now();
-    const [note] = await db.insert(s.guestNotes).values({ id: id("note"), guestId: request.params.id, authorId: employeeId, text, createdAt: timestamp, updatedAt: timestamp }).returning();
+    const [note] = await db.insert(s.guestNotes).values({ id: id("note"), guestId: request.params.id, authorId: employeeId, text,
+      propertyId: propertyId ?? null, priority: priority ?? "normal", pinned: pinned ?? false, alert: alert ?? false,
+      validFrom: validFrom ?? null, validUntil: validUntil ?? null, displayAreas: displayAreas ?? ["profile"], createdAt: timestamp, updatedAt: timestamp }).returning();
     await db.insert(s.guestActivity).values({ id: id("guest_activity"), guestId: request.params.id, employeeId, type: "note", title: "Внутренняя заметка", description: text, occurredAt: timestamp });
     response.status(201).json(note);
   });

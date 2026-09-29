@@ -33,8 +33,6 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
   const [serviceOpen, setServiceOpen] = useState(false);
   const [requestOpen, setRequestOpen] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
-  const [acknowledgeBalance, setAcknowledgeBalance] = useState(false);
-  const [acknowledgeServices, setAcknowledgeServices] = useState(false);
   const [selectedServiceId, setSelectedServiceId] = useState<string>();
   const [etaDraft, setEtaDraft] = useState("");
   const [specialDraft, setSpecialDraft] = useState("");
@@ -102,6 +100,9 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
   const balance = folio?.balance ?? Math.max(0, (request?.totalAmount ?? 0) - (request?.paidAmount ?? 0));
   const folioPayments = data.payments.filter((payment) => payment.folioId === folio?.id || payment.reservationId === reservation?.id || payment.stayId === stay?.id)
     .sort((a, b) => b.date.localeCompare(a.date));
+  const deskAlerts = reservation ? [...data.notes.filter((note) => note.guestId === reservation.bookerCustomerId), ...reservationNotes]
+    .filter((note) => note.alert && (!note.validFrom || note.validFrom <= new Date().toISOString()) && (!note.validUntil || note.validUntil >= new Date().toISOString()))
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt)) : [];
 
   const assign = async (roomId: string) => {
     if (!reservation) return;
@@ -121,7 +122,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
       if (action === "check-in") await checkInReservation(reservation.id, {
         readinessOverride: cleaningWarning && Boolean(overrideReason.trim()), overrideReason: overrideReason.trim() || undefined,
       });
-      else await checkOutReservation(reservation.id, { acknowledgeBalance, acknowledgeOpenServices: acknowledgeServices });
+      else await checkOutReservation(reservation.id);
       toast({ title: action === "check-in" ? "Гость заселён" : "Гость выселен, уборка создана" });
     } catch (error) {
       toast({ title: action === "check-in" ? "Не удалось заселить" : "Не удалось выселить",
@@ -251,6 +252,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
           <SheetDescription>{reservation.code} · {propertyById(reservation.propertyId)?.name ?? reservation.propertyId}
             {customer && customer.fullName !== primaryName ? ` · оформил: ${customer.fullName}` : ""}</SheetDescription>
         </SheetHeader>
+        {deskAlerts.length > 0 && <div className="rounded-xl border border-amber-300 bg-amber-50 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-amber-900">Важные сообщения для front desk</p>{deskAlerts.map((note) => <p key={note.id} className="mt-1 text-sm font-semibold text-amber-950">{note.text}</p>)}</div>}
         {inHouse && stay && <section className={`rounded-xl border p-4 ${dueOut ? "border-amber-300 bg-amber-50/70" : "border-brand-200 bg-brand-50/40"}`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div><p className={`text-xs font-semibold uppercase tracking-wide ${dueOut ? "text-amber-800" : "text-brand-800"}`}>{dueOut ? "Выезд сегодня" : "Сейчас проживает"}</p>
@@ -283,9 +285,9 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
             {attention.issues.length ? <ul className="space-y-1.5 text-sm">{attention.issues.map((issue, index) => <li key={`${issue}-${index}`} className="flex gap-2 text-amber-800"><span aria-hidden="true">!</span><span>{issue}</span></li>)}</ul> :
               <p className="flex items-center gap-2 text-sm text-emerald-700"><Check className="h-4 w-4" />По гостю всё в порядке</p>}
             {dueOut && <div className="mt-3 space-y-2 border-t pt-3">
-              {balance > 0 && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={acknowledgeBalance} onChange={(event) => setAcknowledgeBalance(event.target.checked)} />Подтверждаю выселение с остатком {formatTenge(balance)}</label>}
-              {activeServices.length > 0 && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={acknowledgeServices} onChange={(event) => setAcknowledgeServices(event.target.checked)} />Подтверждаю выселение с {activeServices.length} незавершёнными услугами</label>}
-              <Button disabled={saving || (balance > 0 && !acknowledgeBalance) || (activeServices.length > 0 && !acknowledgeServices)} onClick={() => void run("check-out")}>Выселить</Button>
+              {balance > 0 && <p className="text-sm text-amber-800">Сначала settlement: {formatTenge(balance)} к оплате. Откройте счёт и проведите оплату.</p>}
+              {activeServices.length > 0 && <p className="text-sm text-amber-800">Завершите или отмените {activeServices.length} открытых услуг.</p>}
+              <Button disabled={saving || balance > 0 || activeServices.length > 0} onClick={() => void run("check-out")}>Сформировать final folio и выселить</Button>
             </div>}
             {!dueOut && balance > 0 && <Button size="sm" variant="outline" className="mt-3" onClick={() => { setPaymentAmount(String(balance)); setPaymentOpen(true); }}><CreditCard className="mr-1.5 h-4 w-4" />Добавить оплату</Button>}
           </SectionCard>
@@ -311,9 +313,9 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
             <Button disabled={saving || !room || (cleaningWarning && !overrideReason.trim())} onClick={() => void run("check-in")}>Заселить</Button>
           </div>}
           {["in_house", "due_out"].includes(stay.operationalStatus ?? "") && !dueOut && <div className="mt-3 space-y-2">
-            {balance > 0 && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={acknowledgeBalance} onChange={(event) => setAcknowledgeBalance(event.target.checked)} />Подтверждаю остаток к оплате {formatTenge(balance)}</label>}
-            {activeServices.length > 0 && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={acknowledgeServices} onChange={(event) => setAcknowledgeServices(event.target.checked)} />Подтверждаю {activeServices.length} открытых услуг</label>}
-            <Button disabled={saving || (balance > 0 && !acknowledgeBalance) || (activeServices.length > 0 && !acknowledgeServices)} onClick={() => void run("check-out")}>Выселить</Button>
+            {balance > 0 && <p className="text-sm text-amber-800">Settlement обязателен: {formatTenge(balance)} к оплате.</p>}
+            {activeServices.length > 0 && <p className="text-sm text-amber-800">До выезда завершите или отмените {activeServices.length} услуг.</p>}
+            <Button disabled={saving || balance > 0 || activeServices.length > 0} onClick={() => void run("check-out")}>Сформировать final folio и выселить</Button>
           </div>}
         </SectionCard>}
         {participants.length > 1 && <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Участники"><ul className="space-y-1 text-sm">{participants.map((item) => <li key={item.id}>{item.fullName ?? data.guests.find((guest) => guest.id === item.customerId)?.fullName ?? "Имя не указано"}{item.isPrimary ? " · основной гость" : ""}</li>)}</ul></SectionCard>}

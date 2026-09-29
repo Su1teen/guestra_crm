@@ -158,13 +158,13 @@ interface CrmContextValue {
   reservationsForCustomer: (customerId: string) => CrmDataset["reservations"];
   createReservationFromRequest: (requestId: string, input: { arrivalAt: string; departureAt: string; roomType: string; roomId?: string; adults: number; children: number; totalAmount?: number; depositRequired?: number }) => Promise<string>;
   createQuickReservation: (input: { guestId: string; propertyId: string; arrivalAt: string; departureAt: string; roomType: string; roomId?: string; adults: number; children: number; totalAmount: number; depositRequired: number }) => Promise<string>;
-  updateRequestStatus: (requestId: string, status: Extract<RequestStatus, "new" | "active" | "waiting_customer">) => Promise<void>;
+  updateRequestStatus: (requestId: string, status: Extract<RequestStatus, "enquire" | "tentative" | "definite" | "won" | "lost" | "closed">, reason?: string) => Promise<void>;
   assignReservationRoom: (reservationId: string, roomId: string) => Promise<void>;
   updateReservation: (reservationId: string, patch: Partial<Pick<Reservation, "arrivalAt" | "departureAt" | "status">>) => Promise<void>;
   updateReservationContext: (reservationId: string, patch: { etaAt?: string | null; specialRequest?: string | null }) => Promise<void>;
   addReservationNote: (reservationId: string, text: string) => Promise<void>;
   checkInReservation: (reservationId: string, input?: { readinessOverride?: boolean; overrideReason?: string }) => Promise<void>;
-  checkOutReservation: (reservationId: string, input?: { acknowledgeBalance?: boolean; acknowledgeOpenServices?: boolean }) => Promise<void>;
+  checkOutReservation: (reservationId: string) => Promise<void>;
   extendStay: (reservationId: string, departureAt: string) => Promise<void>;
   changeDepartureTime: (reservationId: string, departureAt: string) => Promise<void>;
   moveStayRoom: (reservationId: string, roomId: string, reason: string) => Promise<void>;
@@ -504,13 +504,13 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     return reservationId;
   }, [data.guests, data.properties, data.reservations, data.reservationUnits, data.rooms, dataMode, persist]);
 
-  const updateRequestStatus = useCallback(async (requestId: string, requestStatus: "new" | "active" | "waiting_customer") => {
+  const updateRequestStatus = useCallback(async (requestId: string, requestLifecycle: Extract<RequestStatus, "enquire" | "tentative" | "definite" | "won" | "lost" | "closed">, reason?: string) => {
     if (dataMode === "database") {
-      await persist(`/api/crm/requests/${requestId}/status`, { method: "PATCH", body: JSON.stringify({ status: requestStatus }) });
+      await persist(`/api/crm/requests/${requestId}/status`, { method: "PATCH", body: JSON.stringify({ status: requestLifecycle, reason }) });
       return;
     }
     setData((previous) => ({ ...previous, leads: previous.leads.map((lead) => lead.id === requestId ? {
-      ...lead, requestStatus, lastActivityAt: new Date().toISOString(),
+      ...lead, requestLifecycle, lastActivityAt: new Date().toISOString(),
     } : lead) }));
   }, [dataMode, persist]);
 
@@ -599,9 +599,9 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, [currentEmployee.id, data, dataMode, persist]);
 
-  const checkOutReservation = useCallback(async (reservationId: string, input: { acknowledgeBalance?: boolean; acknowledgeOpenServices?: boolean } = {}) => {
+  const checkOutReservation = useCallback(async (reservationId: string) => {
     if (dataMode === "database") {
-      await persist(`/api/crm/reservations/${reservationId}/check-out`, { method: "POST", body: JSON.stringify(input) });
+      await persist(`/api/crm/reservations/${reservationId}/check-out`, { method: "POST", body: "{}" });
       return;
     }
     const stay = data.stays.find((item) => item.reservationId === reservationId);
@@ -610,9 +610,9 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     if (stay.operationalStatus === "checked_out") return;
     if (stay.operationalStatus !== "in_house" && stay.operationalStatus !== "due_out") throw new Error("Гость ещё не заселён");
     const balance = data.folios.find((item) => item.reservationId === reservationId)?.balance ?? 0;
-    if (balance > 0 && !input.acknowledgeBalance) throw new Error("Подтвердите выселение с задолженностью");
-    if (data.serviceReservations.some((item) => item.stayId === stay.id && item.status === "scheduled") && !input.acknowledgeOpenServices) {
-      throw new Error("Подтвердите выселение с открытыми услугами");
+    if (balance > 0) throw new Error("Сначала проведите оплату: остаток по фолио должен быть равен нулю");
+    if (data.serviceReservations.some((item) => item.stayId === stay.id && item.status === "scheduled")) {
+      throw new Error("Завершите или отмените открытые услуги до выселения");
     }
     const at = new Date().toISOString();
     setData((previous) => ({ ...previous,
