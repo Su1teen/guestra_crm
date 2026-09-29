@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { CalendarDays, CalendarPlus, ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { AlertTriangle, BedDouble, CalendarDays, CalendarPlus, ChevronLeft, ChevronRight, CreditCard, LogIn, LogOut, Search, Users } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { SectionCard } from "@/components/common/SectionCard";
 import { StatusPill } from "@/components/common/StatusPill";
@@ -10,12 +10,14 @@ import { Button } from "@/components/ui/button";
 import { ReservationDrawer } from "@/components/crm/ReservationDrawer";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
-import { reservationStatusLabels } from "@/lib/hospitality";
+import { effectiveStayStatus, reservationStatusLabels } from "@/lib/hospitality";
 import { formatDateNumeric, occupancyLabel } from "@/lib/format";
 import type { Reservation } from "@/types/crm";
 import { cn } from "@/lib/utils";
 import { CreateQuickReservationDialog } from "@/components/crm/CreateQuickReservationDialog";
 import { clampCalendarSelectionEnd, datesForCalendarSelection } from "@/lib/calendar-selection";
+import { propertyDate } from "@/lib/service-time";
+import { folioForReservation } from "@/lib/stay-workspace";
 
 const dateOnly = (value: string | Date) => { const date = new Date(value); return new Date(date.getFullYear(), date.getMonth(), date.getDate()); };
 const add = (date: Date, days: number) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
@@ -38,7 +40,7 @@ const Reservations = () => {
   const [selection, setSelection] = useState<CalendarSelection | null>(null);
   const selectionRef = useRef<CalendarSelection | null>(null);
   const suppressClickRef = useRef(false);
-  const view = params.get("view") === "list" ? "list" : "calendar";
+  const view = params.get("view") === "list" ? "list" : params.get("view") === "desk" || params.has("desk") ? "desk" : "calendar";
   const selectedId = params.get("reservation");
   const days = useMemo(() => Array.from({ length: windowDays }, (_, index) => add(anchor, index)), [anchor, windowDays]);
   const inactiveTypes = useMemo(() => new Set(data.unitTypes.filter((item) => (property === "all" || item.propertyId === property) && !item.active).map((item) => item.name)), [data.unitTypes, property]);
@@ -59,6 +61,18 @@ const Reservations = () => {
   }), [category, data.guests, query, rooms, scoped.reservationUnits, scoped.reservations, statusFilter]);
   const unassigned = shown.filter((reservation) => active(reservation) && !scoped.reservationUnits.some((unit) => unit.reservationId === reservation.id && unit.status === "assigned") &&
     dateOnly(reservation.departureAt) >= anchor && dateOnly(reservation.arrivalAt) <= add(anchor, windowDays));
+  const timezone = (property === "all" ? data.properties[0] : data.properties.find((item) => item.id === property))?.timezone ?? "Asia/Almaty";
+  const todayKey = propertyDate(new Date(), timezone);
+  const deskMode = params.get("desk") === "arrivals" ? "arrivals" : params.get("desk") === "in_house" ? "in_house" : "departures";
+  const deskRows = scoped.reservations.map((reservation) => {
+    const stay = scoped.stays.find((item) => item.reservationId === reservation.id);
+    const folio = folioForReservation(data, reservation, stay);
+    const guest = data.guests.find((item) => item.id === reservation.bookerCustomerId);
+    const room = data.rooms.find((item) => item.id === stay?.roomId) ?? data.rooms.find((item) => scoped.reservationUnits.some((unit) => unit.reservationId === reservation.id && unit.roomId === item.id));
+    const scheduledServices = data.serviceReservations.filter((item) => item.reservationId === reservation.id && item.status === "scheduled").length;
+    const alerts = [...data.notes.filter((note) => note.guestId === guest?.id && note.alert && (!note.validUntil || note.validUntil >= todayKey)), ...data.reservationNotes.filter((note) => note.reservationId === reservation.id && note.alert && (!note.validUntil || note.validUntil >= todayKey))];
+    return { reservation, stay, folio, guest, room, scheduledServices, alerts };
+  }).filter((row) => deskMode === "arrivals" ? row.reservation.status === "confirmed" && propertyDate(row.reservation.arrivalAt, timezone) === todayKey && !row.stay?.actualCheckIn : deskMode === "in_house" ? !!row.stay && ["in_house", "due_out"].includes(effectiveStayStatus(row.stay, new Date())) : row.reservation.status === "confirmed" && propertyDate(row.reservation.departureAt, timezone) === todayKey && !!row.stay && ["in_house", "due_out"].includes(effectiveStayStatus(row.stay, new Date())));
   const open = (id: string) => { const next = new URLSearchParams(params); next.set("reservation", id); setParams(next); };
   const close = () => { const next = new URLSearchParams(params); next.delete("reservation"); setParams(next); };
   const openQuick = (roomId?: string, day = anchor) => {
@@ -94,7 +108,7 @@ const Reservations = () => {
   return <div className="space-y-3">
     <PageHeader title="Бронирования" description={`${propertyName(property)} · размещение по домикам и датам`} meta={<StatusPill tone="brand">{shown.length} бронирований</StatusPill>} actions={<Button onClick={() => openQuick()} className="gap-2"><CalendarPlus className="h-4 w-4" />Быстрое бронирование</Button>} />
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <SegmentedTabs value={view} onChange={(value) => { const next = new URLSearchParams(params); if (value === "calendar") next.delete("view"); else next.set("view", value); setParams(next); }} options={[{ value: "calendar", label: "Календарь" }, { value: "list", label: "Список" }]} />
+      <SegmentedTabs value={view} onChange={(value) => { const next = new URLSearchParams(params); next.delete("desk"); if (value === "calendar") next.delete("view"); else next.set("view", value); setParams(next); }} options={[{ value: "calendar", label: "Календарь" }, { value: "desk", label: "Front Desk" }, { value: "list", label: "Список" }]} />
       {view === "calendar" && <div className="flex items-center gap-2"><Button variant="outline" size="icon" onClick={() => setAnchor(add(anchor, -windowDays))} aria-label="Предыдущие даты"><ChevronLeft className="h-4 w-4" /></Button><Button variant="outline" onClick={() => setAnchor(dateOnly(new Date()))}>Сегодня</Button><Button variant="outline" size="icon" onClick={() => setAnchor(add(anchor, windowDays))} aria-label="Следующие даты"><ChevronRight className="h-4 w-4" /></Button></div>}
     </div>
     <FilterBar>
@@ -103,7 +117,7 @@ const Reservations = () => {
       <FilterSelect value={statusFilter} onChange={setStatusFilter} options={[{ value: "active", label: "Действующие" }, { value: "all", label: "Все статусы" }, ...Object.entries(reservationStatusLabels).map(([value, label]) => ({ value, label }))]} />
       {view === "calendar" && <FilterSelect value={String(windowDays)} onChange={(value) => setWindowDays(Number(value))} options={[{ value: "7", label: "7 дней" }, { value: "14", label: "14 дней" }, { value: "30", label: "30 дней" }]} />}
     </FilterBar>
-    {view === "calendar" ? <>
+    {view === "desk" ? <section className="space-y-4"><SectionCard title="Front Desk" description="Операционные очереди на текущую дату: заезд, проживание и расчёт перед выездом." actions={<StatusPill tone="brand">{todayKey}</StatusPill>}><div className="grid gap-2 sm:grid-cols-3">{[{ id: "arrivals", label: "Заезды", icon: LogIn }, { id: "in_house", label: "Проживают", icon: Users }, { id: "departures", label: "Выезды", icon: LogOut }].map((item) => <button key={item.id} onClick={() => { const next = new URLSearchParams(params); next.set("view", "desk"); next.set("desk", item.id); setParams(next); }} className={cn("flex items-center gap-3 rounded-xl border p-4 text-left", deskMode === item.id ? "border-brand-500 bg-brand-50" : "border-border hover:bg-secondary/40")}><item.icon className="h-5 w-5 text-brand-700" /><span><b className="block text-sm">{item.label}</b><small className="text-muted-foreground">{item.id === "departures" ? "Settlement и checkout" : "Открыть очередь"}</small></span></button>)}</div></SectionCard><SectionCard title={deskMode === "arrivals" ? "Заезды сегодня" : deskMode === "in_house" ? "Гости в проживании" : "Выезды сегодня"} description={deskMode === "departures" ? "Баланс и незавершённые услуги блокируют выселение." : "Откройте бронь для действий front desk."}>{deskRows.length ? <div className="divide-y divide-border">{deskRows.map((row) => <button key={row.reservation.id} onClick={() => open(row.reservation.id)} className="grid w-full gap-3 py-3 text-left md:grid-cols-[1.4fr_.7fr_.8fr_1fr_auto] md:items-center hover:bg-secondary/30"><span><b className="block text-sm">{row.guest?.fullName ?? "Гость"}</b><small className="text-muted-foreground">{row.reservation.code} · {row.room?.number ?? row.reservation.roomTypeSnapshot ?? "Без номера"}</small></span><span className="text-xs"><BedDouble className="mr-1 inline h-3.5 w-3.5" />{row.room?.category ?? row.reservation.roomTypeSnapshot ?? "Размещение"}</span><span className="text-xs">{deskMode === "departures" ? `Выезд ${new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone: timezone }).format(new Date(row.reservation.departureAt))}` : deskMode === "arrivals" ? "Ожидается заезд" : "In House"}</span><span className="flex flex-wrap gap-1">{row.alerts.length > 0 && <StatusPill tone="warning"><AlertTriangle className="mr-1 inline h-3 w-3" />alert</StatusPill>}{row.folio && <StatusPill tone={row.folio.balance > 0 ? "warning" : "success"}><CreditCard className="mr-1 inline h-3 w-3" />{row.folio.balance > 0 ? `долг ${row.folio.balance.toLocaleString("ru-RU")} ₸` : "оплачено"}</StatusPill>}{row.scheduledServices > 0 && <StatusPill tone="warning">услуги {row.scheduledServices}</StatusPill>}</span><StatusPill tone={deskMode === "departures" ? "info" : "neutral"}>{deskMode === "departures" ? "Открыть выселение" : "Открыть"}</StatusPill></button>)}</div> : <p className="py-8 text-center text-sm text-muted-foreground">В этой очереди на сегодня нет гостей.</p>}</SectionCard></section> : view === "calendar" ? <>
       <SectionCard padded={false} bodyClassName="p-0"><div className="max-h-[70vh] min-h-64 overflow-auto rounded-2xl" role="grid" aria-label="Календарь бронирований">
         <div style={{ minWidth: 190 + windowDays * 82 }}>
           <div className="sticky top-0 z-10 grid border-b border-border bg-card" style={{ gridTemplateColumns: `190px repeat(${windowDays}, minmax(82px, 1fr))` }} role="row">
@@ -116,6 +130,9 @@ const Reservations = () => {
               const allocation = scoped.reservationUnits.find((unit) => ["assigned", "active"].includes(unit.status) && unit.roomId === room.id && dateOnly(unit.arrivalAt) <= day && day < dateOnly(unit.departureAt) && shown.some((reservation) => active(reservation) && reservation.id === unit.reservationId));
               const reservation = shown.find((item) => item.id === allocation?.reservationId);
               const customer = reservation ? data.guests.find((item) => item.id === reservation.bookerCustomerId) : null;
+              const stay = reservation ? scoped.stays.find((item) => item.reservationId === reservation.id) : undefined;
+              const folio = reservation ? folioForReservation(data, reservation, stay) : undefined;
+              const hasAlert = reservation && ([...data.notes.filter((note) => note.guestId === customer?.id), ...data.reservationNotes.filter((note) => note.reservationId === reservation.id)]).some((note) => note.alert && (!note.validUntil || note.validUntil >= propertyDate(new Date(), timezone)));
               const first = reservation && dateOnly(reservation.arrivalAt).getTime() === day.getTime();
               const blocked = !reservation && isBlocked(room.id, day);
               const selected = selection?.roomId === room.id && dayIndex >= Math.min(selection.startIndex, selection.endIndex) && dayIndex <= Math.max(selection.startIndex, selection.endIndex);
@@ -124,7 +141,7 @@ const Reservations = () => {
               const startOfSegment = allocation && previousAllocation?.id !== allocation.id;
               const endOfSegment = allocation && nextAllocation?.id !== allocation.id;
               return <div key={day.toISOString()} className={cn("relative min-w-0 border-r border-border p-0", index % 2 === 0 && "bg-secondary/20", day.toDateString() === new Date().toDateString() && "bg-brand-50/30")} role="gridcell">
-                {reservation ? <button type="button" onClick={() => open(reservation.id)} title={`${customer?.fullName ?? reservation.code} · ${formatDateNumeric(reservation.arrivalAt)} — ${formatDateNumeric(reservation.departureAt)} · ${room.category} · ${room.number} · ${reservationStatusLabels[reservation.status]}`} className={cn("relative z-[1] block h-full min-h-11 w-full overflow-hidden px-1.5 text-left text-xs font-medium text-brand-900 hover:brightness-95 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-brand-500", startOfSegment && "rounded-l-lg", endOfSegment && "rounded-r-lg", reservation.status === "tentative" ? "bg-amber-100 text-amber-900" : reservation.status === "pending_payment" ? "bg-orange-100 text-orange-900" : "bg-brand-100")}>{(first || startOfSegment) ? customer?.fullName ?? reservation.code : ""}</button> : <button type="button" disabled={blocked} onClick={() => { if (!suppressClickRef.current) openQuick(room.id, day); }} onPointerDown={(event) => { if (event.button === 0 && !blocked) updateSelection({ roomId: room.id, startIndex: dayIndex, endIndex: dayIndex }); }} onPointerEnter={() => {
+                {reservation ? <button type="button" onClick={() => open(reservation.id)} title={`${customer?.fullName ?? reservation.code} · ${formatDateNumeric(reservation.arrivalAt)} — ${formatDateNumeric(reservation.departureAt)} · ${room.category} · ${room.number} · ${reservationStatusLabels[reservation.status]}`} className={cn("relative z-[1] block h-full min-h-11 w-full overflow-hidden px-1.5 text-left text-xs font-medium text-brand-900 hover:brightness-95 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-brand-500", startOfSegment && "rounded-l-lg", endOfSegment && "rounded-r-lg", reservation.status === "tentative" ? "bg-amber-100 text-amber-900" : reservation.status === "pending_payment" ? "bg-orange-100 text-orange-900" : "bg-brand-100")}><span className="block truncate">{(first || startOfSegment) ? customer?.fullName ?? reservation.code : ""}</span>{(first || startOfSegment) && <span className="flex gap-1 text-[9px] font-semibold opacity-75"><span>{stay && effectiveStayStatus(stay, new Date()) === "due_out" ? "DUE OUT" : first ? "ARR" : ""}</span>{folio?.balance ? <span>₸</span> : null}{hasAlert ? <span>!</span> : null}</span>}</button> : <button type="button" disabled={blocked} onClick={() => { if (!suppressClickRef.current) openQuick(room.id, day); }} onPointerDown={(event) => { if (event.button === 0 && !blocked) updateSelection({ roomId: room.id, startIndex: dayIndex, endIndex: dayIndex }); }} onPointerEnter={() => {
                   const current = selectionRef.current;
                   if (!current || current.roomId !== room.id || dayIndex === current.endIndex) return;
                   const endIndex = clampCalendarSelectionEnd(current.startIndex, dayIndex, (candidate) => isBlocked(room.id, days[candidate]));

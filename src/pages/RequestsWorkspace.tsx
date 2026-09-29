@@ -5,13 +5,15 @@ import Pipeline from "@/pages/Pipeline";
 
 const RequestsWorkspace = () => {
   const [params, setParams] = useSearchParams();
-  const view = params.get("view") === "board" ? "board" : "list";
+  // The board is the primary sales desk.  The table stays available for reporting
+  // and bulk work, but a receptionist should land on the work queue first.
+  const view = params.get("view") === "list" ? "list" : "board";
   return <div className="space-y-5">
     <SegmentedTabs value={view} onChange={(value) => {
       const next = new URLSearchParams(params);
-      if (value === "list") next.delete("view"); else next.set("view", value);
+      if (value === "board") next.delete("view"); else next.set("view", value);
       setParams(next);
-    }} options={[{ value: "list", label: "Список" }, { value: "board", label: "Воронка" }]} />
+    }} options={[{ value: "board", label: "Воронка · рабочая" }, { value: "list", label: "Список и отчёт" }]} />
     {view === "list" ? <Leads /> : <Pipeline />}
   </div>;
 };

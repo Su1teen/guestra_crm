@@ -15,6 +15,8 @@ export interface Property {
   shortName: string;
   city: string;
   roomTypes: string[];
+  /** IANA timezone used for operational dates, queues and stay status. */
+  timezone?: string;
 }
 
 export type LeadStage = "new" | "qualified" | "planning" | "offer" | "payment_pending" | "confirmed" | "completed" | "lost" | "cancelled";

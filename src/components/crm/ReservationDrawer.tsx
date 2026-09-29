@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { CalendarDays, Check, Clock3, CreditCard, Home, MessageCircle, MoreHorizontal, UserRound } from "lucide-react";
+import { CalendarDays, Check, Clock3, CreditCard, Download, Eye, Home, MessageCircle, MoreHorizontal, UserRound } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +28,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
     updateTask, extendStay, changeDepartureTime, moveStayRoom, requestStayHousekeeping, recordReservationPayment, propertyById } = useCrm();
   const { toast } = useToast();
   const navigate = useNavigate();
-  const propertyTimeZone = "Asia/Qyzylorda";
+  const propertyTimeZone = "Asia/Almaty";
   const [saving, setSaving] = useState(false);
   const [serviceOpen, setServiceOpen] = useState(false);
   const [requestOpen, setRequestOpen] = useState(false);
@@ -331,6 +331,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
           <Button size="sm" variant="outline" className="mt-3" onClick={() => setServiceOpen(true)}>Добавить услугу</Button>
         </SectionCard>}
         <SectionCard className={tab !== "folio" ? "hidden" : ""} title={`Счёт${folio ? ` · ${folio.code}` : ""}`}><div className="space-y-4">
+          {folio && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-secondary/30 p-3"><div><StatusPill tone={folio.status === "closed" ? "success" : "info"}>{folio.status === "closed" ? "Final folio" : "Interim folio"}</StatusPill>{folio.finalVersion && <p className="mt-1 text-xs text-muted-foreground">Final version {folio.finalVersion} · immutable snapshot</p>}</div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => window.open(`/api/crm/folios/${folio.id}/guest-view`, "_blank", "noopener,noreferrer")}><Eye className="mr-1.5 h-4 w-4" />Просмотр</Button><Button size="sm" variant="outline" onClick={() => window.open(`/api/crm/folios/${folio.id}/print`, "_blank", "noopener,noreferrer")}><Download className="mr-1.5 h-4 w-4" />Печать / PDF</Button></div></div>}
           {folio?.lines.length ? <div className="divide-y rounded-lg border">{folio.lines.map((line) => <div key={line.id} className="flex items-start justify-between gap-3 px-3 py-2.5 text-sm"><div className="min-w-0"><p className="font-medium">{line.description}</p><p className="text-xs text-muted-foreground">{line.quantity} × {formatTenge(line.unitPrice)}</p></div><span className="shrink-0 font-medium">{formatTenge(line.lineTotal)}</span></div>)}</div> : <p className="text-sm text-muted-foreground">Проводок по счёту пока нет.</p>}
           <div className="grid grid-cols-3 gap-3"><Field label="Итого">{formatTenge(folio?.totalAmount ?? request?.totalAmount ?? 0)}</Field><Field label="Оплачено">{formatTenge(folio?.paidAmount ?? request?.paidAmount ?? 0)}</Field><Field label="Остаток"><strong>{formatTenge(balance)}</strong></Field></div>
           <div><p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Платежи</p>{folioPayments.length ? <ul className="divide-y rounded-lg border">{folioPayments.map((payment) => <li key={payment.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm"><span>{formatDateNumeric(payment.date)} · {payment.method === "card" ? "Карта" : payment.method === "transfer" ? "Перевод" : "Наличные"}{payment.reference ? ` · ${payment.reference}` : ""}</span><span>{payment.status === "refunded" ? "Возврат · " : ""}{formatTenge(payment.amount)}</span></li>)}</ul> : <p className="text-sm text-muted-foreground">Платежей пока нет.</p>}</div>
