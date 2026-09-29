@@ -2,10 +2,10 @@ import type { CrmDataset, Guest, GuestStay, Lead, RequestStatus, Reservation, Re
 import { propertyDate } from "@/lib/service-time";
 
 export const requestStatusLabels: Record<RequestStatus, string> = {
-  enquire: "Enquire · запрос", tentative: "Tentative · думает", definite: "Definite · готов",
+  enquire: "Новый запрос", tentative: "Предварительное предложение", definite: "Готово к бронированию",
   won: "Успешно", lost: "Потеряно", closed: "Закрыто",
   // Legacy aliases are intentionally retained while downstream integrations migrate.
-  new: "Enquire · запрос", active: "Tentative · думает", waiting_customer: "Tentative · думает",
+  new: "Новый запрос", active: "Предварительное предложение", waiting_customer: "Предварительное предложение",
 };
 
 export const requestStatusOf = (request: Lead): RequestStatus => request.requestLifecycle ?? (request.requestStatus === "new" ? "enquire" : request.requestStatus === "active" || request.requestStatus === "waiting_customer" ? "tentative" : request.requestStatus) ?? (
@@ -35,10 +35,10 @@ export const operationalStatusLabels: Record<StayStatus, string> = {
 };
 
 /** Date-driven desk labels are derived; actual presence changes only through check-in/out. */
-export const effectiveStayStatus = (stay: GuestStay, at = new Date()): StayStatus => {
+export const effectiveStayStatus = (stay: GuestStay, at = new Date(), timezone = "Asia/Almaty"): StayStatus => {
   const status = stay.operationalStatus ?? "upcoming";
   if (["checked_out", "no_show", "cancelled"].includes(status)) return status;
-  const sameDay = (date: string) => propertyDate(date, "Asia/Qyzylorda") === propertyDate(at, "Asia/Qyzylorda");
+  const sameDay = (date: string) => propertyDate(date, timezone) === propertyDate(at, timezone);
   if (status === "in_house" || status === "due_out") return sameDay(stay.checkOut) ? "due_out" : "in_house";
   if (sameDay(stay.checkIn)) return "due_in";
   const days = (new Date(stay.checkIn).getTime() - at.getTime()) / 86_400_000;
