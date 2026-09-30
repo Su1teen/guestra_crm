@@ -40,6 +40,8 @@ beforeAll(async () => {
     "0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey",
     "0006_task_context_and_followup_queue", "0007_service_resource_availability",
     "0008_stay_activity_context", "0009_agent_gateway", "0010_agent_contract_hardening",
+    "0011_les_borovoe_timezone", "0012_hospitality_lifecycle_alerts_and_folio_documents",
+    "0013_commercial_payment_and_communications",
   ]) {
     const migration = await readFile(new URL(`../drizzle/${name}.sql`, import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {

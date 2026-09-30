@@ -22,6 +22,9 @@ import { attentionForStay, folioForReservation, timelineForStay, todayForStay } 
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { GuestRecognitionDialog } from "@/components/crm/GuestRecognitionDialog";
+import { ReservationReminders } from "@/components/crm/ReservationReminders";
+import { CommercialLifecyclePanel } from "@/components/crm/CommercialLifecyclePanel";
 
 export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: string | null; onClose: () => void }) => {
   const { data, assignReservationRoom, checkInReservation, checkOutReservation, assignPackage, updateReservationContext, addReservationNote,
@@ -45,6 +48,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
   const [housekeepingOpen, setHousekeepingOpen] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
+  const [recognitionOpen, setRecognitionOpen] = useState(false);
   const [extendDate, setExtendDate] = useState("");
   const [departureTime, setDepartureTime] = useState("16:00");
   const [targetRoomId, setTargetRoomId] = useState("");
@@ -251,11 +255,13 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
     <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
       {reservation ? <div className="space-y-5 pb-6">
         <SheetHeader className="space-y-2 text-left">
-          <SheetTitle className="pr-6">{primaryName ?? "Гость / контакт"}</SheetTitle>
+          <SheetTitle className="pr-6"><button type="button" className="text-left hover:text-brand-700 hover:underline" onClick={() => setRecognitionOpen(true)}>{primaryName ?? "Гость / контакт"}</button></SheetTitle>
           <SheetDescription>{reservation.code} · {propertyById(reservation.propertyId)?.name ?? reservation.propertyId}
             {customer && customer.fullName !== primaryName ? ` · оформил: ${customer.fullName}` : ""}</SheetDescription>
         </SheetHeader>
         {deskAlerts.length > 0 && <div className="rounded-xl border border-amber-300 bg-amber-50 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-amber-900">Важные сообщения для front desk</p>{deskAlerts.map((note) => <p key={note.id} className="mt-1 text-sm font-semibold text-amber-950">{note.text}</p>)}</div>}
+        <ReservationReminders reservationId={reservation.id} status={reservation.status} />
+        {reservation.status === "pending_payment" && request && <CommercialLifecyclePanel lead={request} conversation={conversation ?? undefined} reservation={reservation} folio={folio ?? undefined} compact />}
         {inHouse && stay && <section className={`rounded-xl border p-4 ${dueOut ? "border-amber-300 bg-amber-50/70" : "border-brand-200 bg-brand-50/40"}`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div><p className={`text-xs font-semibold uppercase tracking-wide ${dueOut ? "text-amber-800" : "text-brand-800"}`}>{dueOut ? "Выезд сегодня" : "Сейчас проживает"}</p>
@@ -335,7 +341,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
         </SectionCard>}
         {inHouse && <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Счёт"><div className="space-y-3">
           <div className="grid grid-cols-3 gap-3"><Field label="Итого">{formatTenge(folio?.totalAmount ?? stay?.amount ?? 0)}</Field><Field label="Оплачено">{formatTenge(folio?.paidAmount ?? 0)}</Field><Field label="Остаток"><strong>{formatTenge(balance)}</strong></Field></div>
-          <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => { setPaymentAmount(String(balance || "")); setPaymentOpen(true); }} disabled={balance <= 0}>Добавить оплату</Button><Button size="sm" variant="outline" onClick={() => setTab("folio")}>Открыть счёт</Button></div>
+          <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => { setPaymentAmount(String(balance || "")); setPaymentOpen(true); }} disabled={balance <= 0 || reservation.status === "pending_payment"}>Добавить оплату</Button><Button size="sm" variant="outline" onClick={() => setTab("folio")}>Открыть счёт</Button></div>
         </div></SectionCard>}
         {inHouse && <SectionCard className={tab !== "overview" ? "hidden" : ""} title="Ближайшие услуги">
           {services.filter((item) => item.status === "scheduled").slice(0, 2).length ? <ul className="space-y-2">{services.filter((item) => item.status === "scheduled").slice(0, 2).map((service) => <li key={service.id} className="flex items-center justify-between gap-3 text-sm"><span><strong>{propertyDate(service.startAt, propertyTimeZone) === propertyDate(new Date(), propertyTimeZone) ? "Сегодня" : formatDateNumeric(service.startAt)} · {propertyTime(service.startAt, propertyTimeZone)}</strong><br />{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"}</span><span className="shrink-0 text-xs text-muted-foreground">{service.entitlementId ? "включено" : formatTenge(service.totalAmount)}</span></li>)}</ul> : <p className="text-sm text-muted-foreground">Услуги не запланированы.</p>}
@@ -375,6 +381,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
     </SheetContent>
   </Sheet>
     {reservation && <><ServiceBookingDialog reservation={reservation} customerId={stay?.guestId ?? reservation.bookerCustomerId} open={serviceOpen} onOpenChange={setServiceOpen} /><GuestRequestDialog reservationId={reservation.id} open={requestOpen} onOpenChange={setRequestOpen} /></>}
+    <GuestRecognitionDialog guestId={recognitionOpen ? customer?.id ?? null : null} onOpenChange={setRecognitionOpen} />
     <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
     <Dialog open={noteOpen} onOpenChange={setNoteOpen}><DialogContent><DialogHeader><DialogTitle>Заметка к проживанию</DialogTitle><DialogDescription>Заметка сохранится только в истории этой поездки.</DialogDescription></DialogHeader><Textarea value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder="Например, гость вернётся после 22:00" /><DialogFooter><Button variant="outline" onClick={() => setNoteOpen(false)}>Отмена</Button><Button disabled={saving || noteDraft.trim().length < 2} onClick={() => void saveNote()}>Сохранить</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={extendOpen} onOpenChange={setExtendOpen}><DialogContent><DialogHeader><DialogTitle>Продлить проживание</DialogTitle><DialogDescription>Стоимость и доступность будут пересчитаны при сохранении.</DialogDescription></DialogHeader><label className="space-y-1 text-sm"><span>Новая дата выезда</span><Input type="date" value={extendDate} min={propertyDate(new Date(new Date(reservation?.departureAt ?? new Date()).getTime() + 86_400_000), propertyTimeZone)} onChange={(event) => setExtendDate(event.target.value)} /></label><DialogFooter><Button variant="outline" onClick={() => setExtendOpen(false)}>Отмена</Button><Button disabled={saving || !extendDate} onClick={() => void saveExtendedStay()}>Продлить</Button></DialogFooter></DialogContent></Dialog>

@@ -36,24 +36,14 @@ describe("stay workspace demo flows", () => {
     expect(screen.getByText(/Добавлена оплата/)).toBeInTheDocument();
   }, 45000);
 
-  it("requires both due-out acknowledgements and checks out without closing the folio", async () => {
+  it("keeps due-out checkout blocked until balance and services are settled", async () => {
     await renderMockRoute("/reservations?reservation=reservation_demo_due_out");
     expect(await screen.findByText("ВЫЕЗД СЕГОДНЯ · требует внимания")).toBeInTheDocument();
-    const balanceAck = screen.getByLabelText(/Подтверждаю выселение с остатком/);
-    const serviceAck = screen.getByLabelText(/Подтверждаю выселение с .* незавершёнными услугами/);
-    const checkout = screen.getByRole("button", { name: "Выселить" });
+    const checkout = screen.getByRole("button", { name: "Выселить гостя" });
     expect(checkout).toBeDisabled();
-    fireEvent.click(balanceAck);
-    expect(checkout).toBeDisabled();
-    fireEvent.click(serviceAck);
-    expect(checkout).toBeEnabled();
-    fireEvent.click(checkout);
-    expect(await screen.findByText("Гость выселен, уборка создана")).toBeInTheDocument();
+    expect(screen.getByText(/Выселение пока заблокировано/)).toBeInTheDocument();
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Счёт" }), { button: 0, ctrlKey: false });
     expect(await screen.findByText(/остаётся открытым до расчёта/)).toBeInTheDocument();
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "История" }), { button: 0, ctrlKey: false });
-    const history = await screen.findByRole("heading", { name: "История этого визита" });
-    expect(history.closest("section")).toHaveTextContent(/Гость выселен/);
   }, 45000);
 
   it("exposes the completed stay in the customer's visit history", async () => {

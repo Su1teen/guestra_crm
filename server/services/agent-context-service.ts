@@ -148,6 +148,9 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
           eq(s.folios.propertyId, conversation.propertyId))).orderBy(desc(s.folios.updatedAt)).limit(1)
         : [];
   const folio = folioRows[0];
+  const paymentRequest = request && canViewFolio
+    ? (await db.select().from(s.paymentRequests).where(eq(s.paymentRequests.leadId, request.id))
+      .orderBy(desc(s.paymentRequests.createdAt)).limit(1))[0] : undefined;
 
   const timezone = property.timezone || "Asia/Qyzylorda";
   const today = propertyDate(isoNow(), timezone);
@@ -170,7 +173,8 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
   else if (isPostStay) lifecycle = "post_stay";
   else if (serviceOnly) lifecycle = "service_only";
   else if (reservation?.status === "confirmed") lifecycle = reservation.arrivalAt > isoNow() ? "pre_arrival" : "reserved";
-  else if (offer?.status === "pending_payment" || (request && ["pending", "overdue"].includes(request.paymentStatus))) lifecycle = "pending_payment";
+  else if (reservation?.status === "pending_payment" || offer?.status === "pending_payment" ||
+    paymentRequest?.status === "sent" || (request && ["pending", "overdue"].includes(request.paymentStatus))) lifecycle = "pending_payment";
   else if (offer && !["expired", "cancelled"].includes(offer.status) && new Date(offer.expiresAt) > new Date()) lifecycle = "offer";
   else if (request && !["lost", "cancelled", "completed"].includes(request.stage)) lifecycle = "active_request";
 
@@ -236,7 +240,7 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
     },
     lifecycle,
     request: request ? {
-      id: request.id, stage: request.stage, status: request.requestStatus,
+      id: request.id, stage: request.stage, status: request.requestStatus, requestLifecycle: request.requestLifecycle,
       checkIn: request.checkIn, checkOut: request.checkOut, adults: request.adults,
       children: request.children, category: request.roomType, missingFacts: classification?.missingData ?? [],
       direction, quality, temperature: classification?.temperature ?? conversationClassification.temperature ?? null,
@@ -247,6 +251,8 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
     } : null,
     offer: offer ? { id: offer.id, status: offer.status, expiresAt: offer.expiresAt,
       total: offer.total, deposit: offer.deposit, currency: offer.currency } : null,
+    paymentRequest: paymentRequest ? { id: paymentRequest.id, status: paymentRequest.status,
+      amount: paymentRequest.amount, sentAt: paymentRequest.sentAt, paidAt: paymentRequest.paidAt } : null,
     reservation: reservationContext,
     serviceReservations: serviceRows.map((service) => ({ id: service.id,
       name: catalogById.get(service.catalogItemId)?.name ?? "Услуга", startAt: service.startAt, endAt: service.endAt,

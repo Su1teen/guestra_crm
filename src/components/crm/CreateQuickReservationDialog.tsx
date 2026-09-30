@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { formatTenge } from "@/lib/format";
 import { accommodationNightlyRate, accommodationTotal } from "@/lib/reservation-pricing";
 import { CreateGuestDialog } from "@/components/crm/CreateGuestDialog";
+import { GuestRecognitionDialog } from "@/components/crm/GuestRecognitionDialog";
 
 const dateValue = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 const dateTime = (date: string, time: string) => new Date(`${date}T${time}:00`).toISOString();
@@ -38,6 +39,7 @@ export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId
   const [deposit, setDeposit] = useState(0);
   const [busy, setBusy] = useState(false);
   const [newGuestOpen, setNewGuestOpen] = useState(false);
+  const [recognitionOpen, setRecognitionOpen] = useState(false);
   const [amountEdited, setAmountEdited] = useState(false);
 
   useEffect(() => {
@@ -111,7 +113,9 @@ export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId
       <DialogHeader><DialogTitle className="flex items-center gap-2"><CalendarPlus className="h-5 w-5" />Быстрое бронирование</DialogTitle>
         <DialogDescription>Создайте бронь и проживание в профиле выбранного гостя.</DialogDescription></DialogHeader>
       <div className="grid max-h-[min(68vh,540px)] gap-x-3 gap-y-2.5 overflow-y-auto py-1 pr-1 sm:grid-cols-2">
-        <div className="space-y-1 sm:col-span-2"><Label>Гость</Label><Select value={guestId} onValueChange={(value) => value === "__new_guest__" ? setNewGuestOpen(true) : setGuestId(value)}><SelectTrigger><SelectValue placeholder="Выберите гостя" /></SelectTrigger><SelectContent className="max-h-64"><SelectItem value="__new_guest__"><span className="flex items-center gap-2 font-medium text-brand-700"><Plus className="h-4 w-4" />Новый гость</span></SelectItem>{data.guests.map((guest) => <SelectItem key={guest.id} value={guest.id}>{guest.fullName}{guest.phone ? ` · ${guest.phone}` : ""}</SelectItem>)}</SelectContent></Select></div>
+        <div className="space-y-1 sm:col-span-2"><Label>Гость</Label><Select value={guestId} onValueChange={(value) => value === "__new_guest__" ? setNewGuestOpen(true) : setGuestId(value)}><SelectTrigger><SelectValue placeholder="Выберите гостя" /></SelectTrigger><SelectContent className="max-h-64"><SelectItem value="__new_guest__"><span className="flex items-center gap-2 font-medium text-brand-700"><Plus className="h-4 w-4" />Новый гость</span></SelectItem>{data.guests.map((guest) => <SelectItem key={guest.id} value={guest.id}>{guest.fullName}{guest.phone ? ` · ${guest.phone}` : ""}</SelectItem>)}</SelectContent></Select>
+          {data.guests.find((item) => item.id === guestId) && <div className="mt-2 flex items-center justify-between gap-3 rounded-xl border bg-muted/30 p-3 text-sm"><div className="min-w-0"><p className="font-semibold">{data.guests.find((item) => item.id === guestId)?.fullName}</p><p className="text-xs text-muted-foreground">{data.guests.find((item) => item.id === guestId)?.phone ?? "Телефон не указан"} · последний визит: {data.guests.find((item) => item.id === guestId)?.lastStayDate?.slice(0, 10) ?? "—"}</p><p className="mt-1 line-clamp-1 text-xs text-amber-800">{data.notes.find((note) => note.guestId === guestId && note.alert && (!note.validUntil || note.validUntil >= new Date().toISOString()))?.text ?? "Активных предупреждений нет"}</p></div><Button type="button" size="sm" variant="outline" className="shrink-0" onClick={() => setRecognitionOpen(true)}>Контекст гостя</Button></div>}
+        </div>
         <div className="space-y-1.5 sm:col-span-2"><Label>Объект</Label><Select value={propertyId} onValueChange={(value) => { setAmountEdited(false); setPropertyId(value); setRoomType(""); setRoomId("none"); }}><SelectTrigger><SelectValue placeholder="Выберите объект" /></SelectTrigger><SelectContent>{data.properties.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>
         <div className="space-y-1"><Label htmlFor="quick-arrival">Заезд</Label><Input className="h-9" id="quick-arrival" type="date" value={arrival} onChange={(event) => { setAmountEdited(false); setArrival(event.target.value); }} /></div>
         <div className="space-y-1"><Label htmlFor="quick-departure">Выезд</Label><Input className="h-9" id="quick-departure" type="date" value={departure} min={arrival} onChange={(event) => { setAmountEdited(false); setDeparture(event.target.value); }} /></div>
@@ -126,5 +130,6 @@ export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId
       <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Отмена</Button><Button onClick={() => void submit()} disabled={busy || !guestId || !propertyId || !arrival || !departure || departure <= arrival || !roomType || amount === ""}><CalendarPlus className="mr-2 h-4 w-4" />{busy ? "Создаём…" : "Создать бронь"}</Button></DialogFooter>
     </DialogContent>
     <CreateGuestDialog open={newGuestOpen} onOpenChange={setNewGuestOpen} trigger={null} preferredPropertyId={propertyId} onCreated={setGuestId} />
+    <GuestRecognitionDialog guestId={recognitionOpen ? guestId : null} onOpenChange={setRecognitionOpen} />
   </Dialog>;
 };

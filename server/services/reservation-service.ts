@@ -5,6 +5,7 @@ import * as s from "../db/schema.js";
 import { assignReservationUnit, autoAssignReservationUnit } from "./availability-service.js";
 import { resolveOrCreateExternalCustomer } from "./customer-service.js";
 import { ensureFolio, recalcFolio } from "./folio.js";
+import { planPreArrivalMessages } from "./payment-service.js";
 
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const now = () => new Date().toISOString();
@@ -63,15 +64,20 @@ export const bookAcceptedOfferByCategoryInTransaction = async (tx: AgentReservat
   )).limit(1);
   if (!unitType) throw new ReservationConflict("Выбранная категория размещения больше не продаётся");
   const timestamp = now();
+  const [offerFolio] = offer.folioId ? await tx.select().from(s.folios).where(eq(s.folios.id, offer.folioId)).limit(1) : [];
+  const depositRequired = offerFolio?.depositRequired || offer.deposit || lead.deposit;
+  const requiresPayment = depositRequired > 0;
   const reservationId = id("reservation");
   const confirmationNumber = `G-${randomUUID().slice(0, 10).toUpperCase()}`;
   const [reservation] = await tx.insert(s.reservations).values({
     id: reservationId, code: `R-${randomUUID().slice(0, 10).toUpperCase()}`,
     idempotencyKey: input.idempotencyKey, propertyId: input.propertyId,
     bookerCustomerId: input.customerId, requestId: lead.id, unitTypeId: unitType.id,
-    roomTypeSnapshot: unitType.name, source: "telegram", status: "confirmed",
+    roomTypeSnapshot: unitType.name, source: "telegram", status: requiresPayment ? "pending_payment" : "confirmed",
     arrivalAt: offer.checkIn, departureAt: offer.checkOut, adults: offer.adults, children: offer.children,
-    currency: offer.currency, externalConfirmationNumber: confirmationNumber, confirmedAt: timestamp,
+    currency: offer.currency, externalConfirmationNumber: confirmationNumber,
+    confirmedAt: requiresPayment ? null : timestamp,
+    holdExpiresAt: requiresPayment ? new Date(Date.now() + 24 * 60 * 60_000).toISOString() : null,
   }).returning();
   if (!reservation) throw new ReservationConflict("Не удалось создать бронирование");
   const allocation = await autoAssignReservationUnit(tx, reservation, unitType.id);
@@ -85,7 +91,7 @@ export const bookAcceptedOfferByCategoryInTransaction = async (tx: AgentReservat
     roomId: allocation.roomId, guestId: input.customerId, propertyId: input.propertyId,
     roomType: unitType.name, checkIn: offer.checkIn, checkOut: offer.checkOut, nights,
     adults: offer.adults, children: offer.children, amount: offer.total,
-    bookingReference: confirmationNumber, status: "confirmed", operationalStatus: "upcoming",
+    bookingReference: confirmationNumber, status: requiresPayment ? "pending_payment" : "confirmed", operationalStatus: "upcoming",
   }).returning();
   const folio = offer.folioId
     ? (await tx.select().from(s.folios).where(eq(s.folios.id, offer.folioId)).limit(1))[0]
@@ -109,19 +115,37 @@ export const bookAcceptedOfferByCategoryInTransaction = async (tx: AgentReservat
   await tx.update(s.folios).set({ reservationId: reservation.id, stayId: stay.id, updatedAt: timestamp })
     .where(eq(s.folios.id, folio.id));
   await recalcFolio(tx, folio.id);
+  if (requiresPayment) await tx.insert(s.paymentRequests).values({ id: id("payment_request"),
+    leadId: lead.id, reservationId: reservation.id, folioId: folio.id, guestId: input.customerId,
+    amount: Math.min(depositRequired, offer.total), currency: offer.currency, kind: "deposit", method: "card_link",
+    status: "draft", expiresAt: reservation.holdExpiresAt, idempotencyKey: `offer:${offer.id}:deposit` });
   await tx.update(s.offers).set({ status: "accepted", updatedAt: timestamp }).where(eq(s.offers.id, offer.id));
-  await tx.update(s.leads).set({ stage: "confirmed", requestStatus: "won", probability: 100,
+  await tx.update(s.leads).set({ stage: requiresPayment ? "payment_pending" : "confirmed",
+    requestLifecycle: requiresPayment ? "definite" : "won", requestStatus: requiresPayment ? "pending" : "won",
+    paymentStatus: requiresPayment ? "awaiting" : "not_required", probability: requiresPayment ? 85 : 100,
     bookingReference: confirmationNumber, reservationId: reservation.id, roomType: unitType.name,
     checkIn: offer.checkIn, checkOut: offer.checkOut, nights, adults: offer.adults, children: offer.children,
     lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
-  if (lead.stage !== "confirmed") await tx.insert(s.leadStageHistory).values({
-    id: id("stage"), leadId: lead.id, stage: "confirmed", employeeId: null, changedAt: timestamp,
+  if (lead.requestLifecycle !== (requiresPayment ? "definite" : "won")) await tx.insert(s.requestLifecycleHistory).values({
+    id: id("request_lifecycle"), leadId: lead.id, fromStatus: lead.requestLifecycle,
+    toStatus: requiresPayment ? "definite" : "won", source: "agent_booking",
+    reason: requiresPayment ? "Гость согласился на бронирование, ожидается предоплата" : "Оплата не требуется", changedAt: timestamp });
+  if (lead.stage !== (requiresPayment ? "payment_pending" : "confirmed")) await tx.insert(s.leadStageHistory).values({
+    id: id("stage"), leadId: lead.id, stage: requiresPayment ? "payment_pending" : "confirmed", employeeId: null, changedAt: timestamp,
   });
-  await tx.update(s.conversations).set({ reservationId: reservation.id, stayId: stay.id, updatedAt: timestamp })
+  await tx.update(s.conversations).set({ reservationId: reservation.id, stayId: stay.id,
+    ...(requiresPayment ? { automationMode: "needs_human", handoffReasonCode: "payment_ready",
+      requestedAction: "Отправить счёт или ссылку на оплату", handoffPriority: "high", handoffRequestedAt: timestamp } : {}),
+    updatedAt: timestamp })
     .where(and(eq(s.conversations.guestId, input.customerId), eq(s.conversations.leadId, lead.id)));
   await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "booking",
-    title: "Предложение принято, бронь подтверждена", description: confirmationNumber,
+    title: requiresPayment ? "Предложение принято, ожидается оплата" : "Предложение принято, бронь подтверждена", description: confirmationNumber,
     amount: offer.total, occurredAt: timestamp });
+  if (!requiresPayment) {
+    const [conversation] = await tx.select().from(s.conversations).where(and(
+      eq(s.conversations.guestId, input.customerId), eq(s.conversations.leadId, lead.id))).limit(1);
+    await planPreArrivalMessages(tx, reservation, conversation?.id ?? null, timestamp);
+  }
   return { reservationId: reservation.id, stayId: stay.id, requestId: lead.id,
     confirmationNumber, category: unitType.name, arrivalAt: offer.checkIn, departureAt: offer.checkOut,
     total: offer.total, currency: offer.currency, duplicate: false };
@@ -166,6 +190,7 @@ export const ensureReservationForRequest = async (
   lead: typeof s.leads.$inferSelect,
   folio: typeof s.folios.$inferSelect,
   bookingReference: string,
+  requiresPayment = false,
 ) => {
   if (!lead.checkIn || !lead.checkOut || new Date(lead.checkOut).getTime() <= new Date(lead.checkIn).getTime()) {
     throw new ReservationConflict("Для подтверждения размещения нужны корректные даты");
@@ -180,9 +205,10 @@ export const ensureReservationForRequest = async (
     id: `res_request_${lead.id}`, code: `R-${lead.code}`,
     propertyId: lead.propertyId, bookerCustomerId: lead.guestId, requestId: lead.id,
     unitTypeId: unitType?.id ?? null, roomTypeSnapshot: lead.roomType,
-    source: lead.source, status: "confirmed", arrivalAt: lead.checkIn, departureAt: lead.checkOut,
+    source: lead.source, status: requiresPayment ? "pending_payment" : "confirmed", arrivalAt: lead.checkIn, departureAt: lead.checkOut,
     adults: lead.adults, children: lead.children, specialRequest: lead.specialRequest,
-    externalConfirmationNumber: bookingReference, confirmedAt: timestamp,
+    externalConfirmationNumber: bookingReference, confirmedAt: requiresPayment ? null : timestamp,
+    holdExpiresAt: requiresPayment ? new Date(Date.now() + 24 * 60 * 60_000).toISOString() : null,
   }).onConflictDoNothing().returning();
   if (!reservation) throw new ReservationConflict("Номер подтверждения уже используется");
   const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, lead.guestId)).limit(1);
@@ -196,7 +222,7 @@ export const ensureReservationForRequest = async (
     checkIn: lead.checkIn, checkOut: lead.checkOut,
     nights: Math.max(1, Math.ceil((new Date(lead.checkOut).getTime() - new Date(lead.checkIn).getTime()) / 86_400_000)),
     adults: lead.adults, children: lead.children, amount: folio.totalAmount,
-    bookingReference, status: "confirmed", operationalStatus: "upcoming",
+    bookingReference, status: requiresPayment ? "pending_payment" : "confirmed", operationalStatus: "upcoming",
   }).returning();
   await tx.update(s.folios).set({ reservationId: reservation.id, stayId: stay.id, updatedAt: timestamp })
     .where(eq(s.folios.id, folio.id));

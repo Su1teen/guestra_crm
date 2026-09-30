@@ -6,6 +6,8 @@ const productionSchema = z.object({
   CRM_INTEGRATION_API_KEY: z.string().min(16),
   AGENT_OUTBOUND_WEBHOOK_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
   AGENT_OUTBOUND_WEBHOOK_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().min(16).optional()),
+  WHATSAPP_OUTBOUND_WEBHOOK_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
+  WHATSAPP_OUTBOUND_WEBHOOK_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().min(16).optional()),
   SALES_BOOTSTRAP_EMAIL: z.string().email().default("sales@guestra.com"),
   SALES_BOOTSTRAP_PASSWORD: z.string().min(8),
   ADMIN_BOOTSTRAP_EMAIL: z.string().email().default("admin@guestra.com"),

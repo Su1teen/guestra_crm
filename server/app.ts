@@ -8,6 +8,7 @@ import { createAuthRouter } from "./routes/auth.js";
 import { createCrmRouter } from "./routes/crm.js";
 import { createIntegrationRouter } from "./routes/integrations.js";
 import { createAgentRouter } from "./routes/agent.js";
+import { createCommunicationRouter } from "./routes/communications.js";
 
 export const createApp = (db: Database, config: AppConfig) => {
   const app = express();
@@ -18,6 +19,7 @@ export const createApp = (db: Database, config: AppConfig) => {
   app.use("/api/crm", createCrmRouter(db, config));
   app.use("/api/integrations/ai", createIntegrationRouter(db, config.CRM_INTEGRATION_API_KEY));
   app.use("/api/integrations/agent", createAgentRouter(db, config.CRM_INTEGRATION_API_KEY));
+  app.use("/api/integrations/communications", createCommunicationRouter(db, config));
   app.get("/api/health", (_request, response) => response.json({ status: "ok" }));
 
   if (config.NODE_ENV === "production") {

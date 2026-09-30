@@ -28,6 +28,8 @@ import { FolioCard } from "@/components/crm/FolioCard";
 import { ServicePicker } from "@/components/crm/ServicePicker";
 import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
 import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDialog";
+import { GuestRecognitionDialog } from "@/components/crm/GuestRecognitionDialog";
+import { CommercialLifecyclePanel } from "@/components/crm/CommercialLifecyclePanel";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -126,6 +128,7 @@ const LeadDetail = () => {
   const [activityOpen, setActivityOpen] = useState(false);
   const [serviceOpen, setServiceOpen] = useState(false);
   const [selectedServiceId, setSelectedServiceId] = useState<string>();
+  const [recognitionOpen, setRecognitionOpen] = useState(false);
 
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentForm, setPaymentForm] = useState({
@@ -425,6 +428,8 @@ const LeadDetail = () => {
           </>
         }
       />
+
+      <CommercialLifecyclePanel lead={lead} conversation={conversation} reservation={reservation} folio={folio} />
 
       <SectionCard title="Следующее действие" description="Краткий контекст обращения">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -777,9 +782,9 @@ const LeadDetail = () => {
             <div className="flex items-center gap-3">
               <InitialsAvatar name={guest.fullName} size="lg" />
               <div className="min-w-0">
-                <Link to={`/guests/${guest.id}`} className="text-sm font-semibold text-brand-600 hover:underline">
+                <button type="button" onClick={() => setRecognitionOpen(true)} className="text-sm font-semibold text-brand-600 hover:underline">
                   {guest.fullName}
-                </Link>
+                </button>
                 <p className="text-xs text-muted-foreground">{guest.company ?? "Частный гость"}</p>
               </div>
             </div>
@@ -1154,6 +1159,7 @@ const LeadDetail = () => {
       <ServiceBookingDialog reservation={reservation} customerId={guest.id} propertyId={lead.propertyId} requestId={lead.id}
         open={serviceOpen} onOpenChange={setServiceOpen} />
       <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
+      <GuestRecognitionDialog guestId={recognitionOpen ? guest.id : null} onOpenChange={setRecognitionOpen} />
     </div>
   );
 };

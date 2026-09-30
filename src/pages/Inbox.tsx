@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowRight, CalendarClock, Check, Circle, CreditCard, Inbox as InboxIcon, MessageCircle, Paperclip, Send, StickyNote, UserPlus } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { ArrowRight, CalendarClock, Check, Circle, Inbox as InboxIcon, MessageCircle, Paperclip, Send, StickyNote, UserPlus } from "lucide-react";
 import { EmptyState, ErrorState, LoadingScreen } from "@/components/common/States";
 import { InitialsAvatar } from "@/components/common/Identity";
 import { FilterSelect, SearchInput } from "@/components/common/Filters";
@@ -16,6 +16,9 @@ import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
 import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDialog";
 import { GuestRequestDialog } from "@/components/crm/GuestRequestDialog";
 import { CreateQuickReservationDialog } from "@/components/crm/CreateQuickReservationDialog";
+import { GuestRecognitionDialog } from "@/components/crm/GuestRecognitionDialog";
+import { CommercialLifecyclePanel } from "@/components/crm/CommercialLifecyclePanel";
+import { ReservationReminders } from "@/components/crm/ReservationReminders";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
 import { formatDateLong, formatRelative, formatStayRange, formatTenge, formatTime, occupancyLabel } from "@/lib/format";
@@ -36,6 +39,7 @@ const quickFilters = [
   { key: "mine", label: "Мои" },
   { key: "unassigned", label: "Без ответственного" },
   { key: "unread", label: "Непрочитанные" },
+  { key: "paymentReady", label: "Готовы оплатить" },
 ] as const;
 type QuickFilter = typeof quickFilters[number]["key"];
 type InboxQueue = "all" | ConversationQueueState;
@@ -75,13 +79,14 @@ const Inbox = () => {
   });
   const [channel, setChannel] = useState("all");
   const [search, setSearch] = useState("");
-  const [quick, setQuick] = useState<Record<QuickFilter, boolean>>({ mine: false, unassigned: false, unread: false });
+  const [quick, setQuick] = useState<Record<QuickFilter, boolean>>({ mine: false, unassigned: false, unread: false, paymentReady: false });
   const [draft, setDraft] = useState("");
   const [asNote, setAsNote] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(params.get("conversation"));
   const [busy, setBusy] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [quickReservationOpen, setQuickReservationOpen] = useState(false);
+  const [recognitionOpen, setRecognitionOpen] = useState(false);
   const [serviceOpen, setServiceOpen] = useState(false);
   const [selectedServiceId, setSelectedServiceId] = useState<string>();
   const [requestOpen, setRequestOpen] = useState(false);
@@ -105,6 +110,8 @@ const Inbox = () => {
       if (quick.mine && conversation.assigneeId !== currentEmployee.id) return false;
       if (quick.unassigned && conversation.assigneeId) return false;
       if (quick.unread && conversation.unreadCount === 0) return false;
+      if (quick.paymentReady && !(conversation.handoffReasonCode === "payment_ready" ||
+        (conversation.leadId && leadById(conversation.leadId)?.requestLifecycle === "definite"))) return false;
       if (query) {
         const customer = guestById(conversation.guestId);
         const request = conversation.leadId ? leadById(conversation.leadId) : undefined;
@@ -115,7 +122,7 @@ const Inbox = () => {
       }
       return true;
     }).sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
-  }, [channel, currentEmployee.id, data.reservations, guestById, leadById, quick.mine, quick.unassigned, quick.unread, queue, scoped.conversations, search]);
+  }, [channel, currentEmployee.id, data.reservations, guestById, leadById, quick.mine, quick.unassigned, quick.unread, quick.paymentReady, queue, scoped.conversations, search]);
 
   const selected: Conversation | undefined = visibleConversations.find((item) => item.id === selectedId) ?? visibleConversations[0];
   const automationMode = selected?.automationMode ?? "human";
@@ -172,8 +179,6 @@ const Inbox = () => {
   const bookedServices = data.serviceReservations.filter((item) => item.status === "scheduled" &&
     (reservation ? item.reservationId === reservation.id : request ? item.requestId === request.id : item.customerId === guest?.id && !item.reservationId));
   const guestRequests = reservation ? data.tasks.filter((item) => item.reservationId === reservation.id && item.type === "guest_request" && item.status !== "done") : [];
-  const lastStay = !reservation && guest ? data.stays.filter((item) => item.guestId === guest.id && item.operationalStatus === "checked_out")
-    .sort((a, b) => b.checkOut.localeCompare(a.checkOut))[0] : null;
   const totalAmount = folio?.totalAmount ?? request?.totalAmount ?? 0;
   const paidAmount = folio?.paidAmount ?? request?.paidAmount ?? 0;
   const balance = folio?.balance ?? Math.max(0, totalAmount - paidAmount);
@@ -296,11 +301,12 @@ const Inbox = () => {
             <p className="truncate text-sm font-medium">{guest.fullName}</p>
             <p className="truncate text-xs text-muted-foreground">{channelLabels[selected.channel]} · {employeeById(selected.assigneeId ?? "")?.shortName ?? "Без ответственного"}</p>
           </div>
-          <Link aria-label="Открыть профиль гостя" to={`/guests/${guest.id}`} className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"><ArrowRight className="h-4 w-4" /></Link>
+          <button type="button" aria-label="Посмотреть контекст гостя" onClick={() => setRecognitionOpen(true)} className="rounded-lg p-2 text-muted-foreground hover:bg-secondary hover:text-foreground"><ArrowRight className="h-4 w-4" /></button>
         </div>
       </div>
 
       <div className="space-y-4 p-4">
+        {request && <CommercialLifecyclePanel lead={request} conversation={selected} reservation={reservation} folio={folio ?? undefined} compact />}
         {selected.automationMode === "needs_human" && <section className="rounded-xl border border-amber-200 bg-amber-50 p-3">
           <p className="text-sm font-semibold text-amber-950">Нужен сотрудник</p>
           <p className="mt-1 text-xs text-amber-800">{handoffReasonLabels[selected.handoffReasonCode ?? ""] ?? "Нужна помощь с запросом гостя"}</p>
@@ -348,6 +354,7 @@ const Inbox = () => {
             <p className="text-sm">{reservation.roomTypeSnapshot ?? "Размещение"}{room ? ` · домик ${room.number}` : ""}</p>
             <p className="text-xs text-muted-foreground">{formatStayRange(reservation.arrivalAt, reservation.departureAt)} · {occupancyLabel(reservation.adults, reservation.children)}</p>
             <p className="text-xs">Оплачено {formatTenge(paidAmount)} · Остаток {formatTenge(balance)}</p>
+            <ReservationReminders reservationId={reservation.id} status={reservation.status} />
             {readiness?.warnings[0] && <p className="text-xs text-amber-700">Готовность: {readiness.warnings[0]}</p>}
             <div className="grid min-w-0 grid-cols-1 gap-2">
               <Button size="sm" variant="outline" className="w-full whitespace-normal" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
@@ -375,24 +382,14 @@ const Inbox = () => {
               <div className="mt-2 flex flex-wrap gap-2"><Button size="sm" variant="ghost" onClick={() => navigate(`/offers/${offer.id}`)}>Открыть</Button>
                 {offer.status === "sent" || offer.status === "viewed" ? <Button size="sm" variant="outline" onClick={() => { setOfferStatus(offer.id, "accepted"); toast({ title: "Согласие по предложению отмечено" }); }}>Гость согласен</Button> : null}</div>
             </div>}
-            {balance > 0 && <div className="mt-2 rounded-lg bg-secondary/70 p-3"><p className="text-xs font-semibold">Оплата</p><p className="mt-1 text-xs text-muted-foreground">Итого {formatTenge(totalAmount)} · оплачено {formatTenge(paidAmount)} · остаток {formatTenge(balance)}</p><Button size="sm" variant="outline" className="mt-2" onClick={() => { setPaymentAmount(String(balance)); setPaymentOpen(true); }}><CreditCard className="mr-1.5 h-3.5 w-3.5" />Зарегистрировать оплату</Button></div>}
           </section>
-        ) : lastStay ? (
-          <section className="space-y-2 border-b border-border pb-4"><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Последний визит</p><p className="text-sm font-semibold">{lastStay.roomType}</p><p className="text-xs text-muted-foreground">{formatStayRange(lastStay.checkIn, lastStay.checkOut)}</p><p className="text-xs">Отзыв: {data.reviews.some((review) => review.guestId === guest.id) ? "получен" : "ещё не получен"}</p></section>
         ) : <p className="rounded-lg bg-secondary/70 p-3 text-xs text-muted-foreground">Нет активных обращений или брони.</p>}
 
         {bookedServices.length > 0 && <section className="space-y-2 border-b border-border pb-4"><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Запланированные услуги</p>
           {bookedServices.slice(0, 4).map((service) => <button type="button" key={service.id} className="block w-full rounded-lg border p-2 text-left text-xs hover:bg-secondary" onClick={() => setSelectedServiceId(service.id)}>
             <span className="font-medium">{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"}</span> · {new Date(service.startAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</button>)}</section>}
 
-        <section className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Кратко о госте</p>
-          <p className="text-xs">{guest.staysCount > 0 ? `Повторный гость · ${guest.staysCount} проживаний` : "Первый визит"}{guest.language ? ` · ${guest.language}` : ""}</p>
-          {guest.preferences.roomPreference && <p className="text-xs text-muted-foreground">Предпочитает: {guest.preferences.roomPreference}</p>}
-          {guest.phone && <p className="text-xs text-muted-foreground">{guest.phone}</p>}
-          {!reservation && <Button size="sm" variant="outline" className="w-full" onClick={() => setQuickReservationOpen(true)}>+ Добавить проживание</Button>}
-          <Link to={`/guests/${guest.id}`} className="inline-flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline">Открыть профиль <ArrowRight className="h-3 w-3" /></Link>
-        </section>
+        {!reservation && <Button size="sm" variant="outline" className="w-full" onClick={() => setQuickReservationOpen(true)}>+ Добавить проживание</Button>}
 
         <section className="space-y-2 border-t border-border pt-3">
           <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ответственный за диалог</Label>
@@ -438,12 +435,13 @@ const Inbox = () => {
               const mode = conversation.automationMode ?? "human";
               const ownerLabel = mode === "ai" ? "ИИ отвечает" : mode === "needs_human" ? "Нужен сотрудник" : "Сотрудник отвечает";
               return <button key={conversation.id} type="button" onClick={() => setSelectedId(conversation.id)} className={cn("w-full border-l-[3px] px-3 py-3 text-left transition-colors", selected?.id === conversation.id ? "border-brand-500 bg-brand-50/60" : "border-transparent hover:bg-secondary/50")}>
-                <div className="flex items-center justify-between gap-2"><span className="flex min-w-0 items-center gap-2"><InitialsAvatar name={person?.fullName ?? "Гость"} size="sm" /><span className="truncate text-sm font-medium">{person?.fullName ?? "Гость"}</span></span><span className="shrink-0 text-[10px] text-muted-foreground">{formatRelative(conversation.lastMessageAt)}</span></div>
+                <div className="flex items-center justify-between gap-2"><span className="flex min-w-0 items-center gap-2">{linkedRequest?.requestLifecycle === "definite" && <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" title="Готов оплатить" />}<InitialsAvatar name={person?.fullName ?? "Гость"} size="sm" /><span className="truncate text-sm font-medium">{person?.fullName ?? "Гость"}</span></span><span className="shrink-0 text-[10px] text-muted-foreground">{formatRelative(conversation.lastMessageAt)}</span></div>
                 <p className="mt-1.5 line-clamp-1 text-xs text-muted-foreground">{last?.text}</p>
                 <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10px]">
                   <span className="shrink-0 text-muted-foreground">{channelLabels[conversation.channel]}</span><span className="text-muted-foreground">·</span>
                   <span className={cn("truncate font-medium", label === "needs_answer" ? "text-amber-700" : label === "closed" ? "text-muted-foreground" : "text-emerald-700")}>{conversationQueueLabel[label]}</span>
                   <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 font-medium", mode === "ai" ? "bg-sky-100 text-sky-800" : mode === "needs_human" ? "bg-amber-100 text-amber-900" : "bg-secondary text-muted-foreground")}>{ownerLabel}</span>
+                  {linkedRequest?.requestLifecycle === "definite" && <span className="shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 font-semibold text-emerald-800">Готов оплатить · {formatTenge(linkedRequest.totalAmount)}</span>}
                   {conversation.unreadCount > 0 && <span className="ml-auto h-2 w-2 shrink-0 rounded-full bg-brand-500" title="Непрочитано" />}
                 </div>
                 {(linkedRequest || linkedReservation) && <p className="mt-1 truncate text-[10px] text-muted-foreground">{linkedReservation ? `Бронь ${linkedReservation.code}` : `${linkedRequest?.code} · ${linkedRequest?.roomType ?? "Проживание"} · ${formatStayRange(linkedRequest?.checkIn ?? "", linkedRequest?.checkOut ?? "")}`}</p>}
@@ -456,7 +454,7 @@ const Inbox = () => {
 
         {selected && guest ? <section className="flex min-h-[460px] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card xl:min-h-0">
           <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
-            <div className="min-w-0"><p className="truncate text-sm font-semibold">{guest.fullName}</p><p className="text-xs text-muted-foreground">{channelLabels[selected.channel]} · {propertyById(selected.propertyId)?.shortName ?? selected.propertyId} · {conversationQueueLabel[conversationQueueState(selected)]} · {automationMode === "ai" ? "ИИ отвечает" : automationMode === "needs_human" ? "Нужен сотрудник" : "Сотрудник отвечает"}</p></div>
+            <div className="min-w-0"><div className="flex items-center gap-2"><button type="button" onClick={() => setRecognitionOpen(true)} className="truncate text-left text-sm font-semibold hover:text-brand-700 hover:underline">{guest.fullName}</button>{request?.requestLifecycle === "definite" && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">Готов оплатить</span>}</div><p className="text-xs text-muted-foreground">{channelLabels[selected.channel]} · {propertyById(selected.propertyId)?.shortName ?? selected.propertyId} · {conversationQueueLabel[conversationQueueState(selected)]} · {automationMode === "ai" ? "ИИ отвечает" : automationMode === "needs_human" ? "Нужен сотрудник" : "Сотрудник отвечает"}</p></div>
             <div className="flex items-center gap-2">
               {automationMode === "human" && selected.assigneeId === currentEmployee.id ? <Button size="sm" variant="outline" onClick={() => void changeAutomationMode()}>Вернуть ИИ</Button>
                 : <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void changeAutomationMode()}><UserPlus className="h-3.5 w-3.5" />Взять диалог</Button>}
@@ -492,6 +490,7 @@ const Inbox = () => {
         initialPropertyId={selected?.propertyId ?? guest.preferredPropertyId} />}
       {reservation && <GuestRequestDialog reservationId={reservation.id} open={requestOpen} onOpenChange={setRequestOpen} />}
       <ServiceReservationDialog serviceId={selectedServiceId} onOpenChange={(open) => { if (!open) setSelectedServiceId(undefined); }} />
+      <GuestRecognitionDialog guestId={recognitionOpen ? guest?.id ?? null : null} onOpenChange={setRecognitionOpen} />
     </div>
   );
 };

@@ -2,43 +2,46 @@ import { eq } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 
-type OutboundConfig = { webhookUrl?: string; webhookToken?: string };
+type OutboundConfig = { webhookUrl?: string; webhookToken?: string; whatsappWebhookUrl?: string; whatsappWebhookToken?: string };
 
 /** Sends a durable CRM message through n8n and records only confirmed delivery. */
-export const dispatchTelegramMessage = async (db: Pick<Database, "select" | "update">,
+export const sendConversationMessage = async (db: Pick<Database, "select" | "update">,
   messageId: string, config: OutboundConfig) => {
   const [message] = await db.select().from(s.messages).where(eq(s.messages.id, messageId)).limit(1);
   if (!message) return { sent: false, code: "MESSAGE_NOT_FOUND", error: "Сообщение не найдено" };
   const [conversation] = await db.select().from(s.conversations)
     .where(eq(s.conversations.id, message.conversationId)).limit(1);
-  if (!conversation || conversation.channel !== "telegram" || !conversation.externalChatId) {
-    const error = "Для диалога не настроен Telegram chat id";
+  if (message.deliveryStatus === "sent" && message.externalMessageId) return { sent: true, externalMessageId: message.externalMessageId };
+  if (!conversation || !["telegram", "whatsapp"].includes(conversation.channel) || !conversation.externalChatId) {
+    const error = "Канал не поддерживает отправку или не указан внешний chat id";
     await db.update(s.messages).set({ deliveryStatus: "failed", metadata: { ...message.metadata, deliveryError: error } })
       .where(eq(s.messages.id, message.id));
     return { sent: false, error };
   }
-  if (!config.webhookUrl) {
-    const error = "Не настроен AGENT_OUTBOUND_WEBHOOK_URL";
+  const webhookUrl = conversation.channel === "whatsapp" ? config.whatsappWebhookUrl : config.webhookUrl;
+  const webhookToken = conversation.channel === "whatsapp" ? config.whatsappWebhookToken : config.webhookToken;
+  if (!webhookUrl) {
+    const error = `Не настроен outbound webhook для ${conversation.channel}`;
     await db.update(s.messages).set({ deliveryStatus: "failed", metadata: { ...message.metadata, deliveryError: error } })
       .where(eq(s.messages.id, message.id));
     return { sent: false, error };
   }
-  if (!config.webhookToken) {
-    const error = "Не настроен AGENT_OUTBOUND_WEBHOOK_TOKEN";
+  if (!webhookToken) {
+    const error = `Не настроен outbound token для ${conversation.channel}`;
     await db.update(s.messages).set({ deliveryStatus: "failed", metadata: { ...message.metadata, deliveryError: error } })
       .where(eq(s.messages.id, message.id));
     return { sent: false, error };
   }
 
   const payload = {
-    event: "guestra.telegram.send_message", idempotencyKey: `crm-message:${message.id}`,
+    event: `guestra.${conversation.channel}.send_message`, idempotencyKey: `crm-message:${message.id}`,
     messageId: message.id, conversationId: conversation.id, propertyId: conversation.propertyId,
-    channel: "telegram", externalChatId: conversation.externalChatId,
+    channel: conversation.channel, externalChatId: conversation.externalChatId,
     text: message.text, senderType: message.senderType,
   };
   try {
-    const response = await fetch(config.webhookUrl, {
-      method: "POST", headers: { "content-type": "application/json", "x-agent-webhook-token": config.webhookToken },
+    const response = await fetch(webhookUrl, {
+      method: "POST", headers: { "content-type": "application/json", "x-agent-webhook-token": webhookToken },
       body: JSON.stringify(payload), signal: AbortSignal.timeout(12_000),
     });
     const body = await response.json().catch(() => ({})) as { ok?: boolean; externalMessageId?: string; error?: string };
@@ -60,3 +63,6 @@ export const dispatchTelegramMessage = async (db: Pick<Database, "select" | "upd
     return { sent: false, error: messageText };
   }
 };
+
+/** Kept for existing Agent API callers while CRM actions use the channel router. */
+export const dispatchTelegramMessage = sendConversationMessage;

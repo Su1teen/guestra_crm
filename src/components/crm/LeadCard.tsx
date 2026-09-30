@@ -3,7 +3,7 @@ import type { Lead } from "@/types/crm";
 import { StatusPill } from "@/components/common/StatusPill";
 import { InitialsAvatar } from "@/components/common/Identity";
 import { formatDueDate, formatRelative, formatStayRange, formatTenge, occupancyLabel } from "@/lib/format";
-import { directionLabels, intentLabels, intentTone, sourceLabels } from "@/lib/labels";
+import { directionLabels, sourceLabels } from "@/lib/labels";
 import { useCrm } from "@/store/crm-store";
 import { cn } from "@/lib/utils";
 
@@ -49,10 +49,16 @@ export const LeadCard = ({ lead, onOpen, draggable, onDragStart, className }: Le
             </p>
           </div>
         </div>
-        <StatusPill tone={intentTone[lead.intent]}>{intentLabels[lead.intent]}</StatusPill>
+        <StatusPill tone={lead.requestLifecycle === "definite" || lead.requestLifecycle === "won" ? "success" : lead.requestLifecycle === "tentative" ? "warning" : lead.requestLifecycle === "lost" ? "danger" : "neutral"}>
+          {({ enquire: "Уточняет", tentative: "Клиент думает", definite: "Готов оплатить", won: "Бронь подтверждена", lost: "Отказ", closed: "Закрыто" } as Record<string, string>)[lead.requestLifecycle ?? "enquire"] ?? "Уточняет"}
+        </StatusPill>
       </div>
 
       <p className="mt-2.5 text-[13px] font-medium text-foreground">{propertyName(lead.propertyId)}</p>
+      {lead.requestLifecycle === "definite" && <p className="mt-1 text-xs font-medium text-emerald-800">Стоимость {formatTenge(lead.totalAmount)} · предоплата {formatTenge(lead.deposit)}</p>}
+      {lead.requestLifecycle === "tentative" && <p className="mt-1 text-xs font-medium text-amber-800">Follow-up: {lead.nextActionDueAt ? formatDueDate(lead.nextActionDueAt) : "назначьте срок"}</p>}
+      {(!lead.requestLifecycle || lead.requestLifecycle === "enquire") && lead.classification?.missingData?.length > 0 &&
+        <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">Уточнить: {lead.classification.missingData.join(", ")}</p>}
 
       <div className="mt-1.5 space-y-1 text-xs text-muted-foreground">
         {(lead.checkIn || (lead.items && lead.items[0]?.startAt)) && (

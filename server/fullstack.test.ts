@@ -50,7 +50,7 @@ beforeAll(async () => {
   for (const statement of migration2.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
     await client.exec(statement);
   }
-  for (const name of ["0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey", "0006_task_context_and_followup_queue", "0007_service_resource_availability", "0008_stay_activity_context", "0009_agent_gateway", "0010_agent_contract_hardening"]) {
+  for (const name of ["0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey", "0006_task_context_and_followup_queue", "0007_service_resource_availability", "0008_stay_activity_context", "0009_agent_gateway", "0010_agent_contract_hardening", "0011_les_borovoe_timezone", "0012_hospitality_lifecycle_alerts_and_folio_documents", "0013_commercial_payment_and_communications"]) {
     const migration = await readFile(new URL(`../drizzle/${name}.sql`, import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) await client.exec(statement);
   }
@@ -62,7 +62,7 @@ beforeAll(async () => {
 describe("database migrations", () => {
   it("orders and applies the resort journey migration after the initial schema", async () => {
     const migrations = readMigrationFiles({ migrationsFolder: "drizzle" });
-    expect(migrations).toHaveLength(11);
+    expect(migrations).toHaveLength(14);
     expect(migrations[1].folderMillis).toBeGreaterThan(migrations[0].folderMillis);
     expect(migrations[2].folderMillis).toBeGreaterThan(migrations[1].folderMillis);
     expect(migrations[3].folderMillis).toBeGreaterThan(migrations[2].folderMillis);
@@ -286,7 +286,7 @@ describe("service resource scheduling", () => {
   it("automatically links a service booked inside a guest's unique stay and posts it to that folio", async () => {
     const agent = await admin();
     const created = await agent.post("/api/crm/reservations").send({ guestId: base.customerId, propertyId: base.propertyId,
-      arrivalAt: "2027-10-20T06:00:00.000Z", departureAt: "2027-10-22T06:00:00.000Z", roomType: "Sky House",
+      arrivalAt: "2027-10-20T06:00:00.000Z", departureAt: "2027-10-22T06:00:00.000Z", roomType: "A-Frame",
       adults: 2, children: 0, totalAmount: 90000, depositRequired: 0 }).expect(201);
     const payload = { ...base, catalogItemId: "svc_spa_visit", startAt: "2027-10-20T07:00:00.000Z",
       idempotencyKey: "TEST-AUTO-STAY-SPA" };
@@ -305,7 +305,7 @@ describe("service resource scheduling", () => {
       startAt: "2027-10-10T07:00:00.000Z", idempotencyKey: "TEST-LINK-SPA" }).expect(201);
     const sourceFolioId = service.body.service.folioId;
     const created = await agent.post("/api/crm/reservations").send({ guestId: base.customerId, propertyId: base.propertyId,
-      arrivalAt: "2027-10-10T10:00:00.000Z", departureAt: "2027-10-12T07:00:00.000Z", roomType: "Sky House",
+      arrivalAt: "2027-10-10T10:00:00.000Z", departureAt: "2027-10-12T07:00:00.000Z", roomType: "A-Frame",
       adults: 2, children: 0, totalAmount: 180000, depositRequired: 0 }).expect(201);
     const linked = await agent.post(`/api/crm/service-reservations/${service.body.service.id}/link-reservation`)
       .send({ reservationId: created.body.reservationId, mergeFolio: true }).expect(201);
@@ -518,8 +518,8 @@ describe("manual resort leads", () => {
     await db.insert(s.leads).values({ id: "lead_quick_booking_test", code: "G-QUICK-BOOKING",
       guestId: "guest_live_1", propertyId: "les_borovoe", source: "phone", stage: "new",
       requestStatus: "new", ownerId: "emp_admin", lastActivityAt: "2026-09-25T10:00:00.000Z" });
-    const moved = await agent.patch("/api/crm/requests/lead_quick_booking_test/status").send({ status: "waiting_customer" }).expect(200);
-    expect(moved.body).toMatchObject({ stage: "new", requestStatus: "waiting_customer" });
+    const moved = await agent.patch("/api/crm/requests/lead_quick_booking_test/status").send({ status: "tentative" }).expect(200);
+    expect(moved.body).toMatchObject({ stage: "new", requestLifecycle: "tentative" });
     const input = { arrivalAt: "2027-05-10T10:00:00.000Z", departureAt: "2027-05-12T07:00:00.000Z",
       roomType: "Sky House", roomId: "room_live_b01", adults: 2, children: 1,
       totalAmount: 180000, depositRequired: 90000 };
@@ -531,14 +531,93 @@ describe("manual resort leads", () => {
     const [folio] = await db.select().from(s.folios).where(eq(s.folios.reservationId, reservation.id));
     const allocations = await db.select().from(s.reservationUnits).where(eq(s.reservationUnits.reservationId, reservation.id));
     const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, "lead_quick_booking_test"));
-    expect(reservation).toMatchObject({ status: "confirmed", bookerCustomerId: "guest_live_1" });
+    expect(reservation).toMatchObject({ status: "pending_payment", bookerCustomerId: "guest_live_1" });
     expect(stay).toMatchObject({ operationalStatus: "upcoming", actualCheckIn: null });
     expect(folio).toMatchObject({ totalAmount: 180000, depositRequired: 90000 });
     expect(stay.amount).toBe(180000);
     expect(allocations).toHaveLength(1);
-    expect(lead).toMatchObject({ stage: "confirmed", requestStatus: "won", totalAmount: 180000,
+    expect(lead).toMatchObject({ stage: "payment_pending", requestLifecycle: "definite", totalAmount: 180000,
       deposit: 90000, paymentStatus: "awaiting" });
-    await agent.patch("/api/crm/requests/lead_quick_booking_test/status").send({ status: "active" }).expect(409);
+    expect(await db.select().from(s.paymentRequests).where(eq(s.paymentRequests.reservationId, reservation.id))).toHaveLength(1);
+  });
+
+  it("sends a payment request, records money once, confirms the hold and plans reminders", async () => {
+    const agent = await admin();
+    await db.insert(s.leads).values({ id: "lead_payment_journey_test", code: "G-PAY-JOURNEY",
+      guestId: "guest_live_1", propertyId: "les_borovoe", source: "telegram", stage: "new",
+      ownerId: "emp_admin", lastActivityAt: "2026-09-25T10:00:00.000Z" });
+    await db.insert(s.conversations).values({ id: "conversation_payment_journey_test", guestId: "guest_live_1",
+      leadId: "lead_payment_journey_test", propertyId: "les_borovoe", channel: "telegram", externalChatId: "test-chat-payment",
+      status: "open", automationMode: "ai", lastMessageAt: "2026-09-25T10:00:00.000Z" });
+    await agent.patch("/api/crm/requests/lead_payment_journey_test/status").send({ status: "definite" }).expect(200);
+    const [handoff] = await db.select().from(s.conversations).where(eq(s.conversations.id, "conversation_payment_journey_test"));
+    expect(handoff).toMatchObject({ automationMode: "needs_human", handoffReasonCode: "payment_ready" });
+    const booked = await agent.post("/api/crm/requests/lead_payment_journey_test/reservation").send({
+      arrivalAt: "2028-06-10T10:00:00.000Z", departureAt: "2028-06-12T07:00:00.000Z",
+      roomType: "Sky House", roomId: "room_live_b01", adults: 2, children: 0,
+      totalAmount: 200000, depositRequired: 100000,
+    }).expect(201);
+    const [paymentRequest] = await db.select().from(s.paymentRequests).where(eq(s.paymentRequests.leadId, "lead_payment_journey_test"));
+    expect(paymentRequest).toMatchObject({ status: "draft", amount: 100000 });
+    expect((await db.select().from(s.reservations).where(eq(s.reservations.id, booked.body.reservationId)))[0].status).toBe("pending_payment");
+    const oldUrl = config.AGENT_OUTBOUND_WEBHOOK_URL;
+    config.AGENT_OUTBOUND_WEBHOOK_URL = "https://example.test/outbound";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200,
+      json: async () => ({ ok: true, externalMessageId: "provider-payment-1" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await agent.post(`/api/crm/payment-requests/${paymentRequest.id}/send`).send({
+        method: "card_link", paymentUrl: "https://example.test/pay/1" }).expect(200);
+      expect((await db.select().from(s.paymentRequests).where(eq(s.paymentRequests.id, paymentRequest.id)))[0].status).toBe("sent");
+      await agent.post(`/api/crm/payment-requests/${paymentRequest.id}/received`).send({ method: "card", reference: "PAY-1" }).expect(200);
+      const duplicate = await agent.post(`/api/crm/payment-requests/${paymentRequest.id}/received`).send({ method: "card", reference: "PAY-1" }).expect(200);
+      expect(duplicate.body.duplicate).toBe(true);
+    } finally { config.AGENT_OUTBOUND_WEBHOOK_URL = oldUrl; vi.unstubAllGlobals(); }
+    const [reservation] = await db.select().from(s.reservations).where(eq(s.reservations.id, booked.body.reservationId));
+    const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, "lead_payment_journey_test"));
+    expect(reservation.status).toBe("confirmed");
+    expect(lead.requestLifecycle).toBe("won");
+    expect(await db.select().from(s.guestPayments).where(eq(s.guestPayments.reference, "PAY-1"))).toHaveLength(1);
+    expect(await db.select().from(s.scheduledOutboundMessages).where(eq(s.scheduledOutboundMessages.reservationId, reservation.id))).toHaveLength(2);
+    await agent.patch(`/api/crm/reservations/${reservation.id}`).send({ arrivalAt: "2028-06-13T10:00:00.000Z",
+      departureAt: "2028-06-15T07:00:00.000Z" }).expect(200);
+    const rescheduled = await db.select().from(s.scheduledOutboundMessages).where(eq(s.scheduledOutboundMessages.reservationId, reservation.id));
+    expect(rescheduled.filter((job) => job.status === "cancelled")).toHaveLength(2);
+    expect(rescheduled.filter((job) => job.status === "pending")).toHaveLength(2);
+    await agent.patch(`/api/crm/reservations/${reservation.id}`).send({ status: "cancelled" }).expect(200);
+    expect((await db.select().from(s.scheduledOutboundMessages).where(eq(s.scheduledOutboundMessages.reservationId, reservation.id)))
+      .every((job) => job.status === "cancelled")).toBe(true);
+  });
+
+  it("previews and sends a tentative WhatsApp follow-up only after a staff click", async () => {
+    const agent = await admin();
+    await db.insert(s.leads).values({ id: "lead_followup_journey_test", code: "G-FOLLOW-JOURNEY",
+      guestId: "guest_live_1", propertyId: "les_borovoe", source: "whatsapp", stage: "offer",
+      ownerId: "emp_admin", lastActivityAt: "2026-09-25T10:00:00.000Z", roomType: "Sky House",
+      totalAmount: 180000 });
+    await db.insert(s.conversations).values({ id: "conversation_followup_journey_test", guestId: "guest_live_1",
+      leadId: "lead_followup_journey_test", propertyId: "les_borovoe", channel: "whatsapp", externalChatId: "wa-chat-1",
+      status: "pending", automationMode: "ai", lastMessageAt: "2026-09-25T10:00:00.000Z" });
+    await agent.patch("/api/crm/requests/lead_followup_journey_test/status").send({ status: "tentative",
+      reason: "Гость посоветуется с семьёй", dueAt: "2028-06-01T10:00:00.000Z" }).expect(200);
+    const [followUp] = await db.select().from(s.followUps).where(eq(s.followUps.leadId, "lead_followup_journey_test"));
+    expect(followUp.status).toBe("open");
+    expect((await agent.get(`/api/crm/follow-ups/${followUp.id}/preview`).expect(200)).body.text).toContain("Sky House");
+    const oldUrl = config.WHATSAPP_OUTBOUND_WEBHOOK_URL;
+    const oldToken = config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN;
+    config.WHATSAPP_OUTBOUND_WEBHOOK_URL = "https://example.test/whatsapp";
+    config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN = "test-whatsapp-webhook-token";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200,
+      json: async () => ({ ok: true, externalMessageId: "wa-external-1" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await agent.post(`/api/crm/follow-ups/${followUp.id}/send`).send({ text: "Здравствуйте! Ваше решение по поездке актуально?" }).expect(200);
+      await agent.post(`/api/crm/follow-ups/${followUp.id}/send`).send({ text: "Здравствуйте! Ваше решение по поездке актуально?" }).expect(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body).channel).toBe("whatsapp");
+    } finally { config.WHATSAPP_OUTBOUND_WEBHOOK_URL = oldUrl; config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN = oldToken; vi.unstubAllGlobals(); }
+    expect((await db.select().from(s.followUps).where(eq(s.followUps.id, followUp.id)))[0].status).toBe("done");
+    expect(await db.select().from(s.messages).where(eq(s.messages.idempotencyKey, `follow-up:${followUp.id}`))).toHaveLength(1);
   });
 
   it("allows a manager to advance with an explicit checklist override and records it", async () => {
@@ -597,16 +676,23 @@ describe("manual resort leads", () => {
     const arrivalAt = new Date(Date.now() + 20 * 86_400_000).toISOString();
     const departureAt = new Date(Date.now() + 22 * 86_400_000).toISOString();
     const response = await agent.post("/api/crm/reservations").send({ guestId: "guest_live_1",
-      propertyId: "les_borovoe", arrivalAt, departureAt, roomType: "Sky House", adults: 2, children: 1,
+      propertyId: "les_borovoe", arrivalAt, departureAt, roomType: "A-Frame", adults: 2, children: 0,
       totalAmount: 170000, depositRequired: 50000 }).expect(201);
     const [reservation] = await db.select().from(s.reservations).where(eq(s.reservations.id, response.body.reservationId));
     const [stay] = await db.select().from(s.guestStays).where(eq(s.guestStays.id, response.body.stayId));
     const [folio] = await db.select().from(s.folios).where(eq(s.folios.reservationId, reservation.id));
     const lines = await db.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
-    expect(reservation).toMatchObject({ status: "confirmed", bookerCustomerId: "guest_live_1", roomTypeSnapshot: "Sky House" });
-    expect(stay).toMatchObject({ reservationId: reservation.id, operationalStatus: "upcoming", roomId: null });
+    expect(reservation).toMatchObject({ status: "pending_payment", bookerCustomerId: "guest_live_1", roomTypeSnapshot: "A-Frame" });
+    expect(stay).toMatchObject({ reservationId: reservation.id, operationalStatus: "upcoming" });
+    expect(stay.roomId).toBeTruthy();
     expect(folio).toMatchObject({ reservationId: reservation.id, stayId: stay.id, totalAmount: 170000, depositRequired: 50000 });
     expect(lines).toHaveLength(1);
+    const [requestForPayment] = await db.select().from(s.paymentRequests).where(eq(s.paymentRequests.reservationId, reservation.id));
+    expect(requestForPayment).toMatchObject({ status: "draft", amount: 50000 });
+    await agent.post(`/api/crm/payment-requests/${requestForPayment.id}/received`)
+      .send({ method: "transfer", reference: "TEST-MANUAL-RECEIPT" }).expect(200);
+    expect((await db.select().from(s.reservations).where(eq(s.reservations.id, reservation.id)))[0].status).toBe("confirmed");
+    expect((await db.select().from(s.guestPayments).where(eq(s.guestPayments.reservationId, reservation.id)))).toHaveLength(1);
   });
 });
 
@@ -837,8 +923,10 @@ describe("operational guest journey", () => {
     const payment = await agent.post(`/api/crm/reservations/${reservation.id}/payments`).send({ amount: 10000, method: "card", reference: "OPS-PAY", comment: "Стойка" }).expect(201);
     expect(payment.body.folio).toMatchObject({ totalAmount: 60000, paidAmount: 10000, balance: 50000 });
     expect(await db.select().from(s.guestActivity).where(and(eq(s.guestActivity.stayId, "stay_operations_test"), eq(s.guestActivity.type, "payment")))).toHaveLength(1);
-    await agent.post(`/api/crm/reservations/${reservation.id}/check-out`).send({ acknowledgeBalance: true }).expect(409);
-    await agent.post(`/api/crm/reservations/${reservation.id}/check-out`).send({ acknowledgeBalance: true, acknowledgeOpenServices: true }).expect(200);
+    await agent.post(`/api/crm/reservations/${reservation.id}/check-out`).send({}).expect(409);
+    await agent.patch(`/api/crm/service-reservations/${included.body.service.id}`).send({ status: "cancelled" }).expect(200);
+    await agent.post(`/api/crm/reservations/${reservation.id}/payments`).send({ amount: 50000, method: "card", reference: "OPS-SETTLEMENT" }).expect(201);
+    await agent.post(`/api/crm/reservations/${reservation.id}/check-out`).send({}).expect(200);
     expect((await agent.post(`/api/crm/reservations/${reservation.id}/check-out`).send({}).expect(200)).body.duplicate).toBe(true);
     const [stay] = await db.select().from(s.guestStays).where(eq(s.guestStays.id, "stay_operations_test"));
     expect(stay.operationalStatus).toBe("checked_out");
@@ -1372,7 +1460,9 @@ describe("AI Guest Agent gateway", () => {
     expect(await db.select().from(s.reservationUnits).where(eq(s.reservationUnits.reservationId, booked.body.reservationId))).toHaveLength(1);
     const refreshed = await api("/context").send({ propertyId: "les_borovoe",
       externalUserId: agentContact.externalUserId, conversationId: inbound.body.context.conversation.id }).expect(200);
-    expect(refreshed.body.lifecycle).toBe("pre_arrival");
+    expect(refreshed.body.lifecycle).toBe("pending_payment");
+    expect((await db.select().from(s.paymentRequests).where(eq(s.paymentRequests.reservationId, booked.body.reservationId)))[0])
+      .toMatchObject({ status: "draft", amount: 100000 });
   });
 
   it("serializes competing category bookings for the last available unit", async () => {

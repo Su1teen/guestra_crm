@@ -221,6 +221,9 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
     { id: "les_astana", organizationId: "org_les_live", name: "ЛЕС Астана", shortName: "Астана", city: "Астана", roomTypes: ["Делюкс-номер", "Люкс"] },
   ]).onConflictDoNothing();
   await db.insert(s.propertyKnowledge).values([
+    { id: "knowledge_les_directions_2gis_ru", propertyId: "les_borovoe", topic: "directions_2gis",
+      title: "Как добраться · 2ГИС", content: "Маршрут и адрес в 2ГИС: https://2gis.kz/kokshetau/search/%D0%9A%D0%B0%D0%BD%D0%B0%D0%B9%20%D0%B1%D0%B8%20205%D0%91%20%D0%A9%D1%83%D1%87%D0%B8%D0%BD%D1%81%D0%BA",
+      tags: ["маршрут", "2ГИС", "адрес"], language: "ru", source: "https://2gis.kz/kokshetau/search/%D0%9A%D0%B0%D0%BD%D0%B0%D0%B9%20%D0%B1%D0%B8%20205%D0%91%20%D0%A9%D1%83%D1%87%D0%B8%D0%BD%D1%81%D0%BA" },
     { id: "knowledge_les_address_ru", propertyId: "les_borovoe", topic: "contacts.address",
       title: "Адрес курорта", content: "г. Щучинск, ул. Канай Би, 205Б. Телефон: +7 700 732 02 32.",
       tags: ["адрес", "контакты", "телефон"], language: "ru", source: "https://leshotelborovoe.kz/bajlanystar/" },

@@ -17,6 +17,7 @@ import { customerContext } from "@/lib/hospitality";
 import { CreateGuestDialog } from "@/components/crm/CreateGuestDialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { GuestRecognitionDialog } from "@/components/crm/GuestRecognitionDialog";
 
 const segmentOptions = [
   { value: "all", label: "Все сегменты" },
@@ -41,6 +42,7 @@ const Guests = () => {
   const [segment, setSegment] = useState("all");
   const [stays, setStays] = useState("all");
   const [newGuestOpen, setNewGuestOpen] = useState(false);
+  const [recognitionGuestId, setRecognitionGuestId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -186,7 +188,7 @@ const Guests = () => {
         columns={columns}
         rows={filtered}
         rowKey={(guest) => guest.id}
-        onRowClick={(guest) => navigate(`/guests/${guest.id}`)}
+        onRowClick={(guest) => setRecognitionGuestId(guest.id)}
         initialSort={{ key: "ltv", direction: "desc" }}
         emptyState={
           <EmptyState
@@ -197,6 +199,7 @@ const Guests = () => {
           />
         }
       />
+      <GuestRecognitionDialog guestId={recognitionGuestId} onOpenChange={(open) => !open && setRecognitionGuestId(null)} />
     </div>
   );
 };

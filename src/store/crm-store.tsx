@@ -482,10 +482,13 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     const stayId = `stay_quick_${suffix}`;
     const folioId = `folio_quick_${suffix}`;
     const code = `GUE-${Date.now().toString().slice(-6)}`;
+    const requiresPayment = input.depositRequired > 0;
     const nights = Math.max(1, Math.ceil((new Date(input.departureAt).getTime() - new Date(input.arrivalAt).getTime()) / 86_400_000));
     const reservation: Reservation = { id: reservationId, code, propertyId: input.propertyId as PropertyId, bookerCustomerId: guest.id,
-      roomTypeSnapshot: input.roomType, source: "phone", status: "confirmed", arrivalAt: input.arrivalAt, departureAt: input.departureAt,
-      adults: input.adults, children: input.children, currency: "KZT", confirmedAt: stamp, createdAt: stamp, updatedAt: stamp };
+      roomTypeSnapshot: input.roomType, source: "phone", status: requiresPayment ? "pending_payment" : "confirmed", arrivalAt: input.arrivalAt, departureAt: input.departureAt,
+      adults: input.adults, children: input.children, currency: "KZT", confirmedAt: requiresPayment ? undefined : stamp,
+      holdExpiresAt: requiresPayment ? new Date(Date.now() + 24 * 60 * 60_000).toISOString() : undefined,
+      createdAt: stamp, updatedAt: stamp };
     const lineTotal = input.totalAmount;
     const folio: Folio = { id: folioId, code: `F-${code}`, reservationId, stayId, guestId: guest.id, propertyId: input.propertyId,
       status: "open", currency: "KZT", subtotal: lineTotal, discountAmount: 0, totalAmount: lineTotal,
@@ -499,7 +502,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         arrivalAt: input.arrivalAt, departureAt: input.departureAt, status: "active", assignedAt: stamp }] : previous.reservationUnits,
       stays: [...previous.stays, { id: stayId, guestId: guest.id, propertyId: input.propertyId as PropertyId, reservationId,
         roomId: room?.id, roomType: input.roomType, checkIn: input.arrivalAt, checkOut: input.departureAt, nights,
-        adults: input.adults, children: input.children, amount: lineTotal, bookingReference: code, status: "confirmed",
+        adults: input.adults, children: input.children, amount: lineTotal, bookingReference: code, status: requiresPayment ? "pending_payment" : "confirmed",
         operationalStatus: "upcoming", serviceNames: [] }], folios: [folio, ...previous.folios] }));
     return reservationId;
   }, [data.guests, data.properties, data.reservations, data.reservationUnits, data.rooms, dataMode, persist]);

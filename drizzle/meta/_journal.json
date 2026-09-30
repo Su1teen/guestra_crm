@@ -92,6 +92,13 @@
       "when": 1790697600000,
       "tag": "0012_hospitality_lifecycle_alerts_and_folio_documents",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790784000000,
+      "tag": "0013_commercial_payment_and_communications",
+      "breakpoints": true
     }
   ]
 }

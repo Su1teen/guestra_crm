@@ -227,7 +227,7 @@ export interface GuestStay {
   children: number;
   amount: number;
   bookingReference: string;
-  status: "completed" | "confirmed" | "upcoming" | "in_house" | "cancelled" | "no_show";
+  status: "completed" | "confirmed" | "pending_payment" | "upcoming" | "in_house" | "cancelled" | "no_show";
   serviceNames: string[];
 }
 
@@ -392,6 +392,7 @@ export interface Reservation {
   externalReservationId?: string;
   externalConfirmationNumber?: string;
   confirmedAt?: string;
+  holdExpiresAt?: string;
   cancelledAt?: string;
   createdAt: string;
   updatedAt: string;
@@ -1218,6 +1219,7 @@ export interface CrmDataset {
   pmsSnapshots: PmsDailySnapshot[];
   serviceCatalog: ServiceCatalogEntry[];
   folios: Folio[];
+  scheduledOutboundMessages?: { id: string; reservationId: string; triggerType: string; scheduledAt: string; status: string }[];
 }
 import type { ServiceResourceGroup, ServiceResource, ServiceResourceRequirement, ServiceResourceAllocation, ServiceResourceBlock, ServiceBookingMode } from "@shared/service-availability";
 export type { ServiceResourceGroup, ServiceResource, ServiceResourceRequirement, ServiceResourceAllocation, ServiceResourceBlock, ServiceBookingMode } from "@shared/service-availability";

@@ -1971,18 +1971,32 @@ const sultanGuest: Guest = {
   firstName: "Султан",
   lastName: "Советов",
   fullName: "Султан Советов",
-  phone: null,
-  email: null,
+  phone: "+7 777 123 45 67",
+  email: "sultan@example.com",
   normalizedPhone: null,
   normalizedEmail: null,
-  profileStatus: "stub",
-  staysCount: 0,
-  propertyIds: [],
+  profileStatus: "active",
+  staysCount: 1,
+  propertyIds: ["les_borovoe"],
   preferredPropertyId: "les_borovoe",
-  lifetimeValue: 0,
+  lifetimeValue: 420000,
+  lastStayDate: demoAt(-42, "12:00"),
   createdAt: minutesAgo(14),
 };
 guests.push(sultanGuest);
+stays.push({ id: "stay_sultan_previous", guestId: sultanGuest.id, propertyId: "les_borovoe",
+  roomType: "A-Frame", checkIn: demoAt(-44, "15:00"), checkOut: demoAt(-42, "12:00"),
+  nights: 2, adults: 2, children: 0, amount: 420000, bookingReference: "GUE-SULTAN-PAST",
+  status: "completed", operationalStatus: "checked_out", serviceNames: [] });
+notes.push({ id: "note_sultan_alert", guestId: sultanGuest.id, authorId: employees[0].id,
+  createdAt: demoAt(-5, "10:00"), text: "Предпочитает тихий домик у леса. Согласована персональная скидка 15% при повторном визите.",
+  propertyId: "les_borovoe", priority: "important", pinned: true, alert: true,
+  validUntil: demoAt(60, "23:00"), displayAreas: ["desk", "reservation", "profile"] });
+demoReservations.push({ id: "reservation_sultan_future", code: "GUE-SULTAN-FUTURE", propertyId: "les_borovoe",
+  bookerCustomerId: sultanGuest.id, roomTypeSnapshot: "A-Frame", source: "demo", status: "confirmed",
+  arrivalAt: demoAt(12, "15:00"), departureAt: demoAt(15, "12:00"), adults: 2, children: 0,
+  currency: "KZT", externalConfirmationNumber: "GUE-SULTAN-FUTURE", confirmedAt: demoAt(-1, "12:00"),
+  createdAt: demoAt(-1, "12:00"), updatedAt: demoAt(-1, "12:00") });
 const sultanConversationId = "conv_sultan_sovetov";
 const sultanConversationTime = minutesAgo(2);
 const sultanConversationBase = conversations[0];
@@ -2027,6 +2041,51 @@ const demoConversations = conversations.map((conversation) => {
     } : {}),
   };
 });
+// Stable commercial examples for the local demo. Production state is stored by the API.
+const demoCommercialCandidates = demoConversations.map((conversation): { conversation: Conversation; lead: Lead | undefined } => ({ conversation,
+  lead: leads.find((item) => item.id === conversation.leadId) }))
+  .filter((item): item is { conversation: Conversation; lead: Lead } => Boolean(item.lead &&
+    !["confirmed", "completed", "lost", "cancelled"].includes(item.lead.stage)));
+const demoEnquire = demoCommercialCandidates.find((item) => ["new", "qualified"].includes(item.lead.stage));
+const demoTentative = demoCommercialCandidates.find((item) => item.lead.id !== demoEnquire?.lead.id &&
+  ["planning", "offer"].includes(item.lead.stage));
+const demoDefinite = demoCommercialCandidates.find((item) => ![demoEnquire?.lead.id, demoTentative?.lead.id].includes(item.lead.id) &&
+  ["planning", "offer", "payment_pending"].includes(item.lead.stage));
+const demoPending = demoCommercialCandidates.find((item) => ![demoEnquire?.lead.id, demoTentative?.lead.id,
+  demoDefinite?.lead.id].includes(item.lead.id) && item.lead.stage === "payment_pending");
+if (demoEnquire) {
+  demoEnquire.lead.requestLifecycle = "enquire";
+  demoEnquire.lead.classification.quality = "needs_qualification";
+}
+if (demoTentative) {
+  demoTentative.lead.requestLifecycle = "tentative";
+  demoTentative.lead.nextActionLabel = "Отправить follow-up";
+  demoTentative.lead.nextActionDueAt = demoAt(0, "10:00");
+  followUps.push({ id: `followup_demo_tentative_${demoTentative.lead.id}`, leadId: demoTentative.lead.id,
+    guestId: demoTentative.lead.guestId, propertyId: demoTentative.lead.propertyId, channel: demoTentative.conversation.channel,
+    direction: demoTentative.lead.classification.direction, reason: "callback_later", queue: "today",
+    status: "open", stage: demoTentative.lead.stage, temperature: demoTentative.lead.intent,
+    potentialAmount: demoTentative.lead.totalAmount, dueAt: demoAt(0, "10:00"), createdAt: demoAt(-1, "17:00"),
+    ownerId: demoTentative.lead.ownerId, context: demoTentative.lead.roomType ?? "Предложение",
+    recommendedAction: "Отправить follow-up" });
+}
+if (demoDefinite) {
+  demoDefinite.lead.requestLifecycle = "definite";
+  demoDefinite.lead.totalAmount = Math.max(demoDefinite.lead.totalAmount, 480000);
+  demoDefinite.lead.deposit = Math.round(demoDefinite.lead.totalAmount / 2);
+  demoDefinite.conversation.automationMode = "needs_human";
+  demoDefinite.conversation.handoffReasonCode = "payment_ready";
+  demoDefinite.conversation.requestedAction = "Отправить счёт или ссылку на оплату";
+}
+if (demoPending) {
+  demoPending.lead.requestLifecycle = "definite";
+  demoPending.lead.paymentStatus = "awaiting";
+  demoPending.lead.deposit = Math.round(Math.max(demoPending.lead.totalAmount, 400000) / 2);
+  const linked = demoReservations.find((item) => item.requestId === demoPending.lead.id);
+  if (linked) { linked.status = "pending_payment"; linked.confirmedAt = undefined; linked.holdExpiresAt = demoAt(1, "18:00"); }
+  demoPending.conversation.handoffReasonCode = "payment_ready";
+  demoPending.conversation.automationMode = "needs_human";
+}
 const legacyFollowUpTasks: Task[] = followUps.filter((followUp) =>
   !tasks.some((task) => task.type === "follow_up" && task.leadId === followUp.leadId && task.guestId === followUp.guestId),
 ).map((followUp) => ({
@@ -2094,6 +2153,10 @@ export const crmDataset: CrmDataset = {
   serviceCatalog: mockServiceCatalog,
   // Mock-режим синтезирует folio из lead.items/payments на лету (src/lib/journey.ts)
   folios: [],
+  scheduledOutboundMessages: [
+    { id: "demo_sultan_t3", reservationId: "reservation_sultan_future", triggerType: "pre_arrival_3d", scheduledAt: demoAt(9, "15:00"), status: "pending" },
+    { id: "demo_sultan_t1", reservationId: "reservation_sultan_future", triggerType: "pre_arrival_1d", scheduledAt: demoAt(11, "15:00"), status: "pending" },
+  ],
 };
 
 export const findGuest = guestById;

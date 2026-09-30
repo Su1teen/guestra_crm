@@ -2,19 +2,31 @@
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS request_lifecycle text NOT NULL DEFAULT 'enquire';
 --> statement-breakpoint
 ALTER TABLE guest_notes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;
+--> statement-breakpoint
 ALTER TABLE guest_notes ADD COLUMN IF NOT EXISTS priority text NOT NULL DEFAULT 'normal';
+--> statement-breakpoint
 ALTER TABLE guest_notes ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false;
+--> statement-breakpoint
 ALTER TABLE guest_notes ADD COLUMN IF NOT EXISTS alert boolean NOT NULL DEFAULT false;
+--> statement-breakpoint
 ALTER TABLE guest_notes ADD COLUMN IF NOT EXISTS valid_from timestamptz;
+--> statement-breakpoint
 ALTER TABLE guest_notes ADD COLUMN IF NOT EXISTS valid_until timestamptz;
+--> statement-breakpoint
 ALTER TABLE guest_notes ADD COLUMN IF NOT EXISTS display_areas jsonb NOT NULL DEFAULT '[]'::jsonb;
 --> statement-breakpoint
 ALTER TABLE reservation_notes ADD COLUMN IF NOT EXISTS property_id text REFERENCES properties(id) ON DELETE SET NULL;
+--> statement-breakpoint
 ALTER TABLE reservation_notes ADD COLUMN IF NOT EXISTS priority text NOT NULL DEFAULT 'normal';
+--> statement-breakpoint
 ALTER TABLE reservation_notes ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false;
+--> statement-breakpoint
 ALTER TABLE reservation_notes ADD COLUMN IF NOT EXISTS alert boolean NOT NULL DEFAULT false;
+--> statement-breakpoint
 ALTER TABLE reservation_notes ADD COLUMN IF NOT EXISTS valid_from timestamptz;
+--> statement-breakpoint
 ALTER TABLE reservation_notes ADD COLUMN IF NOT EXISTS valid_until timestamptz;
+--> statement-breakpoint
 ALTER TABLE reservation_notes ADD COLUMN IF NOT EXISTS display_areas jsonb NOT NULL DEFAULT '[]'::jsonb;
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS request_lifecycle_history (
@@ -22,14 +34,18 @@ CREATE TABLE IF NOT EXISTS request_lifecycle_history (
   from_status text, to_status text NOT NULL, employee_id text REFERENCES employees(id) ON DELETE SET NULL,
   source text NOT NULL DEFAULT 'manual', reason text, changed_at timestamptz NOT NULL
 );
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS request_lifecycle_history_lead_idx ON request_lifecycle_history(lead_id, changed_at);
 --> statement-breakpoint
 ALTER TABLE folios ADD COLUMN IF NOT EXISTS final_version integer NOT NULL DEFAULT 0;
+--> statement-breakpoint
 ALTER TABLE folios ADD COLUMN IF NOT EXISTS finalised_at timestamptz;
+--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS folio_documents (
   id text PRIMARY KEY, folio_id text NOT NULL REFERENCES folios(id) ON DELETE CASCADE,
   version integer NOT NULL, kind text NOT NULL, snapshot jsonb NOT NULL,
   created_by_employee_id text REFERENCES employees(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(folio_id, version)
 );
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS folio_documents_folio_idx ON folio_documents(folio_id);

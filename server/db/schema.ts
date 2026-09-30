@@ -573,6 +573,7 @@ export const reservations = pgTable("reservations", {
   externalConfirmationNumber: text("external_confirmation_number"),
   confirmedAt: timestamp("confirmed_at", { withTimezone: true, mode: "string" }),
   cancelledAt: timestamp("cancelled_at", { withTimezone: true, mode: "string" }),
+  holdExpiresAt: timestamp("hold_expires_at", { withTimezone: true, mode: "string" }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, (table) => [
@@ -1013,6 +1014,48 @@ export const folios = pgTable("folios", {
 ]);
 
 /** Render snapshots make an interim/final document reproducible after the live folio evolves. */
+export const paymentRequests = pgTable("payment_requests", {
+  id: text("id").primaryKey(),
+  leadId: text("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  reservationId: text("reservation_id").references(() => reservations.id, { onDelete: "set null" }),
+  folioId: text("folio_id").notNull().references(() => folios.id),
+  conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+  guestId: text("guest_id").notNull().references(() => guests.id),
+  amount: integer("amount").notNull(),
+  currency: text("currency").notNull().default("KZT"),
+  kind: text("kind").notNull(),
+  method: text("method").notNull(),
+  status: text("status").notNull().default("draft"),
+  paymentUrl: text("payment_url"),
+  externalProviderId: text("external_provider_id"),
+  expiresAt: timestamp("expires_at", { withTimezone: true, mode: "string" }),
+  sentAt: timestamp("sent_at", { withTimezone: true, mode: "string" }),
+  paidAt: timestamp("paid_at", { withTimezone: true, mode: "string" }),
+  createdBy: text("created_by").references(() => employees.id, { onDelete: "set null" }),
+  idempotencyKey: text("idempotency_key").notNull(),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [uniqueIndex("payment_requests_idempotency_uidx").on(table.idempotencyKey),
+  index("payment_requests_lead_status_idx").on(table.leadId, table.status),
+  index("payment_requests_reservation_idx").on(table.reservationId)]);
+
+export const scheduledOutboundMessages = pgTable("scheduled_outbound_messages", {
+  id: text("id").primaryKey(),
+  reservationId: text("reservation_id").notNull().references(() => reservations.id, { onDelete: "cascade" }),
+  conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+  guestId: text("guest_id").notNull().references(() => guests.id),
+  propertyId: text("property_id").notNull().references(() => properties.id),
+  triggerType: text("trigger_type").notNull(),
+  scheduledAt: timestamp("scheduled_at", { withTimezone: true, mode: "string" }).notNull(),
+  status: text("status").notNull().default("pending"),
+  templateKey: text("template_key").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true, mode: "string" }),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, (table) => [uniqueIndex("scheduled_outbound_idempotency_uidx").on(table.idempotencyKey),
+  index("scheduled_outbound_due_idx").on(table.status, table.scheduledAt),
+  index("scheduled_outbound_reservation_idx").on(table.reservationId)]);
+
 export const folioDocuments = pgTable("folio_documents", {
   id: text("id").primaryKey(),
   folioId: text("folio_id").notNull().references(() => folios.id, { onDelete: "cascade" }),

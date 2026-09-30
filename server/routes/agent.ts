@@ -457,6 +457,66 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
     response.status(result.duplicate ? 200 : result.created ? 201 : 200).json(result);
   });
 
+  router.post("/requests/lifecycle", async (request, response) => {
+    const input = z.object({ propertyId: z.string().min(1), externalUserId: z.string().min(1),
+      conversationId: z.string().min(1), requestId: z.string().min(1),
+      status: z.enum(["enquire", "tentative", "definite", "lost", "closed"]),
+      reason: z.string().trim().max(1000).optional(), dueAt: z.string().datetime().optional(),
+      idempotencyKey: z.string().min(8) }).parse(request.body);
+    if (["lost", "closed"].includes(input.status) && !input.reason) {
+      return writeError(response, 400, "Reason is required for terminal outcome", { code: "INVALID_OUTCOME" });
+    }
+    const identity = await identityFor(db, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found", { code: "IDENTITY_NOT_FOUND" });
+    const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM leads WHERE id = ${input.requestId} FOR UPDATE`);
+      const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.id, input.conversationId)).limit(1);
+      const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, input.requestId)).limit(1);
+      if (!conversation || !lead || lead.guestId !== identity.guestId || lead.propertyId !== input.propertyId ||
+        conversation.guestId !== identity.guestId || conversation.leadId !== lead.id) return { error: "Request not found", code: "REQUEST_NOT_FOUND" } as const;
+      const eventId = `lifecycle:${input.idempotencyKey}`;
+      const payloadHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      const [existing] = await tx.select().from(s.integrationEvents).where(and(eq(s.integrationEvents.provider, "agent"),
+        eq(s.integrationEvents.eventType, "request_lifecycle"), eq(s.integrationEvents.externalEventId, eventId))).limit(1);
+      if (existing) return existing.payloadHash === payloadHash ? { lead, duplicate: true } :
+        { error: "Idempotency key was reused for a different transition", code: "IDEMPOTENCY_CONFLICT" } as const;
+      if (conversation.automationMode !== "ai") return { error: "Conversation is owned by a human", code: "CONVERSATION_HUMAN_OWNED" } as const;
+      if (["won", "lost", "closed"].includes(lead.requestLifecycle)) return { error: "Request is closed", code: "REQUEST_CLOSED" } as const;
+      const timestamp = now();
+      const dueAt = input.status === "tentative" ? input.dueAt ?? new Date(Date.now() + 24 * 60 * 60_000).toISOString() : null;
+      const [updated] = await tx.update(s.leads).set({ requestLifecycle: input.status,
+        ...(dueAt ? { nextActionLabel: "Связаться с гостем после предложения", nextActionDueAt: dueAt } : {}),
+        ...(["definite", "lost", "closed"].includes(input.status) ? { nextActionLabel: null, nextActionDueAt: null } : {}),
+        ...(input.status === "lost" ? { lostReason: input.reason, requestStatus: "lost" } : {}),
+        ...(input.status === "closed" ? { requestStatus: "closed" } : {}),
+        lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id)).returning();
+      if (lead.requestLifecycle !== input.status) await tx.insert(s.requestLifecycleHistory).values({
+        id: id("request_lifecycle"), leadId: lead.id, fromStatus: lead.requestLifecycle,
+        toStatus: input.status, source: "agent", reason: input.reason ?? null, changedAt: timestamp });
+      if (input.status === "tentative") {
+        const [open] = await tx.select().from(s.followUps).where(and(eq(s.followUps.leadId, lead.id), eq(s.followUps.status, "open"))).limit(1);
+        if (open) await tx.update(s.followUps).set({ dueAt: dueAt!, updatedAt: timestamp }).where(eq(s.followUps.id, open.id));
+        else await tx.insert(s.followUps).values({ id: id("follow_up"), leadId: lead.id, guestId: lead.guestId,
+          propertyId: lead.propertyId, channel: conversation.channel, direction: "accommodation", reason: input.reason ?? "Гость думает",
+          queue: "today", status: "open", stage: lead.stage, temperature: lead.intent, potentialAmount: lead.totalAmount,
+          dueAt: dueAt!, ownerId: lead.ownerId, context: lead.roomType ?? "Предложение", recommendedAction: "Отправить follow-up",
+          createdAt: timestamp, updatedAt: timestamp });
+      }
+      if (input.status === "definite") await tx.update(s.conversations).set({ automationMode: "needs_human",
+        handoffReasonCode: "payment_ready", requestedAction: "Отправить счёт или ссылку на оплату", handoffPriority: "high",
+        handoffRequestedAt: timestamp, updatedAt: timestamp }).where(eq(s.conversations.id, conversation.id));
+      if (["definite", "lost", "closed"].includes(input.status)) await tx.update(s.followUps)
+        .set({ status: "done", queue: "done", completedAt: timestamp, updatedAt: timestamp })
+        .where(and(eq(s.followUps.leadId, lead.id), eq(s.followUps.status, "open")));
+      await tx.insert(s.integrationEvents).values({ id: id("event"), provider: "agent", eventType: "request_lifecycle",
+        externalEventId: eventId, payloadHash,
+        guestId: lead.guestId, leadId: lead.id });
+      return { lead: updated, duplicate: false };
+    });
+    if ("error" in result) return writeError(response, 409, result.error ?? "Lifecycle update failed", { code: result.code });
+    response.json({ requestId: result.lead.id, requestLifecycle: result.lead.requestLifecycle, duplicate: result.duplicate });
+  });
+
   router.post("/offers/create", async (request, response) => {
     const input = AgentOfferCreateSchema.parse(request.body);
     const identity = await identityFor(db, input.propertyId, input.externalUserId);

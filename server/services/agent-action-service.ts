@@ -27,7 +27,6 @@ export const executeConfirmedAgentAction = async <T extends Record<string, unkno
     eq(s.conversations.propertyId, input.propertyId), eq(s.conversations.channel, "telegram"),
   )).limit(1);
   if (!conversation) throw new AgentActionError("CONVERSATION_NOT_FOUND", "Conversation not found for this Telegram identity", 404);
-  if (conversation.automationMode !== "ai") throw new AgentActionError("CONVERSATION_HUMAN_OWNED", "Conversation is owned by a human");
   await tx.execute(sql`SELECT id FROM messages WHERE id = ${input.proposalMessageId} FOR UPDATE`);
   await tx.execute(sql`SELECT id FROM messages WHERE id = ${input.confirmationMessageId} FOR UPDATE`);
   const [proposal] = await tx.select().from(s.messages).where(and(
@@ -59,6 +58,9 @@ export const executeConfirmedAgentAction = async <T extends Record<string, unkno
     }
     return { result: prior.result as T, duplicate: true };
   }
+  // A payment-ready handoff pauses new AI actions, while an acknowledged retry
+  // must still return the result already committed before that handoff.
+  if (conversation.automationMode !== "ai") throw new AgentActionError("CONVERSATION_HUMAN_OWNED", "Conversation is owned by a human");
   const context = await getAgentContext(tx, conversation.id, input.customerId);
   if (!context || !context.allowedActions.includes(input.actionType)) {
     throw new AgentActionError("ACTION_NOT_ALLOWED", "Это действие недоступно для текущего состояния гостя", 409, false, true);

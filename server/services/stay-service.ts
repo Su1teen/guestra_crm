@@ -279,6 +279,7 @@ export const addStayPayment = async (tx: Tx, reservationId: string, input: {
   await tx.execute(sql`SELECT id FROM reservations WHERE id = ${reservationId} FOR UPDATE`);
   const [reservation] = await tx.select().from(s.reservations).where(eq(s.reservations.id, reservationId)).limit(1);
   if (!reservation) return null;
+  if (reservation.status === "pending_payment") throw new StayConflict("Для предоплаты используйте запрос оплаты брони");
   const [stay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservationId)).limit(1);
   const [folio] = await tx.select().from(s.folios).where(eq(s.folios.reservationId, reservationId)).limit(1);
   if (!folio) throw new StayConflict("У брони нет счёта для оплаты");

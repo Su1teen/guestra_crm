@@ -19,13 +19,17 @@ import {
 import { serviceGroupByCode, serviceGroupForDirection, serviceGroupForItemType } from "../../shared/service-groups.js";
 import type { JourneyStage } from "../../shared/journey.js";
 import { findCustomerCandidates, normalizeEmail, normalizePhone } from "../services/customer-service.js";
-import { assignReservationUnit, assertRoomAvailable, AvailabilityConflict } from "../services/availability-service.js";
+import { assignReservationUnit, autoAssignReservationUnit, assertRoomAvailable, AvailabilityConflict } from "../services/availability-service.js";
 import { ensureReservationForRequest } from "../services/reservation-service.js";
 import { addStayPayment, changeDepartureTime, checkInStay, checkOutStay, extendStay, moveStayRoom,
   requestStayHousekeeping, StayConflict } from "../services/stay-service.js";
 import { bookService, changeServiceStatus, linkServiceToReservation, rescheduleService, ServiceConflict } from "../services/service-reservation-service.js";
 import { assessServiceSlot, loadServiceCatalogItem, lockServiceGroups, ServiceAvailabilityConflict } from "../services/service-availability-service.js";
-import { dispatchTelegramMessage } from "../services/outbound-messaging.js";
+import { sendConversationMessage } from "../services/outbound-messaging.js";
+import { buildFollowUpMessage } from "../services/follow-up-message.js";
+import { PaymentConflict, receivePaymentRequest } from "../services/payment-service.js";
+import { planPreArrivalMessages } from "../services/payment-service.js";
+import { deliverScheduledMessage, ScheduledMessageConflict } from "../services/scheduled-outbound.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
@@ -106,7 +110,7 @@ const buildItemValues = (
   };
 };
 
-export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEGRATION_API_KEY" | "AGENT_OUTBOUND_WEBHOOK_URL" | "AGENT_OUTBOUND_WEBHOOK_TOKEN">) => {
+export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEGRATION_API_KEY" | "AGENT_OUTBOUND_WEBHOOK_URL" | "AGENT_OUTBOUND_WEBHOOK_TOKEN" | "WHATSAPP_OUTBOUND_WEBHOOK_URL" | "WHATSAPP_OUTBOUND_WEBHOOK_TOKEN">) => {
   const router = Router();
   router.use(requireDatabaseMode);
 
@@ -194,6 +198,102 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
       response.status(201).json(result);
     } catch (error) {
       if (error instanceof StayConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.get("/requests/:id/payment-requests", async (request, response) => {
+    response.json(await db.select().from(s.paymentRequests).where(eq(s.paymentRequests.leadId, request.params.id)));
+  });
+
+  router.post("/payment-requests/:id/send", async (request, response) => {
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
+    const body = z.object({ paymentUrl: z.string().url().optional(), method: z.enum(["card_link", "invoice", "transfer", "kaspi"]),
+      note: z.string().trim().max(400).optional() }).parse(request.body);
+    if (body.method === "card_link" && !body.paymentUrl) return response.status(400).json({ error: "Укажите ссылку на оплату" });
+    const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM payment_requests WHERE id = ${request.params.id} FOR UPDATE`);
+      const [paymentRequest] = await tx.select().from(s.paymentRequests).where(eq(s.paymentRequests.id, request.params.id)).limit(1);
+      if (!paymentRequest) return { error: "Запрос оплаты не найден", status: 404 } as const;
+      if (!["draft", "sent"].includes(paymentRequest.status)) return { error: "Запрос оплаты уже закрыт", status: 409 } as const;
+      const [conversation] = paymentRequest.conversationId
+        ? await tx.select().from(s.conversations).where(eq(s.conversations.id, paymentRequest.conversationId)).limit(1)
+        : await tx.select().from(s.conversations).where(eq(s.conversations.leadId, paymentRequest.leadId)).limit(1);
+      if (!conversation) return { error: "Диалог для оплаты не найден", status: 409 } as const;
+      const [reservation] = paymentRequest.reservationId ? await tx.select().from(s.reservations).where(eq(s.reservations.id, paymentRequest.reservationId)).limit(1) : [];
+      if (reservation?.holdExpiresAt && reservation.holdExpiresAt < now()) return { error: "Срок удержания брони истёк", status: 409 } as const;
+      const key = `payment-request:${paymentRequest.id}:send`;
+      const [existing] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, key)).limit(1);
+      if (existing) return { message: existing, paymentRequest };
+      const [property] = await tx.select().from(s.properties).where(eq(s.properties.id, conversation.propertyId)).limit(1);
+      const amount = paymentRequest.amount.toLocaleString("ru-RU");
+      const paymentText = `Здравствуйте! Для подтверждения бронирования в ${property?.name ?? "нашем отеле"} просим внести ${paymentRequest.kind === "deposit" ? "предоплату" : "оплату"} ${amount} ${paymentRequest.currency}.`;
+      const messageText = [paymentText, body.paymentUrl, body.note].filter(Boolean).join("\n");
+      const timestamp = now();
+      const [message] = await tx.insert(s.messages).values({ id: id("message"), conversationId: conversation.id,
+        direction: "out", employeeId, text: messageText, sentAt: timestamp, senderType: "human",
+        deliveryStatus: "pending", idempotencyKey: key, metadata: { paymentRequestId: paymentRequest.id } }).returning();
+      await tx.update(s.paymentRequests).set({ conversationId: conversation.id, paymentUrl: body.paymentUrl ?? null,
+        method: body.method, createdBy: employeeId, updatedAt: timestamp }).where(eq(s.paymentRequests.id, paymentRequest.id));
+      return { message, paymentRequest };
+    });
+    if ("error" in result) return response.status(result.status ?? 409).json({ error: result.error });
+    const delivery = await sendConversationMessage(db, result.message.id, {
+      webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL, webhookToken: config.AGENT_OUTBOUND_WEBHOOK_TOKEN,
+      whatsappWebhookUrl: config.WHATSAPP_OUTBOUND_WEBHOOK_URL, whatsappWebhookToken: config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN });
+    if (delivery.sent) await db.update(s.paymentRequests).set({ status: "sent", sentAt: now(), updatedAt: now() })
+      .where(eq(s.paymentRequests.id, result.paymentRequest.id));
+    response.status(delivery.sent ? 200 : 502).json({ delivery, paymentRequestId: result.paymentRequest.id });
+  });
+
+  router.post("/payment-requests/:id/received", async (request, response) => {
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
+    const body = z.object({ method: z.enum(["card", "transfer", "cash"]), reference: z.string().trim().min(1).max(120) }).parse(request.body);
+    try {
+      const result = await db.transaction((tx) => receivePaymentRequest(tx, request.params.id, { ...body, employeeId }));
+      if ("confirmationMessageId" in result && result.confirmationMessageId) {
+        await sendConversationMessage(db, result.confirmationMessageId, {
+          webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL, webhookToken: config.AGENT_OUTBOUND_WEBHOOK_TOKEN,
+          whatsappWebhookUrl: config.WHATSAPP_OUTBOUND_WEBHOOK_URL, whatsappWebhookToken: config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN });
+      }
+      response.json(result);
+    } catch (error) {
+      if (error instanceof PaymentConflict) return response.status(409).json({ error: error.message });
+      throw error;
+    }
+  });
+
+  router.get("/reservations/:id/scheduled-messages", async (request, response) => {
+    response.json(await db.select().from(s.scheduledOutboundMessages)
+      .where(eq(s.scheduledOutboundMessages.reservationId, request.params.id)));
+  });
+
+  router.post("/reservations/:id/remind-now", async (request, response) => {
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
+    const body = z.object({ idempotencyKey: z.string().min(8) }).parse(request.body);
+    const result = await db.transaction(async (tx) => {
+      const [reservation] = await tx.select().from(s.reservations).where(eq(s.reservations.id, request.params.id)).limit(1);
+      if (!reservation || reservation.status !== "confirmed") return null;
+      const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.reservationId, reservation.id)).limit(1);
+      const [job] = await tx.insert(s.scheduledOutboundMessages).values({ id: id("communication"),
+        reservationId: reservation.id, conversationId: conversation?.id ?? null, guestId: reservation.bookerCustomerId,
+        propertyId: reservation.propertyId, triggerType: "manual", scheduledAt: now(), status: "pending",
+        templateKey: "pre_arrival_manual", idempotencyKey: body.idempotencyKey,
+        metadata: { employeeId } }).onConflictDoNothing().returning();
+      if (job) return job;
+      return (await tx.select().from(s.scheduledOutboundMessages).where(eq(s.scheduledOutboundMessages.idempotencyKey, body.idempotencyKey)).limit(1))[0];
+    });
+    if (!result) return response.status(409).json({ error: "Напоминание доступно для подтверждённой брони" });
+    try {
+      const delivery = await deliverScheduledMessage(db, result.id, {
+        webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL, webhookToken: config.AGENT_OUTBOUND_WEBHOOK_TOKEN,
+        whatsappWebhookUrl: config.WHATSAPP_OUTBOUND_WEBHOOK_URL, whatsappWebhookToken: config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN });
+      response.status(delivery.sent ? 200 : 502).json({ jobId: result.id, delivery });
+    } catch (error) {
+      if (error instanceof ScheduledMessageConflict) return response.status(409).json({ error: error.message });
       throw error;
     }
   });
@@ -490,21 +590,56 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     response.json(review);
   });
 
+  router.get("/requests/:id/lifecycle-history", async (request, response) => {
+    const rows = await db.select().from(s.requestLifecycleHistory)
+      .where(eq(s.requestLifecycleHistory.leadId, request.params.id));
+    response.json(rows.sort((a, b) => b.changedAt.localeCompare(a.changedAt)));
+  });
+
   router.patch("/requests/:id/status", async (request, response) => {
-    const { status, reason } = z.object({
+    const { status, reason, dueAt } = z.object({
       status: z.enum(["enquire", "tentative", "definite", "won", "lost", "closed"]),
       reason: z.string().trim().max(1000).optional(),
+      dueAt: z.string().datetime().optional(),
     }).parse(request.body);
+    if (["lost", "closed"].includes(status) && !reason) return response.status(400).json({ error: "Укажите причину закрытия" });
     const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM leads WHERE id = ${request.params.id} FOR UPDATE`);
       const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
       if (!lead) return null;
       if (["confirmed", "completed", "lost", "cancelled"].includes(lead.stage) || ["won", "lost", "closed"].includes(lead.requestLifecycle)) {
         return { conflict: true as const };
       }
+      if (status === "won") {
+        const [reservation] = await tx.select().from(s.reservations).where(eq(s.reservations.requestId, lead.id)).limit(1);
+        if (!reservation || reservation.status !== "confirmed") return { conflict: true as const };
+      }
       const changedAt = now();
       // Do not mutate legacy request_status: Agent API, n8n and historical analytics retain its semantics.
+      const followUpDueAt = status === "tentative" ? dueAt ?? new Date(Date.now() + 24 * 60 * 60_000).toISOString() : null;
       const [updated] = await tx.update(s.leads).set({ requestLifecycle: status, lastActivityAt: changedAt,
+        ...(followUpDueAt ? { nextActionLabel: "Связаться с гостем после предложения", nextActionDueAt: followUpDueAt } : {}),
+        ...(["definite", "won", "lost", "closed"].includes(status) ? { nextActionLabel: null, nextActionDueAt: null } : {}),
+        ...(status === "lost" ? { lostReason: reason, requestStatus: "lost" } : {}),
+        ...(status === "closed" ? { requestStatus: "closed" } : {}),
         updatedAt: changedAt }).where(eq(s.leads.id, lead.id)).returning();
+      if (status === "tentative") {
+        const [open] = await tx.select().from(s.followUps).where(and(eq(s.followUps.leadId, lead.id), eq(s.followUps.status, "open"))).limit(1);
+        if (open) await tx.update(s.followUps).set({ dueAt: followUpDueAt!, reason: reason || open.reason, updatedAt: changedAt }).where(eq(s.followUps.id, open.id));
+        else await tx.insert(s.followUps).values({ id: id("follow_up"), leadId: lead.id, guestId: lead.guestId,
+          propertyId: lead.propertyId, channel: lead.source, direction: "accommodation", reason: reason || "Гость думает",
+          queue: "today", status: "open", stage: lead.stage, temperature: lead.intent,
+          potentialAmount: lead.totalAmount, dueAt: followUpDueAt!, ownerId: lead.ownerId,
+          context: lead.roomType || "Предложение отправлено", recommendedAction: "Отправить follow-up",
+          createdAt: changedAt, updatedAt: changedAt });
+      }
+      if (status === "definite") await tx.update(s.conversations).set({ automationMode: "needs_human",
+        handoffReasonCode: "payment_ready", requestedAction: "Отправить счёт или ссылку на оплату",
+        handoffPriority: "high", handoffRequestedAt: changedAt, updatedAt: changedAt })
+        .where(eq(s.conversations.leadId, lead.id));
+      if (["definite", "lost", "closed"].includes(status)) await tx.update(s.followUps)
+        .set({ status: "done", queue: "done", completedAt: changedAt, updatedAt: changedAt })
+        .where(and(eq(s.followUps.leadId, lead.id), eq(s.followUps.status, "open")));
       if (lead.requestLifecycle !== status) {
         const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
         await tx.insert(s.requestLifecycleHistory).values({ id: id("request_lifecycle"), leadId: lead.id,
@@ -560,20 +695,40 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
           folio = await recalcFolio(tx, folio.id);
         }
         const bookingReference = `GUE-${randomUUID().slice(0, 10).toUpperCase()}`;
-        const reservation = await ensureReservationForRequest(tx, updatedLead, folio, bookingReference);
-        if (input.roomId) {
-          const allocation = await assignReservationUnit(tx, reservation, input.roomId);
-          await tx.update(s.guestStays).set({ roomId: input.roomId, reservationUnitId: allocation.id, updatedAt })
-            .where(eq(s.guestStays.reservationId, reservation.id));
-        }
+        const requiresPayment = folio.depositRequired > folio.paidAmount;
+        const reservation = await ensureReservationForRequest(tx, updatedLead, folio, bookingReference, requiresPayment);
+        if (!reservation.unitTypeId && !input.roomId) throw new AvailabilityConflict("Категория размещения не найдена");
+        const allocation = input.roomId
+          ? await assignReservationUnit(tx, reservation, input.roomId)
+          : await autoAssignReservationUnit(tx, reservation, reservation.unitTypeId!);
+        await tx.update(s.guestStays).set({ roomId: allocation.roomId, reservationUnitId: allocation.id, updatedAt })
+          .where(eq(s.guestStays.reservationId, reservation.id));
         const [linkedStay] = await tx.select().from(s.guestStays).where(eq(s.guestStays.reservationId, reservation.id)).limit(1);
         await tx.update(s.tasks).set({ reservationId: reservation.id, stayId: linkedStay?.id ?? null, updatedAt })
           .where(eq(s.tasks.leadId, lead.id));
         await tx.update(s.conversations).set({ reservationId: reservation.id, stayId: linkedStay?.id ?? null, updatedAt })
           .where(eq(s.conversations.leadId, lead.id));
-        await tx.update(s.leads).set({ stage: "confirmed", requestStatus: "won", bookingReference,
-          probability: 100, updatedAt }).where(eq(s.leads.id, lead.id));
-        await tx.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: "confirmed", changedAt: updatedAt });
+        if (requiresPayment) await tx.insert(s.paymentRequests).values({ id: id("payment_request"), leadId: lead.id,
+          reservationId: reservation.id, folioId: folio.id, guestId: lead.guestId, amount: folio.depositRequired - folio.paidAmount,
+          currency: folio.currency, kind: "deposit", method: "card_link", status: "draft",
+          expiresAt: reservation.holdExpiresAt, createdBy: (request as AuthenticatedRequest).authUser?.employeeId,
+          idempotencyKey: `request:${lead.id}:deposit` });
+        await tx.update(s.leads).set({ stage: requiresPayment ? "payment_pending" : "confirmed",
+          requestLifecycle: requiresPayment ? "definite" : "won", requestStatus: requiresPayment ? "pending" : "won",
+          bookingReference, probability: requiresPayment ? 85 : 100, updatedAt }).where(eq(s.leads.id, lead.id));
+        await tx.insert(s.requestLifecycleHistory).values({ id: id("request_lifecycle"), leadId: lead.id,
+          fromStatus: lead.requestLifecycle, toStatus: requiresPayment ? "definite" : "won",
+          employeeId: (request as AuthenticatedRequest).authUser?.employeeId, source: "manual_booking",
+          reason: requiresPayment ? "Ожидается предоплата" : "Предоплата не требуется", changedAt: updatedAt });
+        if (requiresPayment) await tx.update(s.conversations).set({ automationMode: "needs_human",
+          handoffReasonCode: "payment_ready", requestedAction: "Отправить счёт или ссылку на оплату",
+          handoffPriority: "high", handoffRequestedAt: updatedAt, updatedAt }).where(eq(s.conversations.leadId, lead.id));
+        else {
+          const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.leadId, lead.id)).limit(1);
+          await planPreArrivalMessages(tx, reservation, conversation?.id ?? null, updatedAt);
+        }
+        await tx.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id,
+          stage: requiresPayment ? "payment_pending" : "confirmed", changedAt: updatedAt });
         await tx.update(s.followUps).set({ status: "done", queue: "done", completedAt: updatedAt, updatedAt })
           .where(and(eq(s.followUps.leadId, lead.id), eq(s.followUps.status, "open")));
         await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: lead.guestId,
@@ -617,77 +772,56 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
         const at = now();
         const code = `GUE-${randomUUID().slice(0, 8).toUpperCase()}`;
         const reservationId = id("reservation");
-        const [reservation] = await tx.insert(s.reservations).values({ id: reservationId, code, propertyId: property.id,
-          bookerCustomerId: guest.id, source: "manual", status: "confirmed", arrivalAt: input.arrivalAt,
-          departureAt: input.departureAt, roomTypeSnapshot: input.roomType, adults: input.adults, children: input.children,
-          currency: "KZT", confirmedAt: at }).returning();
-        const allocation = input.roomId ? await assignReservationUnit(tx, reservation, input.roomId) : null;
+        const requiresPayment = input.depositRequired > 0;
+        const [owner] = await tx.select().from(s.employeeProperties)
+          .where(eq(s.employeeProperties.propertyId, property.id)).limit(1);
+        if (!owner) throw new AvailabilityConflict("Для объекта не назначен сотрудник");
+        const leadId = id("lead");
         const nights = Math.max(1, Math.ceil((new Date(input.departureAt).getTime() - new Date(input.arrivalAt).getTime()) / 86_400_000));
+        await tx.insert(s.leads).values({ id: leadId, code: `G-${randomUUID().slice(0, 10)}`,
+          guestId: guest.id, propertyId: property.id, source: "manual", ownerId: owner.employeeId,
+          stage: requiresPayment ? "payment_pending" : "confirmed", requestStatus: requiresPayment ? "pending" : "won",
+          requestLifecycle: requiresPayment ? "definite" : "won", roomType: input.roomType,
+          checkIn: input.arrivalAt, checkOut: input.departureAt, nights, adults: input.adults,
+          children: input.children, totalAmount: input.totalAmount, deposit: input.depositRequired,
+          paymentStatus: requiresPayment ? "pending" : "not_required", lastActivityAt: at,
+          bookingReference: code, reservationId });
+        const [reservation] = await tx.insert(s.reservations).values({ id: reservationId, code, propertyId: property.id,
+          bookerCustomerId: guest.id, requestId: leadId, source: "manual", status: requiresPayment ? "pending_payment" : "confirmed", arrivalAt: input.arrivalAt,
+          departureAt: input.departureAt, roomTypeSnapshot: input.roomType, adults: input.adults, children: input.children,
+          currency: "KZT", confirmedAt: requiresPayment ? null : at,
+          holdExpiresAt: requiresPayment ? new Date(Date.now() + 24 * 60 * 60_000).toISOString() : null }).returning();
+        const [unitType] = await tx.select().from(s.unitTypes).where(and(eq(s.unitTypes.propertyId, property.id), eq(s.unitTypes.name, input.roomType))).limit(1);
+        if (!unitType && !input.roomId) throw new AvailabilityConflict("Категория размещения не найдена");
+        if (unitType) await tx.update(s.reservations).set({ unitTypeId: unitType.id }).where(eq(s.reservations.id, reservationId));
+        const allocation = input.roomId ? await assignReservationUnit(tx, reservation, input.roomId) :
+          await autoAssignReservationUnit(tx, { ...reservation, unitTypeId: unitType!.id }, unitType!.id);
         const stayId = id("stay");
         await tx.insert(s.guestStays).values({ id: stayId, guestId: guest.id, propertyId: property.id,
           reservationId, reservationUnitId: allocation?.id, roomId: allocation?.roomId, roomType: input.roomType,
           checkIn: input.arrivalAt, checkOut: input.departureAt, nights, adults: input.adults, children: input.children,
-          amount: input.totalAmount, bookingReference: code, status: "confirmed", operationalStatus: "upcoming" });
+          amount: input.totalAmount, bookingReference: code, status: requiresPayment ? "pending_payment" : "confirmed", operationalStatus: "upcoming" });
         await tx.insert(s.reservationGuests).values({ id: id("reservation_guest"), reservationId, customerId: guest.id,
           fullName: guest.fullName, role: "primary", isPrimary: true, isBooker: true, ageGroup: "adult" });
         const [folio] = await tx.insert(s.folios).values({ id: id("folio"), code: `F-${code}`, reservationId, stayId,
-          guestId: guest.id, propertyId: property.id, currency: "KZT", subtotal: input.totalAmount,
+          leadId, guestId: guest.id, propertyId: property.id, currency: "KZT", subtotal: input.totalAmount,
           totalAmount: input.totalAmount, depositRequired: input.depositRequired, balance: input.totalAmount }).returning();
         if (input.totalAmount > 0) await tx.insert(s.folioLines).values({ id: id("folio_line"), folioId: folio.id,
           category: "accommodation", description: "Проживание", quantity: 1, unit: "за проживание",
           unitPrice: input.totalAmount, lineTotal: input.totalAmount });
         await recalcFolio(tx, folio.id);
-        await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: guest.id, propertyId: property.id,
-          employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "booking",
-          title: "Бронирование создано", description: code, amount: input.totalAmount, occurredAt: at });
-        return { reservationId, stayId };
-      });
-      response.status(201).json(result);
-    } catch (error) {
-      if (error instanceof AvailabilityConflict) return response.status(409).json({ error: error.message });
-      throw error;
-    }
-  });
-
-  router.post("/reservations", async (request, response) => {
-    const input = z.object({ guestId: z.string().min(1), propertyId: z.string().min(1),
-      arrivalAt: z.string().datetime(), departureAt: z.string().datetime(), roomType: z.string().trim().min(1),
-      roomId: z.string().optional(), adults: z.number().int().min(1), children: z.number().int().min(0),
-      totalAmount: z.number().int().min(0), depositRequired: z.number().int().min(0) }).refine((value) =>
-        new Date(value.departureAt) > new Date(value.arrivalAt) && value.depositRequired <= value.totalAmount,
-      { message: "Проверьте даты и сумму предоплаты" }).parse(request.body);
-    try {
-      const result = await db.transaction(async (tx) => {
-        const [property] = await tx.select().from(s.properties).where(eq(s.properties.id, input.propertyId)).limit(1);
-        const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, input.guestId)).limit(1);
-        if (!property || !guest || property.organizationId !== guest.organizationId) throw new AvailabilityConflict("Гость или объект не найдены");
-        if (input.roomId) {
-          const [room] = await tx.select().from(s.rooms).where(and(eq(s.rooms.id, input.roomId), eq(s.rooms.propertyId, property.id))).limit(1);
-          if (!room || room.category !== input.roomType) throw new AvailabilityConflict("Выберите домик из указанной категории");
-        }
-        const at = now();
-        const code = `LES-${randomUUID().slice(0, 8).toUpperCase()}`;
-        const reservationId = id("reservation");
-        const [reservation] = await tx.insert(s.reservations).values({ id: reservationId, code, propertyId: property.id,
-          bookerCustomerId: guest.id, source: "phone", status: "confirmed", arrivalAt: input.arrivalAt,
-          departureAt: input.departureAt, roomTypeSnapshot: input.roomType, adults: input.adults, children: input.children,
-          currency: "KZT", confirmedAt: at }).returning();
-        const allocation = input.roomId ? await assignReservationUnit(tx, reservation, input.roomId) : null;
-        const nights = Math.max(1, Math.ceil((new Date(input.departureAt).getTime() - new Date(input.arrivalAt).getTime()) / 86_400_000));
-        const stayId = id("stay");
-        await tx.insert(s.guestStays).values({ id: stayId, guestId: guest.id, propertyId: property.id,
-          reservationId, reservationUnitId: allocation?.id, roomId: allocation?.roomId, roomType: input.roomType,
-          checkIn: input.arrivalAt, checkOut: input.departureAt, nights, adults: input.adults, children: input.children,
-          amount: input.totalAmount, bookingReference: code, status: "confirmed", operationalStatus: "upcoming" });
-        await tx.insert(s.reservationGuests).values({ id: id("reservation_guest"), reservationId, customerId: guest.id,
-          fullName: guest.fullName, role: "primary", isPrimary: true, isBooker: true, ageGroup: "adult" });
-        const [folio] = await tx.insert(s.folios).values({ id: id("folio"), code: `F-${code}`, reservationId, stayId,
-          guestId: guest.id, propertyId: property.id, currency: "KZT", subtotal: input.totalAmount,
-          totalAmount: input.totalAmount, depositRequired: input.depositRequired, balance: input.totalAmount }).returning();
-        if (input.totalAmount > 0) await tx.insert(s.folioLines).values({ id: id("folio_line"), folioId: folio.id,
-          category: "accommodation", description: "Проживание", quantity: 1, unit: "за проживание",
-          unitPrice: input.totalAmount, lineTotal: input.totalAmount });
-        await recalcFolio(tx, folio.id);
+        if (requiresPayment) await tx.insert(s.paymentRequests).values({ id: id("payment_request"), leadId,
+          reservationId, folioId: folio.id, guestId: guest.id, amount: input.depositRequired,
+          currency: "KZT", kind: "deposit", method: "card_link", status: "draft",
+          expiresAt: reservation.holdExpiresAt, createdBy: (request as AuthenticatedRequest).authUser?.employeeId,
+          idempotencyKey: `manual:${reservationId}:deposit` });
+        else await planPreArrivalMessages(tx, reservation, null, at);
+        await tx.insert(s.requestLifecycleHistory).values({ id: id("request_lifecycle"), leadId,
+          fromStatus: null, toStatus: requiresPayment ? "definite" : "won", source: "manual_booking",
+          employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
+          reason: requiresPayment ? "Ожидается предоплата" : "Предоплата не требуется", changedAt: at });
+        await tx.insert(s.leadStageHistory).values({ id: id("stage"), leadId,
+          stage: requiresPayment ? "payment_pending" : "confirmed", changedAt: at });
         await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: guest.id, propertyId: property.id,
           employeeId: (request as AuthenticatedRequest).authUser?.employeeId, type: "booking",
           title: "Бронирование создано", description: code, amount: input.totalAmount, occurredAt: at });
@@ -753,6 +887,10 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
         const arrivalAt = patch.arrivalAt ?? reservation.arrivalAt;
         const departureAt = patch.departureAt ?? reservation.departureAt;
         const status = patch.status ?? reservation.status;
+        if (reservation.status === "pending_payment" && status === "confirmed") {
+          const [folio] = await tx.select().from(s.folios).where(eq(s.folios.reservationId, reservation.id)).limit(1);
+          if (folio && folio.paidAmount < folio.depositRequired) throw new AvailabilityConflict("Сначала подтвердите получение предоплаты");
+        }
         if (new Date(departureAt).getTime() <= new Date(arrivalAt).getTime()) throw new AvailabilityConflict("Дата выезда должна быть позже даты заезда");
         const units = await tx.select().from(s.reservationUnits).where(and(
           eq(s.reservationUnits.reservationId, reservation.id),
@@ -763,7 +901,9 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
             arrivalAt, departureAt, excludeReservationId: reservation.id });
         }
         const [updated] = await tx.update(s.reservations).set({ arrivalAt, departureAt, status,
-          cancelledAt: status === "cancelled" ? now() : null, updatedAt: now() })
+          cancelledAt: status === "cancelled" ? now() : null,
+          holdExpiresAt: status === "confirmed" || status === "cancelled" ? null : reservation.holdExpiresAt,
+          updatedAt: now() })
           .where(eq(s.reservations.id, reservation.id)).returning();
         for (const unit of units) await tx.update(s.reservationUnits).set({ arrivalAt, departureAt,
           status: ["cancelled", "no_show"].includes(status) ? "released" : "assigned", updatedAt: now() })
@@ -776,6 +916,14 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
         if (["pending", "tentative", "pending_payment", "confirmed"].includes(status)) await tx.update(s.guestStays)
           .set({ status: "confirmed", operationalStatus: "upcoming" })
           .where(and(eq(s.guestStays.reservationId, reservation.id), eq(s.guestStays.operationalStatus, "cancelled")));
+        if (status === "cancelled" || arrivalAt !== reservation.arrivalAt) {
+          await tx.update(s.scheduledOutboundMessages).set({ status: "cancelled", updatedAt: now() })
+            .where(and(eq(s.scheduledOutboundMessages.reservationId, reservation.id), eq(s.scheduledOutboundMessages.status, "pending")));
+        }
+        if (status === "confirmed" && (reservation.status !== "confirmed" || arrivalAt !== reservation.arrivalAt)) {
+          const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.reservationId, reservation.id)).limit(1);
+          await planPreArrivalMessages(tx, updated, conversation?.id ?? null);
+        }
         if (status !== reservation.status || arrivalAt !== reservation.arrivalAt || departureAt !== reservation.departureAt) {
           await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: stay?.guestId ?? reservation.bookerCustomerId,
             propertyId: reservation.propertyId, employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
@@ -1081,12 +1229,12 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     const result = await db.transaction(async (tx) => {
       const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.id, request.params.id)).limit(1);
       if (!conversation) return null;
-      if (!asNote && conversation.channel === "telegram" && conversation.automationMode !== "human") {
+      if (!asNote && ["telegram", "whatsapp"].includes(conversation.channel) && conversation.automationMode !== "human") {
         return { conflict: "Сначала возьмите диалог в работу" as const };
       }
       const [message] = await tx.insert(s.messages).values({ id: id("message"), conversationId: conversation.id,
         direction: asNote ? "note" : "out", employeeId, text, sentAt: timestamp,
-        senderType: "human", deliveryStatus: !asNote && conversation.channel === "telegram" ? "pending" : "sent",
+        senderType: "human", deliveryStatus: !asNote ? "pending" : "sent",
         metadata: {}, }).returning();
       const [updated] = await tx.update(s.conversations).set({
         unreadCount: 0,
@@ -1098,9 +1246,10 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     });
     if (!result) return response.status(404).json({ error: "Диалог не найден" });
     if ("conflict" in result && result.conflict) return response.status(409).json({ error: "Сначала возьмите диалог в работу" });
-    if (result.conversation.channel === "telegram" && !asNote) {
-      const delivery = await dispatchTelegramMessage(db, result.message.id, {
+    if (!asNote) {
+      const delivery = await sendConversationMessage(db, result.message.id, {
         webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL, webhookToken: config.AGENT_OUTBOUND_WEBHOOK_TOKEN,
+        whatsappWebhookUrl: config.WHATSAPP_OUTBOUND_WEBHOOK_URL, whatsappWebhookToken: config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN,
       });
       const [message] = await db.select().from(s.messages).where(eq(s.messages.id, result.message.id)).limit(1);
       return response.status(201).json({ ...result, message, deliveryStatus: message?.deliveryStatus,
@@ -1139,9 +1288,9 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     const [conversation] = await db.select().from(s.conversations).where(eq(s.conversations.id, request.params.id)).limit(1);
     if (!conversation || conversation.automationMode !== "human") return response.status(409).json({ error: "Сначала возьмите диалог в работу" });
     await db.update(s.messages).set({ deliveryStatus: "pending" }).where(eq(s.messages.id, message.id));
-    const delivery = conversation.channel === "telegram"
-      ? await dispatchTelegramMessage(db, message.id, { webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL,
-        webhookToken: config.AGENT_OUTBOUND_WEBHOOK_TOKEN }) : { sent: false, error: "Повторная отправка доступна только для Telegram" };
+    const delivery = await sendConversationMessage(db, message.id, { webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL,
+      webhookToken: config.AGENT_OUTBOUND_WEBHOOK_TOKEN, whatsappWebhookUrl: config.WHATSAPP_OUTBOUND_WEBHOOK_URL,
+      whatsappWebhookToken: config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN });
     const [updated] = await db.select().from(s.messages).where(eq(s.messages.id, message.id)).limit(1);
     response.json({ message: updated, deliveryStatus: updated?.deliveryStatus,
       deliveryError: delivery.sent ? undefined : delivery.error });
@@ -1168,6 +1317,51 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
       validFrom: validFrom ?? null, validUntil: validUntil ?? null, displayAreas: displayAreas ?? ["profile"], createdAt: timestamp, updatedAt: timestamp }).returning();
     await db.insert(s.guestActivity).values({ id: id("guest_activity"), guestId: request.params.id, employeeId, type: "note", title: "Внутренняя заметка", description: text, occurredAt: timestamp });
     response.status(201).json(note);
+  });
+
+  router.get("/follow-ups/:id/preview", async (request, response) => {
+    const [followUp] = await db.select().from(s.followUps).where(eq(s.followUps.id, request.params.id)).limit(1);
+    if (!followUp) return response.status(404).json({ error: "Follow-up не найден" });
+    const [[lead], [guest], [property]] = await Promise.all([
+      db.select().from(s.leads).where(eq(s.leads.id, followUp.leadId)).limit(1),
+      db.select().from(s.guests).where(eq(s.guests.id, followUp.guestId)).limit(1),
+      db.select().from(s.properties).where(eq(s.properties.id, followUp.propertyId)).limit(1),
+    ]);
+    if (!lead || !guest || !property) return response.status(409).json({ error: "Контекст обращения неполон" });
+    response.json({ text: buildFollowUpMessage({ guestName: guest.fullName, propertyName: property.name,
+      category: lead.roomType, checkIn: lead.checkIn, checkOut: lead.checkOut, amount: lead.totalAmount }) });
+  });
+
+  router.post("/follow-ups/:id/send", async (request, response) => {
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
+    const body = z.object({ text: z.string().trim().min(1).max(2000) }).parse(request.body);
+    const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM follow_ups WHERE id = ${request.params.id} FOR UPDATE`);
+      const [followUp] = await tx.select().from(s.followUps).where(eq(s.followUps.id, request.params.id)).limit(1);
+      if (!followUp) return { error: "Follow-up не найден", status: 404 } as const;
+      const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.leadId, followUp.leadId)).limit(1);
+      if (!conversation) return { error: "Диалог для отправки не найден", status: 409 } as const;
+      const key = `follow-up:${followUp.id}`;
+      const [existing] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, key)).limit(1);
+      if (existing) return { message: existing, followUp, conversation };
+      if (followUp.status !== "open") return { error: "Follow-up уже закрыт", status: 409 } as const;
+      const timestamp = now();
+      const [message] = await tx.insert(s.messages).values({ id: id("message"), conversationId: conversation.id,
+        direction: "out", employeeId, text: body.text, sentAt: timestamp, senderType: "human", deliveryStatus: "pending",
+        idempotencyKey: key, metadata: { followUpId: followUp.id } }).returning();
+      await tx.update(s.conversations).set({ lastMessageAt: timestamp, status: "pending", updatedAt: timestamp })
+        .where(eq(s.conversations.id, conversation.id));
+      return { message, followUp, conversation };
+    });
+    if ("error" in result) return response.status(result.status ?? 409).json({ error: result.error });
+    const delivery = await sendConversationMessage(db, result.message.id, {
+      webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL, webhookToken: config.AGENT_OUTBOUND_WEBHOOK_TOKEN,
+      whatsappWebhookUrl: config.WHATSAPP_OUTBOUND_WEBHOOK_URL, whatsappWebhookToken: config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN });
+    if (delivery.sent) await db.update(s.followUps).set({ status: "done", queue: "done", completedAt: now(), updatedAt: now() })
+      .where(and(eq(s.followUps.id, result.followUp.id), eq(s.followUps.status, "open")));
+    const [message] = await db.select().from(s.messages).where(eq(s.messages.id, result.message.id)).limit(1);
+    response.status(delivery.sent ? 200 : 502).json({ message, delivery, followUpId: result.followUp.id });
   });
 
   router.patch("/follow-ups/:id", async (request, response) => {
