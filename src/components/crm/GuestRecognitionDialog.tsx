@@ -19,14 +19,12 @@ export const GuestRecognitionDialog = ({ guestId, onOpenChange }: {
   const guest = data.guests.find((item) => item.id === guestId);
   const context = useMemo(() => {
     if (!guestId) return null;
-    const stays = data.stays.filter((item) => item.guestId === guestId && item.status === "completed")
+    const stays = data.stays.filter((item) => item.guestId === guestId &&
+      (item.status === "completed" || item.operationalStatus === "checked_out"))
       .sort((a, b) => b.checkOut.localeCompare(a.checkOut));
-    const reservations = data.reservations.filter((item) => item.bookerCustomerId === guestId &&
-      !["cancelled", "no_show", "completed"].includes(item.status) && item.departureAt >= new Date().toISOString())
-      .sort((a, b) => a.arrivalAt.localeCompare(b.arrivalAt));
     const notes = data.notes.filter((item) => item.guestId === guestId)
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt));
-    return { stays, reservations, notes, alerts: notes.filter((item) => item.alert && active(item)),
+    return { stays, notes,
       nights: stays.reduce((total, stay) => total + stay.nights, 0) };
   }, [data, guestId]);
   const openReservation = (id: string) => { onOpenChange(false); navigate(`/reservations?reservation=${id}`); };
@@ -53,31 +51,22 @@ export const GuestRecognitionDialog = ({ guestId, onOpenChange }: {
             <div key={label} className="rounded-xl border bg-muted/30 p-3"><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-sm font-semibold tabular-nums">{value}</p></div>)}
         </div>
         <p className="text-xs text-muted-foreground">{context.stays[0] ? `Последняя категория: ${context.stays[0].roomType} · ` : ""}Любимый объект: {propertyById(guest.preferredPropertyId)?.name ?? "—"}</p>
-        {context.alerts.length > 0 && <section className="space-y-2" aria-label="Важные заметки">
-          {context.alerts.map((note) => <div key={note.id} className={`rounded-xl border p-3 ${note.priority === "critical" ? "border-red-300 bg-red-50" : "border-amber-200 bg-amber-50"}`}>
-            <p className="flex items-center gap-1 text-xs font-semibold"><AlertTriangle className="h-3.5 w-3.5" />{note.priority === "critical" ? "Критично" : "Важно"}</p>
-            <p className="mt-1 text-sm">{note.text}</p>
-            <p className="mt-1 text-xs text-muted-foreground">{employeeById(note.authorId)?.name ?? "Сотрудник"} · {formatDateNumeric(note.createdAt)}{note.validUntil ? ` · до ${formatDateNumeric(note.validUntil)}` : ""}</p>
-          </div>)}
-        </section>}
-        {context.reservations[0] && <div className="rounded-xl border border-brand-200 bg-brand-50/50 p-3 text-sm">
-          <p className="font-semibold">Ближайшая бронь · {context.reservations[0].code}</p>
-          <p className="mt-1 text-muted-foreground">{formatDateNumeric(context.reservations[0].arrivalAt)} – {formatDateNumeric(context.reservations[0].departureAt)} · {context.reservations[0].roomTypeSnapshot ?? "Категория уточняется"}</p>
-        </div>}
+        <section className="space-y-2" aria-label="Контекст и заметки о госте">
+          <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">Контекст гостя</h3><span className="text-xs text-muted-foreground">{context.notes.length} {context.notes.length === 1 ? "заметка" : "заметок"}</span></div>
+          {context.notes.length ? context.notes.slice(0, 3).map((note) => {
+            const isAlert = note.alert && active(note);
+            return <div key={note.id} className={`rounded-xl border p-3 ${isAlert && note.priority === "critical" ? "border-red-300 bg-red-50" : isAlert ? "border-amber-200 bg-amber-50" : "border-border bg-muted/20"}`}>
+              {isAlert && <p className={`mb-1 flex items-center gap-1 text-[11px] font-semibold ${note.priority === "critical" ? "text-red-800" : "text-amber-900"}`}><AlertTriangle className="h-3.5 w-3.5" />{note.priority === "critical" ? "Критично" : "Важно"}</p>}
+              <p className="text-sm leading-5">{note.text}</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">{employeeById(note.authorId)?.name ?? "Сотрудник"} · {formatDateNumeric(note.createdAt)}{note.validUntil ? ` · до ${formatDateNumeric(note.validUntil)}` : ""}</p>
+            </div>;
+          }) : <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">Заметок о госте пока нет</p>}
+        </section>
         <div className="space-y-2">
           <details className="rounded-xl border p-3"><summary className="cursor-pointer font-medium">Предыдущие проживания · {context.stays.length}</summary>
             <div className="mt-3 space-y-2">{context.stays.length ? context.stays.map((stay) => <button type="button" key={stay.id} onClick={() => stay.reservationId && openReservation(stay.reservationId)} className="flex w-full items-center justify-between gap-3 rounded-lg bg-muted/40 p-3 text-left text-sm hover:bg-muted">
               <span><strong>{propertyById(stay.propertyId)?.name ?? stay.propertyId}</strong><br /><span className="text-xs text-muted-foreground">{formatDateNumeric(stay.checkIn)} – {formatDateNumeric(stay.checkOut)} · {stay.nights} ночей · {stay.roomType}</span></span><span className="shrink-0 text-right text-xs">{formatTenge(stay.amount)}<br />{stay.status}</span>
             </button>) : <p className="text-sm text-muted-foreground">Предыдущих проживаний нет</p>}</div>
-          </details>
-          <details className="rounded-xl border p-3"><summary className="cursor-pointer font-medium">Будущие бронирования · {context.reservations.length}</summary>
-            <div className="mt-3 space-y-2">{context.reservations.length ? context.reservations.map((reservation) => {
-              const folio = data.folios.find((item) => item.reservationId === reservation.id);
-              return <button type="button" key={reservation.id} onClick={() => openReservation(reservation.id)} className="flex w-full items-center justify-between gap-3 rounded-lg bg-muted/40 p-3 text-left text-sm hover:bg-muted">
-                <span><strong>{reservation.code}</strong> · {reservation.status}<br /><span className="text-xs text-muted-foreground">{formatDateNumeric(reservation.arrivalAt)} – {formatDateNumeric(reservation.departureAt)} · {reservation.roomTypeSnapshot ?? "Категория уточняется"}</span></span>
-                {folio && <span className="shrink-0 text-right text-xs">{formatTenge(folio.totalAmount)}<br />Оплачено {formatTenge(folio.paidAmount)} · остаток {formatTenge(folio.balance)}</span>}
-              </button>;
-            }) : <p className="text-sm text-muted-foreground">Будущих бронирований нет</p>}</div>
           </details>
           <details className="rounded-xl border p-3"><summary className="cursor-pointer font-medium">Все заметки · {context.notes.length}</summary>
             <div className="mt-3 space-y-2">{context.notes.length ? context.notes.map((note) => <div key={note.id} className="rounded-lg bg-muted/40 p-3 text-sm"><p>{note.text}</p><p className="mt-1 text-xs text-muted-foreground">{employeeById(note.authorId)?.name ?? "Сотрудник"} · {formatDateNumeric(note.createdAt)}</p></div>) : <p className="text-sm text-muted-foreground">Заметок нет</p>}</div>

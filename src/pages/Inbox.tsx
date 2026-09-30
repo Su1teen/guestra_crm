@@ -389,7 +389,8 @@ const Inbox = () => {
           {bookedServices.slice(0, 4).map((service) => <button type="button" key={service.id} className="block w-full rounded-lg border p-2 text-left text-xs hover:bg-secondary" onClick={() => setSelectedServiceId(service.id)}>
             <span className="font-medium">{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"}</span> · {new Date(service.startAt).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</button>)}</section>}
 
-        {!reservation && <Button size="sm" variant="outline" className="w-full" onClick={() => setQuickReservationOpen(true)}>+ Добавить проживание</Button>}
+        {!reservation && (!request || request.classification.direction !== "accommodation") &&
+          <Button size="sm" variant="outline" className="w-full" onClick={() => setQuickReservationOpen(true)}>Создать бронь</Button>}
 
         <section className="space-y-2 border-t border-border pt-3">
           <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ответственный за диалог</Label>

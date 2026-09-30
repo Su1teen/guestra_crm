@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useCrm } from "@/store/crm-store";
 import { useToast } from "@/hooks/use-toast";
-import { formatTenge } from "@/lib/format";
+import { formatDateNumeric, formatTenge } from "@/lib/format";
 import { accommodationNightlyRate, accommodationTotal } from "@/lib/reservation-pricing";
 import { CreateGuestDialog } from "@/components/crm/CreateGuestDialog";
 import { GuestRecognitionDialog } from "@/components/crm/GuestRecognitionDialog";
@@ -21,7 +21,7 @@ export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId
   open: boolean; onOpenChange: (open: boolean) => void; initialRoomId?: string; initialDate?: string; initialDeparture?: string;
   initialGuestId?: string; initialPropertyId?: string; onCreated?: (reservationId: string) => void; navigateOnCreated?: boolean;
 }) => {
-  const { data, createQuickReservation, property } = useCrm();
+  const { data, createQuickReservation, property, employeeById } = useCrm();
   const dataRef = useRef(data);
   dataRef.current = data;
   const { toast } = useToast();
@@ -114,7 +114,19 @@ export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId
         <DialogDescription>Создайте бронь и проживание в профиле выбранного гостя.</DialogDescription></DialogHeader>
       <div className="grid max-h-[min(68vh,540px)] gap-x-3 gap-y-2.5 overflow-y-auto py-1 pr-1 sm:grid-cols-2">
         <div className="space-y-1 sm:col-span-2"><Label>Гость</Label><Select value={guestId} onValueChange={(value) => value === "__new_guest__" ? setNewGuestOpen(true) : setGuestId(value)}><SelectTrigger><SelectValue placeholder="Выберите гостя" /></SelectTrigger><SelectContent className="max-h-64"><SelectItem value="__new_guest__"><span className="flex items-center gap-2 font-medium text-brand-700"><Plus className="h-4 w-4" />Новый гость</span></SelectItem>{data.guests.map((guest) => <SelectItem key={guest.id} value={guest.id}>{guest.fullName}{guest.phone ? ` · ${guest.phone}` : ""}</SelectItem>)}</SelectContent></Select>
-          {data.guests.find((item) => item.id === guestId) && <div className="mt-2 flex items-center justify-between gap-3 rounded-xl border bg-muted/30 p-3 text-sm"><div className="min-w-0"><p className="font-semibold">{data.guests.find((item) => item.id === guestId)?.fullName}</p><p className="text-xs text-muted-foreground">{data.guests.find((item) => item.id === guestId)?.phone ?? "Телефон не указан"} · последний визит: {data.guests.find((item) => item.id === guestId)?.lastStayDate?.slice(0, 10) ?? "—"}</p><p className="mt-1 line-clamp-1 text-xs text-amber-800">{data.notes.find((note) => note.guestId === guestId && note.alert && (!note.validUntil || note.validUntil >= new Date().toISOString()))?.text ?? "Активных предупреждений нет"}</p></div><Button type="button" size="sm" variant="outline" className="shrink-0" onClick={() => setRecognitionOpen(true)}>Контекст гостя</Button></div>}
+          {data.guests.find((item) => item.id === guestId) && (() => {
+            const selectedGuest = data.guests.find((item) => item.id === guestId)!;
+            const guestNotes = data.notes.filter((note) => note.guestId === guestId)
+              .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.createdAt.localeCompare(a.createdAt)).slice(0, 2);
+            const guestStays = data.stays.filter((stay) => stay.guestId === guestId &&
+              (stay.status === "completed" || stay.operationalStatus === "checked_out"))
+              .sort((a, b) => b.checkOut.localeCompare(a.checkOut));
+            return <section className="mt-2 space-y-2 rounded-xl border border-brand-200 bg-brand-50/40 p-3" aria-label="Контекст выбранного гостя">
+              <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-[11px] font-semibold uppercase tracking-wide text-brand-800">Контекст гостя</p><p className="mt-0.5 truncate text-sm font-semibold">{selectedGuest.fullName}</p><p className="text-xs text-muted-foreground">{selectedGuest.phone ?? "Телефон не указан"} · {guestStays.length} прошлых {guestStays.length === 1 ? "проживание" : "проживаний"}{guestStays[0] ? ` · последний визит ${guestStays[0].checkOut.slice(0, 10)}` : ""}</p></div><Button type="button" size="sm" variant="outline" className="shrink-0 bg-background" onClick={() => setRecognitionOpen(true)}>Подробно</Button></div>
+              {guestNotes.length ? <ul className="space-y-1.5">{guestNotes.map((note) => <li key={note.id} className="rounded-lg border border-border/70 bg-background/80 px-2.5 py-2"><p className="text-xs leading-4">{note.text}</p><p className="mt-1 text-[10px] text-muted-foreground">{employeeById(note.authorId)?.shortName ?? "Сотрудник"} · {formatDateNumeric(note.createdAt)}{note.alert && note.validUntil && ` · до ${formatDateNumeric(note.validUntil)}`}</p></li>)}</ul>
+                : <p className="text-xs text-muted-foreground">Заметок о госте пока нет</p>}
+            </section>;
+          })()}
         </div>
         <div className="space-y-1.5 sm:col-span-2"><Label>Объект</Label><Select value={propertyId} onValueChange={(value) => { setAmountEdited(false); setPropertyId(value); setRoomType(""); setRoomId("none"); }}><SelectTrigger><SelectValue placeholder="Выберите объект" /></SelectTrigger><SelectContent>{data.properties.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>
         <div className="space-y-1"><Label htmlFor="quick-arrival">Заезд</Label><Input className="h-9" id="quick-arrival" type="date" value={arrival} onChange={(event) => { setAmountEdited(false); setArrival(event.target.value); }} /></div>

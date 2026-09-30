@@ -95,7 +95,11 @@ export const loadCrmDataset = async (db: Database) => {
     maxOccupancy: row.maxOccupancy ?? undefined, metadata: row.metadata ?? undefined }));
   const services = serviceRows.map((row) => ({ id: row.id, guestId: row.guestId, stayId: row.stayId ?? undefined, leadId: row.leadId ?? undefined, propertyId: row.propertyId ?? undefined, name: row.name, serviceType: row.serviceType ?? undefined, date: row.date, amount: row.amount, quantity: row.quantity, participants: row.participants ?? undefined, startAt: row.startAt ?? undefined, endAt: row.endAt ?? undefined, bookingReference: row.bookingReference ?? undefined, status: row.status }));
   const payments = paymentRows.map((row) => ({ id: row.id, guestId: row.guestId, stayId: row.stayId ?? undefined, reservationId: row.reservationId ?? undefined, leadId: row.leadId ?? undefined, folioId: row.folioId ?? undefined, date: row.date, amount: row.amount, method: row.method, status: row.status, reference: row.reference }));
-  const notes = noteRows.map((row) => ({ id: row.id, guestId: row.guestId, authorId: row.authorId, createdAt: row.createdAt, text: row.text }));
+  const notes = noteRows.map((row) => ({ id: row.id, guestId: row.guestId, authorId: row.authorId,
+    createdAt: row.createdAt, text: row.text, propertyId: row.propertyId ?? undefined,
+    priority: row.priority as "normal" | "important" | "critical", pinned: row.pinned, alert: row.alert,
+    validFrom: row.validFrom ?? undefined, validUntil: row.validUntil ?? undefined,
+    displayAreas: row.displayAreas ?? [] }));
   const guestActivity = guestActivityRows.map((row) => ({ id: row.id, guestId: row.guestId, propertyId: row.propertyId ?? undefined,
     reservationId: row.reservationId ?? undefined, stayId: row.stayId ?? undefined, metadata: row.metadata ?? undefined,
     employeeId: row.employeeId ?? undefined, at: row.occurredAt, type: row.type, title: row.title,
