@@ -2056,6 +2056,8 @@ const demoPending = demoCommercialCandidates.find((item) => ![demoEnquire?.lead.
 if (demoEnquire) {
   demoEnquire.lead.requestLifecycle = "enquire";
   demoEnquire.lead.classification.quality = "needs_qualification";
+  demoEnquire.conversation.automationMode = "ai";
+  demoEnquire.conversation.handoffReasonCode = undefined;
 }
 if (demoTentative) {
   demoTentative.lead.requestLifecycle = "tentative";
@@ -2086,6 +2088,21 @@ if (demoPending) {
   demoPending.conversation.handoffReasonCode = "payment_ready";
   demoPending.conversation.automationMode = "needs_human";
 }
+const demoException = demoCommercialCandidates.find((item) => ![
+  demoEnquire?.conversation.id, demoTentative?.conversation.id, demoDefinite?.conversation.id,
+  demoPending?.conversation.id,
+].includes(item.conversation.id));
+if (demoException) {
+  demoException.conversation.automationMode = "needs_human";
+  demoException.conversation.handoffReasonCode = "custom_discount";
+  demoException.conversation.handoffNote = "Требуется решение сотрудника по индивидуальным условиям.";
+}
+const demoPaymentRequests = demoPending ? [{
+  id: `payment_request_demo_${demoPending.lead.id}`, leadId: demoPending.lead.id,
+  reservationId: demoPending.conversation.reservationId, conversationId: demoPending.conversation.id,
+  amount: demoPending.lead.deposit, currency: "KZT", kind: "deposit", method: "card_link",
+  status: "sent" as const, sentAt: demoAt(-1, "14:00"), createdAt: demoAt(-1, "13:00"),
+}] : [];
 const legacyFollowUpTasks: Task[] = followUps.filter((followUp) =>
   !tasks.some((task) => task.type === "follow_up" && task.leadId === followUp.leadId && task.guestId === followUp.guestId),
 ).map((followUp) => ({
@@ -2153,6 +2170,7 @@ export const crmDataset: CrmDataset = {
   serviceCatalog: mockServiceCatalog,
   // Mock-режим синтезирует folio из lead.items/payments на лету (src/lib/journey.ts)
   folios: [],
+  paymentRequests: demoPaymentRequests,
   scheduledOutboundMessages: [
     { id: "demo_sultan_t3", reservationId: "reservation_sultan_future", triggerType: "pre_arrival_3d", scheduledAt: demoAt(9, "15:00"), status: "pending" },
     { id: "demo_sultan_t1", reservationId: "reservation_sultan_future", triggerType: "pre_arrival_1d", scheduledAt: demoAt(11, "15:00"), status: "pending" },

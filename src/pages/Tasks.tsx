@@ -104,7 +104,7 @@ const Tasks = () => {
     if (conversation) {
       const state = conversationQueueState(conversation);
       const query = new URLSearchParams({ conversation: conversation.id });
-      if (state !== "needs_answer") query.set("tab", state === "closed" ? "closed" : "waiting_guest");
+      if (state !== "needs_answer") query.set("tab", state === "closed" ? "archive" : state === "ai_handling" ? "all" : "waiting_guest");
       navigate(`/inbox?${query.toString()}`);
       return;
     }

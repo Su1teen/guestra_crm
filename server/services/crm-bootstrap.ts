@@ -17,7 +17,7 @@ export const loadCrmDataset = async (db: Database) => {
     roomRows, housekeepingRows, checklistRows, maintenanceRows, operationalRows, metricRows, pmsRows, interestRows, itemRows, serviceCatalogRows,
     folioRows, folioLineRows, reservationRows, reservationUnitRows, reservationGuestRows, unitTypeRows,
     serviceReservationRows, packageRows, entitlementRows, reviewRows, reservationNoteRows,
-    resourceGroupRows, resourceRows, requirementRows, allocationRows, resourceBlockRows,
+    resourceGroupRows, resourceRows, requirementRows, allocationRows, resourceBlockRows, paymentRequestRows,
   ] = await Promise.all([
     db.select().from(s.organizations), db.select().from(s.properties), db.select().from(s.employees),
     db.select().from(s.employeeProperties), db.select().from(s.guests), db.select().from(s.guestContactIdentities),
@@ -35,7 +35,7 @@ export const loadCrmDataset = async (db: Database) => {
     db.select().from(s.reservations), db.select().from(s.reservationUnits), db.select().from(s.reservationGuests), db.select().from(s.unitTypes),
     db.select().from(s.serviceReservations), db.select().from(s.packages), db.select().from(s.packageEntitlements), db.select().from(s.guestReviews), db.select().from(s.reservationNotes),
     db.select().from(s.serviceResourceGroups), db.select().from(s.serviceResources), db.select().from(s.serviceResourceRequirements),
-    db.select().from(s.serviceResourceAllocations), db.select().from(s.serviceResourceBlocks),
+    db.select().from(s.serviceResourceAllocations), db.select().from(s.serviceResourceBlocks), db.select().from(s.paymentRequests),
   ]);
 
   const org = orgRows[0];
@@ -138,6 +138,7 @@ export const loadCrmDataset = async (db: Database) => {
     const classification = classificationsByLead.get(row.id);
     return {
       id: row.id, code: row.code, guestId: row.guestId, propertyId: row.propertyId, source: row.source, stage: row.stage, requestStatus: row.requestStatus,
+      requestLifecycle: row.requestLifecycle,
       intent: row.intent, roomType: row.roomType, checkIn: row.checkIn, checkOut: row.checkOut, nights: row.nights,
       adults: row.adults, children: row.children, roomAmount: row.roomAmount,
       services: (leadServicesByLead.get(row.id) ?? []).map((item) => ({ name: item.name, amount: item.amount })),
@@ -224,5 +225,6 @@ export const loadCrmDataset = async (db: Database) => {
     serviceResourceAllocations, serviceResourceBlocks, packages, packageEntitlements, reviews, folios, organization,
     properties, employees, guests, stays, reservations, reservationUnits, reservationGuests, reservationNotes,
     unitTypes, services, payments, notes, guestActivity, leads, offers, tasks, conversations, segments, campaigns,
-    metrics, followUps, rooms, housekeepingTasks, maintenanceTickets, operationalTasks, pmsSnapshots };
+    metrics, followUps, rooms, housekeepingTasks, maintenanceTickets, operationalTasks, pmsSnapshots,
+    paymentRequests: paymentRequestRows };
 };

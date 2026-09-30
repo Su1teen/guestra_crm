@@ -60,15 +60,18 @@ export const receivePaymentRequest = async (tx: Tx, paymentRequestId: string, in
       ? await tx.select().from(s.conversations).where(eq(s.conversations.id, paymentRequest.conversationId)).limit(1)
       : await tx.select().from(s.conversations).where(eq(s.conversations.leadId, paymentRequest.leadId)).limit(1);
     if (conversation) {
-      const [[property], [guest], [directions], services] = await Promise.all([
+      const [[property], [guest], [directions], services, catalog] = await Promise.all([
         tx.select().from(s.properties).where(eq(s.properties.id, reservation.propertyId)).limit(1),
         tx.select().from(s.guests).where(eq(s.guests.id, reservation.bookerCustomerId)).limit(1),
         tx.select().from(s.propertyKnowledge).where(and(eq(s.propertyKnowledge.propertyId, reservation.propertyId),
           eq(s.propertyKnowledge.topic, "directions_2gis"), eq(s.propertyKnowledge.active, true))).limit(1),
         tx.select().from(s.serviceReservations).where(eq(s.serviceReservations.reservationId, reservation.id)),
+        tx.select().from(s.serviceCatalog).where(eq(s.serviceCatalog.propertyId, reservation.propertyId)),
       ]);
-      const serviceText = services.length ? ` Дополнительные услуги: ${services.length}.` : "";
-      const text = `Здравствуйте, ${guest?.fullName.split(/\s+/)[0] ?? "гость"}! Бронь ${reservation.externalConfirmationNumber ?? reservation.code} в ${property?.name ?? "нашем отеле"} подтверждена. ${new Date(reservation.arrivalAt).toLocaleDateString("ru-RU")}–${new Date(reservation.departureAt).toLocaleDateString("ru-RU")}, ${reservation.roomTypeSnapshot ?? "размещение"}, ${reservation.adults + reservation.children} гостей. Получено ${updatedFolio.paidAmount.toLocaleString("ru-RU")} ${updatedFolio.currency}.${serviceText} ${directions?.content ?? ""} Ждём вас!`.replace(/\s+/g, " ").trim();
+      const serviceNames = services.filter((service) => service.status !== "cancelled")
+        .map((service) => catalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга");
+      const serviceText = serviceNames.length ? ` Дополнительные услуги: ${serviceNames.join(", ")}.` : "";
+      const text = `Здравствуйте, ${guest?.fullName.split(/\s+/)[0] ?? "гость"}! Бронь ${reservation.externalConfirmationNumber ?? reservation.code} в ${property?.name ?? "нашем отеле"} подтверждена. ${new Date(reservation.arrivalAt).toLocaleDateString("ru-RU")}–${new Date(reservation.departureAt).toLocaleDateString("ru-RU")}, ${reservation.roomTypeSnapshot ?? "размещение"}, ${reservation.adults + reservation.children} гостей. Стоимость ${updatedFolio.totalAmount.toLocaleString("ru-RU")} ${updatedFolio.currency}, получено ${updatedFolio.paidAmount.toLocaleString("ru-RU")}, остаток ${updatedFolio.balance.toLocaleString("ru-RU")}.${serviceText} ${directions?.content ?? ""} Ждём вас!`.replace(/\s+/g, " ").trim();
       const [message] = await tx.insert(s.messages).values({ id: id("message"), conversationId: conversation.id,
         direction: "out", text, sentAt: timestamp, senderType: "system", deliveryStatus: "pending",
         idempotencyKey: `reservation:${reservation.id}:confirmation`, metadata: { reservationId: reservation.id, kind: "confirmation" } })

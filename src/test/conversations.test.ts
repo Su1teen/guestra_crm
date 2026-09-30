@@ -30,4 +30,9 @@ describe("conversation queue state", () => {
   it("keeps a closed conversation out of active queues", () => {
     expect(conversationQueueState(conversation("closed", ["in"]))).toBe("closed");
   });
+
+  it("does not assign AI-owned inbound messages to a human reply queue", () => {
+    expect(conversationQueueState({ ...conversation("open", ["in"]), automationMode: "ai" })).toBe("ai_handling");
+    expect(conversationQueueState({ ...conversation("open", ["in"]), automationMode: "needs_human" })).toBe("needs_answer");
+  });
 });

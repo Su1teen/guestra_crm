@@ -836,6 +836,23 @@ export interface Conversation {
   aiResumedAt?: string;
 }
 
+export interface PaymentRequest {
+  id: string;
+  leadId: string;
+  reservationId?: string | null;
+  conversationId?: string | null;
+  amount: number;
+  currency: string;
+  kind: string;
+  method: string;
+  status: "draft" | "sent" | "paid" | "expired" | "cancelled";
+  paymentUrl?: string | null;
+  sentAt?: string | null;
+  expiresAt?: string | null;
+  paidAt?: string | null;
+  createdAt: string;
+}
+
 export interface ConversationSummary {
   text: string;
   dates?: string;
@@ -1219,6 +1236,7 @@ export interface CrmDataset {
   pmsSnapshots: PmsDailySnapshot[];
   serviceCatalog: ServiceCatalogEntry[];
   folios: Folio[];
+  paymentRequests?: PaymentRequest[];
   scheduledOutboundMessages?: { id: string; reservationId: string; triggerType: string; scheduledAt: string; status: string }[];
 }
 import type { ServiceResourceGroup, ServiceResource, ServiceResourceRequirement, ServiceResourceAllocation, ServiceResourceBlock, ServiceBookingMode } from "@shared/service-availability";

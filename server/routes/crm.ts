@@ -210,7 +210,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
     if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
     const body = z.object({ paymentUrl: z.string().url().optional(), method: z.enum(["card_link", "invoice", "transfer", "kaspi"]),
-      note: z.string().trim().max(400).optional() }).parse(request.body);
+      note: z.string().trim().max(400).optional(), resendKey: z.string().uuid().optional() }).parse(request.body);
     if (body.method === "card_link" && !body.paymentUrl) return response.status(400).json({ error: "Укажите ссылку на оплату" });
     const result = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT id FROM payment_requests WHERE id = ${request.params.id} FOR UPDATE`);
@@ -223,7 +223,8 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
       if (!conversation) return { error: "Диалог для оплаты не найден", status: 409 } as const;
       const [reservation] = paymentRequest.reservationId ? await tx.select().from(s.reservations).where(eq(s.reservations.id, paymentRequest.reservationId)).limit(1) : [];
       if (reservation?.holdExpiresAt && reservation.holdExpiresAt < now()) return { error: "Срок удержания брони истёк", status: 409 } as const;
-      const key = `payment-request:${paymentRequest.id}:send`;
+      const key = paymentRequest.status === "sent" && body.resendKey
+        ? `payment-request:${paymentRequest.id}:resend:${body.resendKey}` : `payment-request:${paymentRequest.id}:send`;
       const [existing] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, key)).limit(1);
       if (existing) return { message: existing, paymentRequest };
       const [property] = await tx.select().from(s.properties).where(eq(s.properties.id, conversation.propertyId)).limit(1);
@@ -1155,6 +1156,44 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
       offer = await createOfferFromFolio(db, lead, fresh!.folio, employeeId);
     }
     response.status(201).json(offer);
+  });
+
+  router.post("/offers/:id/send", async (request, response) => {
+    const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
+    if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
+    const result = await db.transaction(async (tx) => {
+      const [offer] = await tx.select().from(s.offers).where(eq(s.offers.id, request.params.id)).limit(1);
+      if (!offer) return null;
+      if (!["draft", "sent"].includes(offer.status)) return { error: "КП уже закрыто; создайте новую версию" } as const;
+      const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.leadId, offer.leadId)).limit(1);
+      if (!conversation) return { error: "Диалог для КП не найден" } as const;
+      const key = `offer:${offer.id}:send`;
+      const [existing] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, key)).limit(1);
+      if (existing) return { offer, message: existing };
+      const lines = await tx.select().from(s.offerLines).where(eq(s.offerLines.offerId, offer.id));
+      const text = [`Коммерческое предложение ${offer.code}`,
+        ...lines.map((line) => `${line.label}: ${line.amount.toLocaleString("ru-RU")} ${offer.currency}`),
+        `Итого: ${offer.total.toLocaleString("ru-RU")} ${offer.currency}`,
+        offer.deposit > 0 ? `Предоплата: ${offer.deposit.toLocaleString("ru-RU")} ${offer.currency}` : "",
+        offer.terms ?? ""].filter(Boolean).join("\n");
+      const [message] = await tx.insert(s.messages).values({ id: id("message"), conversationId: conversation.id,
+        direction: "out", employeeId, senderType: "system", text, sentAt: now(), deliveryStatus: "pending",
+        idempotencyKey: key, metadata: { offerId: offer.id, kind: "offer" } }).returning();
+      return { offer, message };
+    });
+    if (!result) return response.status(404).json({ error: "КП не найдено" });
+    if ("error" in result) return response.status(409).json({ error: result.error });
+    const delivery = await sendConversationMessage(db, result.message.id, {
+      webhookUrl: config.AGENT_OUTBOUND_WEBHOOK_URL, webhookToken: config.AGENT_OUTBOUND_WEBHOOK_TOKEN,
+      whatsappWebhookUrl: config.WHATSAPP_OUTBOUND_WEBHOOK_URL, whatsappWebhookToken: config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN });
+    if (delivery.sent && result.message.deliveryStatus !== "sent") {
+      await db.update(s.offers).set({ status: "sent", sentAt: now(), updatedAt: now() }).where(eq(s.offers.id, result.offer.id));
+      await db.update(s.conversations).set({ offerId: result.offer.id, status: "pending", lastMessageAt: now(), updatedAt: now() })
+        .where(eq(s.conversations.id, result.message.conversationId));
+      await db.insert(s.leadActivities).values({ id: id("activity"), leadId: result.offer.leadId, employeeId,
+        type: "offer_sent", title: `КП ${result.offer.code} отправлено`, occurredAt: now() });
+    }
+    response.status(delivery.sent ? 200 : 502).json({ delivery, offerId: result.offer.id });
   });
 
   router.patch("/offers/:id/status", async (request, response) => {
