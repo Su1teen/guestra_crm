@@ -10,8 +10,6 @@ import {
   Pencil,
   Plus,
   StickyNote,
-  Phone,
-  Mail,
   Tag,
   Trash2,
 } from "lucide-react";
@@ -19,7 +17,7 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { SectionCard } from "@/components/common/SectionCard";
 import { StatusPill } from "@/components/common/StatusPill";
 import { EmptyState, ErrorState, LoadingScreen } from "@/components/common/States";
-import { Field, InitialsAvatar } from "@/components/common/Identity";
+import { Field } from "@/components/common/Identity";
 import { Timeline } from "@/components/common/Timeline";
 import { CreateTaskDialog } from "@/components/crm/CreateTaskDialog";
 import { CreateReservationDialog } from "@/components/crm/CreateReservationDialog";
@@ -29,6 +27,7 @@ import { ServicePicker } from "@/components/crm/ServicePicker";
 import { ServiceBookingDialog } from "@/components/crm/ServiceBookingDialog";
 import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDialog";
 import { GuestRecognitionDialog } from "@/components/crm/GuestRecognitionDialog";
+import { RequestGuestSnapshot } from "@/components/crm/RequestGuestSnapshot";
 import { CommercialLifecyclePanel } from "@/components/crm/CommercialLifecyclePanel";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -59,7 +58,6 @@ import {
   directionLabels,
   qualityLabels,
   intentLabels,
-  intentTone,
   itemStatusLabels,
   itemTypeLabels,
   lostReasonLabels,
@@ -70,7 +68,6 @@ import {
   paymentStatusTone,
   sourceLabels,
   stageLabels,
-  stageTone,
   taskStatusLabels,
   taskStatusTone,
   taskTypeLabels,
@@ -85,6 +82,7 @@ import {
 } from "@shared/service-groups";
 import type { InterestDetails, InterestDirection, LeadItem, LostReason } from "@/types/crm";
 import { useToast } from "@/hooks/use-toast";
+import { ApiError } from "@/lib/api";
 
 const toLocalDate = (iso: string | null | undefined) => iso?.slice(0, 10) ?? "";
 
@@ -387,17 +385,6 @@ const LeadDetail = () => {
       <PageHeader
         title={`${guest.fullName} · ${lead.code}`}
         description={`${property.name} · ${lead.checkIn ? `${formatStayRange(lead.checkIn, lead.checkOut)} · ` : ""}${lead.roomType || (lead.items?.[0]?.name ?? "Обращение")}`}
-        meta={
-          <>
-            <StatusPill tone={stageTone[lead.stage]} withDot size="md">
-              {stageLabels[lead.stage]}
-            </StatusPill>
-            <StatusPill tone={intentTone[lead.intent]}>{intentLabels[lead.intent]}</StatusPill>
-            <StatusPill tone={paymentStatusTone[lead.paymentStatus]}>{paymentStatusLabels[lead.paymentStatus]}</StatusPill>
-            <StatusPill tone="neutral">Источник: {sourceLabels[lead.source]}</StatusPill>
-            {lead.bookingReference && <StatusPill tone="success">Бронь {lead.bookingReference}</StatusPill>}
-          </>
-        }
         actions={
           <>
             {reservation ? <Button onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>Открыть бронь</Button>
@@ -431,14 +418,6 @@ const LeadDetail = () => {
 
       <CommercialLifecyclePanel lead={lead} conversation={conversation} reservation={reservation} folio={folio} />
 
-      <SectionCard title="Следующее действие" description="Краткий контекст обращения">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><p className="text-sm font-semibold">{lead.nextAction?.label ?? lead.classification.recommendedAction ?? "Уточнить запрос гостя"}</p>
-            {lead.classification.missingData.length > 0 && <p className="mt-1 text-xs text-muted-foreground">Нужно уточнить: {lead.classification.missingData.join(", ")}</p>}</div>
-          <div className="flex flex-wrap gap-2"><StatusPill tone="info">{directionLabels[lead.classification.direction]}</StatusPill>
-            <StatusPill tone="neutral">{qualityLabels[lead.classification.quality]}</StatusPill></div>
-        </div>
-      </SectionCard>
       {bookedServices.length > 0 && <SectionCard title="Забронированные услуги"><div className="space-y-2">{bookedServices.map((service) =>
         <button type="button" key={service.id} className="flex w-full items-center justify-between rounded-lg border p-3 text-left text-sm hover:bg-secondary" onClick={() => setSelectedServiceId(service.id)}>
           <span>{data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"} · {formatDateTime(service.startAt)}</span>
@@ -459,14 +438,9 @@ const LeadDetail = () => {
         </details>
       )}
 
-      <div className="mt-1 grid gap-3 sm:grid-cols-4">
-        <Field label="Вероятность">{formatPercent(lead.probability, 0)}</Field>
-        <Field label="Создан">{formatDateLong(lead.createdAt)}</Field>
-        <Field label="Последняя активность">{formatRelative(lead.lastActivityAt)}</Field>
-        <Field label="Следующее действие">
-          {lead.nextAction ? `${lead.nextAction.label} · ${formatDueDate(lead.nextAction.dueAt)}` : "—"}
-        </Field>
-      </div>
+      <details className="rounded-xl border border-border bg-card p-3"><summary className="cursor-pointer text-sm font-medium text-muted-foreground">Дополнительно · CRM данные</summary>
+        <div className="mt-3 grid gap-3 sm:grid-cols-4"><Field label="Технический этап">{stageLabels[lead.stage]}</Field><Field label="Вероятность">{formatPercent(lead.probability, 0)}</Field><Field label="Создан">{formatDateLong(lead.createdAt)}</Field><Field label="Последняя активность">{formatRelative(lead.lastActivityAt)}</Field><Field label="Источник">{sourceLabels[lead.source]}</Field><Field label="Качество">{qualityLabels[lead.classification.quality]}</Field><Field label="Температура">{intentLabels[lead.intent]}</Field><Field label="Оплата">{paymentStatusLabels[lead.paymentStatus]}</Field></div>
+      </details>
       {lead.lostReason && (
         <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
           Причина потери: {lostReasonLabels[lead.lostReason]}
@@ -726,26 +700,7 @@ const LeadDetail = () => {
             />
           )}
 
-          {(lead.roomType || lead.checkIn) && (
-            <SectionCard title="Параметры проживания">
-              <div className="grid gap-4 sm:grid-cols-3">
-                <Field label="Объект">{property.name}</Field>
-                <Field label="Категория">{lead.roomType || "Не указана"}</Field>
-                <Field label="Даты">{formatStayRange(lead.checkIn, lead.checkOut)}</Field>
-                <Field label="Заезд">{lead.checkIn ? `${formatDateLong(lead.checkIn)}, 15:00` : "—"}</Field>
-                <Field label="Выезд">{lead.checkOut ? `${formatDateLong(lead.checkOut)}, 12:00` : "—"}</Field>
-                <Field label="Ночей">{lead.nights}</Field>
-                <Field label="Гости">{occupancyLabel(lead.adults, lead.children)}</Field>
-                <Field label="Ответственный">{owner.name}</Field>
-                <Field label="Бронирование">{lead.bookingReference ?? "—"}</Field>
-              </div>
-              {lead.specialRequest && (
-                <p className="mt-4 rounded-xl bg-secondary/70 px-3 py-2 text-sm text-muted-foreground">
-                  Особый запрос: {lead.specialRequest}
-                </p>
-              )}
-            </SectionCard>
-          )}
+          {(lead.roomType || lead.checkIn) && <div className="flex flex-wrap gap-x-5 gap-y-1 rounded-xl bg-secondary/40 px-4 py-3 text-sm"><span>{lead.roomType || "Категория уточняется"}</span><span>{formatStayRange(lead.checkIn, lead.checkOut)}</span><span>{occupancyLabel(lead.adults, lead.children)}</span><span>Ответственный: {owner.name}</span>{lead.specialRequest && <span className="w-full text-muted-foreground">{lead.specialRequest}</span>}</div>}
 
           <SectionCard
             title="История активности"
@@ -778,56 +733,24 @@ const LeadDetail = () => {
         </div>
 
         <div className="space-y-5">
-          <SectionCard title="Гость">
-            <div className="flex items-center gap-3">
-              <InitialsAvatar name={guest.fullName} size="lg" />
-              <div className="min-w-0">
-                <button type="button" onClick={() => setRecognitionOpen(true)} className="text-sm font-semibold text-brand-600 hover:underline">
-                  {guest.fullName}
-                </button>
-                <p className="text-xs text-muted-foreground">{guest.company ?? "Частный гость"}</p>
-              </div>
-            </div>
-            <div className="mt-4 space-y-2 text-sm">
-              <p className="flex items-center gap-2 text-muted-foreground">
-                <Phone className="h-3.5 w-3.5" />
-                {guest.phone}
-              </p>
-              <p className="flex items-center gap-2 text-muted-foreground">
-                <Mail className="h-3.5 w-3.5" />
-                {guest.email}
-              </p>
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <Field label="Проживаний">{guest.staysCount}</Field>
-              <Field label="Покупки за всё время">{formatTenge(guest.lifetimeValue)}</Field>
-              <Field label="Язык">{guest.language}</Field>
-              <Field label="Последний визит">
-                {guest.lastStayDate ? formatDateLong(guest.lastStayDate) : "Ещё не проживал"}
-              </Field>
-            </div>
-            <div className="mt-4 space-y-1 text-xs text-muted-foreground">
-              <p>Предпочтения: {guest.preferences.roomPreference}</p>
-              <p>Питание: {guest.preferences.foodPreference}</p>
-              {guest.preferences.specialRequests.length > 0 && <p>Пожелания: {guest.preferences.specialRequests.join(", ")}</p>}
-            </div>
-          </SectionCard>
+          <RequestGuestSnapshot guest={guest} onRecognize={() => setRecognitionOpen(true)} />
 
           <SectionCard
             title="Предложения"
             bodyClassName="p-0"
             padded={false}
             actions={
-              !terminal && (lead.stage === "planning" || lead.stage === "offer") ? (
+              !terminal ? (
                 <Button
                   size="sm"
                   variant="outline"
                   className="gap-1.5"
                   onClick={async () => {
-                    const offerId = await createOfferFromLead(lead.id);
-                    if (offerId) {
-                      toast({ title: "Предложение сформировано из счёта" });
-                      navigate(`/offers/${offerId}`);
+                    try {
+                      const offerId = await createOfferFromLead(lead.id);
+                      if (offerId) { toast({ title: "Предложение сформировано из счёта" }); navigate(`/offers/${offerId}`); }
+                    } catch (error) {
+                      toast({ title: "Нужно подготовить предложение", description: error instanceof ApiError ? error.message : error instanceof Error ? error.message : undefined, variant: "destructive" });
                     }
                   }}
                 >
@@ -876,7 +799,7 @@ const LeadDetail = () => {
             </div>
           </SectionCard>
 
-          <SectionCard title="История этапов">
+          <details className="rounded-xl border border-border bg-card p-3"><summary className="cursor-pointer text-sm font-medium text-muted-foreground">История технических этапов · {lead.stageHistory.length}</summary>
             <ol className="space-y-2 text-sm">
               {lead.stageHistory.map((entry) => (
                 <li key={`${entry.stage}-${entry.at}`} className="flex items-center justify-between gap-3">
@@ -885,7 +808,7 @@ const LeadDetail = () => {
                 </li>
               ))}
             </ol>
-          </SectionCard>
+          </details>
         </div>
       </div>
 

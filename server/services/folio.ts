@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 import {
@@ -260,6 +260,8 @@ export const createOfferFromFolio = async (
 ) => {
   const lines = await db.select().from(s.folioLines)
     .where(and(eq(s.folioLines.folioId, folio.id), eq(s.folioLines.status, "active")));
+  const [accommodationItem] = await db.select().from(s.leadItems)
+    .where(and(eq(s.leadItems.leadId, lead.id), eq(s.leadItems.type, "accommodation"), ne(s.leadItems.status, "cancelled"))).limit(1);
   const offerId = newId("offer");
   const timestamp = now();
   const [offer] = await db.insert(s.offers).values({
@@ -269,11 +271,11 @@ export const createOfferFromFolio = async (
     guestId: lead.guestId,
     propertyId: lead.propertyId,
     folioId: folio.id,
-    roomType: lead.roomType,
-    checkIn: lead.checkIn,
-    checkOut: lead.checkOut,
-    nights: lead.nights,
-    adults: lead.adults,
+    roomType: lead.roomType ?? accommodationItem?.name,
+    checkIn: lead.checkIn ?? accommodationItem?.startAt,
+    checkOut: lead.checkOut ?? accommodationItem?.endAt,
+    nights: lead.nights || accommodationItem?.nights || 0,
+    adults: lead.adults || accommodationItem?.adults || accommodationItem?.participants || 0,
     children: lead.children,
     status: "draft",
     ownerId: lead.ownerId,

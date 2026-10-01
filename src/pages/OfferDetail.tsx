@@ -17,12 +17,14 @@ import {
 } from "@/lib/format";
 import { offerStatusLabels, offerStatusTone, stageLabels, stageTone } from "@/lib/labels";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/api";
+import { previewMockOffer } from "@/lib/document-preview";
 
 const OfferDetail = () => {
   const { offerId = "" } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { status, reload, data, offerById, guestById, leadById, employeeById, propertyById, setOfferStatus, duplicateOffer } = useCrm();
+  const { status, reload, data, dataMode, offerById, guestById, leadById, employeeById, propertyById, setOfferStatus, duplicateOffer } = useCrm();
 
   if (status === "error") return <ErrorState onRetry={reload} />;
   if (status === "loading") return <LoadingScreen />;
@@ -74,6 +76,7 @@ const OfferDetail = () => {
         }
         actions={
           <>
+            <Button variant="outline" onClick={() => dataMode === "database" ? window.open(`/api/crm/offers/${offer.id}/preview`, "_blank", "noopener,noreferrer") : previewMockOffer(data, offer)}><Eye className="mr-2 h-4 w-4" />Документ / PDF</Button>
             <Button variant="outline" className="gap-2" onClick={() => toast({ title: "Редактирование в демо недоступно", description: "Измените условия в карточке обращения." })}>
               <Pencil className="h-4 w-4" />
               Изменить
@@ -91,7 +94,13 @@ const OfferDetail = () => {
               Дублировать
             </Button>
             {offer.status === "draft" && (
-              <Button className="gap-2" onClick={() => changeStatus("sent", "Предложение отправлено")}>
+              <Button className="gap-2" onClick={async () => {
+                try {
+                  if (dataMode === "database") { await apiRequest(`/api/crm/offers/${offer.id}/send`, { method: "POST" }); reload(); }
+                  else changeStatus("sent", "Предложение отправлено");
+                  toast({ title: "КП отправлено в диалог" });
+                } catch (error) { toast({ title: "Не удалось отправить КП", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); }
+              }}>
                 <Send className="h-4 w-4" />
                 Отправить
               </Button>

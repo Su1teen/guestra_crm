@@ -14,7 +14,6 @@ import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDia
 import { formatTenge } from "@/lib/format";
 import { propertyDate, propertyDateTimeIso, propertyTime } from "@/lib/service-time";
 
-const dateToday = () => propertyDate(new Date(), "Asia/Qyzylorda");
 const overlapsHour = (startAt: string, endAt: string, date: string, hour: number, timeZone: string) => {
   const start = new Date(propertyDateTimeIso(date, `${String(hour).padStart(2, "0")}:00`, timeZone)).getTime();
   return new Date(startAt).getTime() < start + 3_600_000 && new Date(endAt).getTime() > start;
@@ -23,7 +22,7 @@ const overlapsHour = (startAt: string, endAt: string, date: string, hour: number
 const Services = () => {
   const { data, property, createServiceResourceBlock, cancelServiceResourceBlock } = useCrm();
   const { toast } = useToast();
-  const [date, setDate] = useState(dateToday);
+  const [date, setDate] = useState(() => propertyDate(new Date(), data.properties.find((item) => item.id === property)?.timezone ?? "Asia/Almaty"));
   const [view, setView] = useState<"schedule" | "list">("schedule");
   const [catalogItemId, setCatalogItemId] = useState("");
   const [status, setStatus] = useState("all");
@@ -40,7 +39,7 @@ const Services = () => {
   const catalog = data.serviceCatalog.filter((item) => item.active && item.serviceType !== "accommodation" &&
     (property === "all" || item.propertyId === property));
   const selected = catalog.find((item) => item.id === catalogItemId) ?? catalog.find((item) => item.bookingMode === "resource" || item.bookingMode === "capacity");
-  const timeZone = ((selected?.metadata?.bookingWindow as { timeZone?: string } | undefined)?.timeZone) ?? "Asia/Qyzylorda";
+  const timeZone = ((selected?.metadata?.bookingWindow as { timeZone?: string } | undefined)?.timeZone) ?? data.properties.find((item) => item.id === selected?.propertyId)?.timezone ?? "Asia/Almaty";
   const requirements = data.serviceResourceRequirements.filter((item) => item.catalogItemId === selected?.id);
   const groups = requirements.map((item) => data.serviceResourceGroups.find((group) => group.id === item.resourceGroupId)).filter((item) => item != null);
   const hours = useMemo(() => {
@@ -49,7 +48,7 @@ const Services = () => {
     const last = Number(window?.end?.slice(0, 2) ?? 22);
     return Array.from({ length: Math.max(1, last - first) }, (_, index) => first + index);
   }, [selected]);
-  const serviceIdsForDate = new Set(data.serviceReservations.filter((item) => propertyDate(item.startAt, timeZone) === date).map((item) => item.id));
+  const serviceIdsForDate = new Set(data.serviceReservations.filter((item) => propertyDate(item.startAt, data.properties.find((candidate) => candidate.id === item.propertyId)?.timezone ?? timeZone) === date).map((item) => item.id));
   const services = data.serviceReservations.filter((item) => serviceIdsForDate.has(item.id) &&
     (property === "all" || item.propertyId === property) && (!catalogItemId || item.catalogItemId === catalogItemId) &&
     (status === "all" || item.status === status)).sort((a, b) => a.startAt.localeCompare(b.startAt));

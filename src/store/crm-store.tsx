@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { crmDataset } from "@/data/dataset";
 import { useAuth } from "@/contexts/AuthContext";
-import { apiRequest } from "@/lib/api";
+import { ApiError, apiRequest } from "@/lib/api";
+import { evaluateOfferReadiness } from "@shared/offer-readiness";
 import { applyManualOverride } from "@/lib/classification";
 import { generateFollowUps } from "@/lib/followup";
 import type {
@@ -647,7 +648,8 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       data.reservations.some((item) => item.id === unit.reservationId && !["cancelled", "no_show", "completed"].includes(item.status)));
     if (conflict) throw new Error("Домик занят на выбранные даты");
     const at = new Date().toISOString();
-    const days = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
+    const timezone = data.properties.find((item) => item.id === reservation.propertyId)?.timezone ?? "Asia/Almaty";
+    const days = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: timezone });
     const nights = Math.max(1, Math.round((Date.parse(`${days(departureAt)}T00:00:00Z`) - Date.parse(`${days(reservation.arrivalAt)}T00:00:00Z`)) / 86_400_000));
     const addedNights = nights - stay.nights;
     if (addedNights <= 0) throw new Error("Продление должно добавить хотя бы одну ночь");
@@ -681,7 +683,8 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     const reservation = data.reservations.find((item) => item.id === reservationId);
     const stay = data.stays.find((item) => item.reservationId === reservationId);
     if (!reservation || !stay || !["in_house", "due_out"].includes(stay.operationalStatus ?? "")) throw new Error("Время выезда можно менять только во время проживания");
-    const days = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
+    const timezone = data.properties.find((item) => item.id === reservation.propertyId)?.timezone ?? "Asia/Almaty";
+    const days = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: timezone });
     if (days(departureAt) !== days(reservation.departureAt)) throw new Error("Для изменения даты выезда используйте продление проживания");
     if (new Date(departureAt) <= new Date()) throw new Error("Время выезда должно быть в будущем");
     const roomId = stay.roomId;
@@ -1341,6 +1344,11 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       const offer = await persist<{ id: string }>(`/api/crm/leads/${leadId}/offers`, { method: "POST" });
       return offer.id;
     }
+    const request = data.leads.find((item) => item.id === leadId);
+    if (!request) return undefined;
+    const pricedFolio = folioForLead(request, data.folios, data.payments);
+    const readiness = evaluateOfferReadiness({ ...request, folio: pricedFolio, lines: pricedFolio.lines });
+    if (!readiness.ready) throw new ApiError(409, `Нужно заполнить: ${readiness.blockers.map((blocker) => blocker.label).join("; ")}`, readiness.blockers);
     const offerId = `offer_new_${Math.random().toString(36).slice(2, 8)}`;
     setData((previous) => {
       const lead = previous.leads.find((item) => item.id === leadId);
@@ -1405,7 +1413,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       };
     });
     return offerId;
-  }, [actorId, dataMode, persist]);
+  }, [actorId, data, dataMode, persist]);
 
   const createTask = useCallback(async (input: CreateTaskInput) => {
     if (dataMode === "database") { await persist("/api/crm/tasks", { method: "POST", body: JSON.stringify(input) }); return; }

@@ -4,6 +4,8 @@ import { Archive, GripVertical, Layers, Trophy } from "lucide-react";
 import { PageHeader } from "@/components/common/PageHeader";
 import { EmptyState, ErrorState, LoadingScreen } from "@/components/common/States";
 import { LeadCard } from "@/components/crm/LeadCard";
+import { RequestQuickViewDialog } from "@/components/crm/RequestQuickViewDialog";
+import { Button } from "@/components/ui/button";
 import { FilterBar, FilterSelect, ResetFiltersButton, SearchInput } from "@/components/common/Filters";
 import { StatusPill } from "@/components/common/StatusPill";
 import { activityOptions, periodOptions, sourceOptions, useLeadFilters, useOwnerOptions, valueOptions } from "@/hooks/use-lead-filters";
@@ -26,6 +28,9 @@ const Pipeline = () => {
   const ownerOptions = useOwnerOptions();
   const { filters, setFilter, reset, isDirty, filtered } = useLeadFilters(scoped.leads);
   const [dragOver, setDragOver] = useState<(typeof statuses)[number] | null>(null);
+  const [quickViewId, setQuickViewId] = useState<string | null>(null);
+  const [expandedByColumn, setExpandedByColumn] = useState<Record<string, string | null>>({});
+  const [visibleByColumn, setVisibleByColumn] = useState<Record<string, number>>({});
   const columns = useMemo(() => statuses.map((requestStatus) => ({
     status: requestStatus,
     requests: filtered.filter((request) => requestStatusOf(request) === requestStatus)
@@ -66,11 +71,15 @@ const Pipeline = () => {
         <header className="flex items-center justify-between gap-2 border-b border-border px-4 py-3"><div><p className="text-sm font-semibold">{requestStatusLabels[column.status]}</p>
           <p className="text-xs text-muted-foreground">{column.requests.length} обращений · {formatTengeCompact(column.requests.reduce((sum, item) => sum + item.totalAmount, 0))}</p></div>
           <StatusPill tone="neutral">{column.requests.length}</StatusPill></header>
-        <div className="flex-1 space-y-3 p-3">{column.requests.map((request) => <LeadCard key={request.id} lead={request} draggable onOpen={() => navigate(`/requests/${request.id}`)} className="shadow-sm" />)}
+        <div className="flex-1 space-y-2 p-3">{column.requests.slice(0, visibleByColumn[column.status] ?? 30).map((request) => <LeadCard key={request.id} lead={request} draggable onOpen={() => setQuickViewId(request.id)}
+          expanded={expandedByColumn[column.status] === request.id} onExpand={() => setExpandedByColumn((previous) => ({ ...previous, [column.status]: previous[column.status] === request.id ? null : request.id }))}
+          onConversation={() => { const conversation = scoped.conversations.find((item) => item.leadId === request.id); if (conversation) navigate(`/inbox?conversation=${conversation.id}`); else setQuickViewId(request.id); }} className="shadow-sm" />)}
+          {column.requests.length > (visibleByColumn[column.status] ?? 30) && <Button variant="outline" className="w-full" onClick={() => setVisibleByColumn((previous) => ({ ...previous, [column.status]: (previous[column.status] ?? 30) + 30 }))}>Показать ещё · {column.requests.length - (visibleByColumn[column.status] ?? 30)}</Button>}
           {column.requests.length === 0 && <p className="rounded-xl border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">Нет обращений</p>}</div>
       </section>)}</div>}
     <section className="rounded-2xl border border-border bg-card p-4"><div className="flex items-center gap-2"><Archive className="h-4 w-4 text-muted-foreground" /><div><h2 className="text-sm font-semibold">Завершённые исходы</h2><p className="text-xs text-muted-foreground">Won / Lost / Closed не смешиваются с рабочими этапами.</p></div><StatusPill tone="neutral">{terminal.length}</StatusPill></div>{terminal.length ? <div className="mt-3 flex flex-wrap gap-2">{terminal.slice(0, 8).map((request) => <button key={request.id} onClick={() => navigate(`/requests/${request.id}`)} className="rounded-lg border border-border px-3 py-2 text-left text-xs hover:bg-secondary"><Trophy className="mr-1 inline h-3 w-3" />{request.code} · {request.totalAmount.toLocaleString("ru-RU")} ₸</button>)}</div> : <p className="mt-3 text-xs text-muted-foreground">Нет завершённых обращений в текущем фильтре.</p>}</section>
     <div className="rounded-xl border border-border bg-secondary/30 p-3 text-xs text-muted-foreground"><GripVertical className="mr-1 inline h-3.5 w-3.5" /><strong className="text-foreground">Рабочие этапы:</strong> Новый запрос → Предварительное предложение → Готово к бронированию. Перетащите карточку в любую рабочую колонку; качество, температура и прежний технический этап не меняются.</div>
+    <RequestQuickViewDialog requestId={quickViewId} onOpenChange={(open) => !open && setQuickViewId(null)} />
   </div>;
 };
 

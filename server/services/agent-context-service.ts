@@ -152,7 +152,7 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
     ? (await db.select().from(s.paymentRequests).where(eq(s.paymentRequests.leadId, request.id))
       .orderBy(desc(s.paymentRequests.createdAt)).limit(1))[0] : undefined;
 
-  const timezone = property.timezone || "Asia/Qyzylorda";
+  const timezone = property.timezone || "Asia/Almaty";
   const today = propertyDate(isoNow(), timezone);
   const stayDate = stay ? propertyDate(stay.checkOut, timezone) : "";
   const inHouse = Boolean(stay && ["in_house", "due_out"].includes(stay.operationalStatus) &&

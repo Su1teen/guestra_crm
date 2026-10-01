@@ -48,17 +48,18 @@ const belongsToStay = (task: Task, reservation: Reservation, stay: GuestStay) =>
 
 /** Compact agenda for this reservation and the property's current date. */
 export const todayForStay = (data: CrmDataset, reservation: Reservation, stay: GuestStay, at = new Date()): StayAgendaItem[] => {
-  const today = propertyDate(at, "Asia/Qyzylorda");
+  const timezone = data.properties.find((item) => item.id === reservation.propertyId)?.timezone ?? "Asia/Almaty";
+  const today = propertyDate(at, timezone);
   const items: StayAgendaItem[] = [];
   for (const service of data.serviceReservations.filter((item) => item.status === "scheduled" &&
-    (item.reservationId === reservation.id || item.stayId === stay.id) && propertyDate(item.startAt, "Asia/Qyzylorda") === today)) {
+    (item.reservationId === reservation.id || item.stayId === stay.id) && propertyDate(item.startAt, timezone) === today)) {
     items.push({ id: service.id, at: service.startAt,
       title: data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга",
       detail: `${service.quantity > 1 ? `×${service.quantity} · ` : ""}${service.entitlementId ? "включено" : `${service.totalAmount.toLocaleString("ru-RU")} ₸`}`,
       kind: "service" });
   }
   for (const task of data.tasks.filter((item) => belongsToStay(item, reservation, stay) && item.status !== "done" &&
-    propertyDate(item.dueAt, "Asia/Qyzylorda") === today)) {
+    propertyDate(item.dueAt, timezone) === today)) {
     items.push({ id: task.id, at: task.dueAt, title: task.title,
       detail: task.type === "guest_request" ? `Запрос гостя · ${task.department ?? "в работе"}` : task.department ?? undefined,
       kind: task.type === "guest_request" ? "request" : "task" });
@@ -95,6 +96,7 @@ export interface StayTimelineItem {
 
 /** Combines linked audit activity with existing stay, payment, service, task, and note rows. */
 export const timelineForStay = (data: CrmDataset, reservation: Reservation, stay: GuestStay): StayTimelineItem[] => {
+  const timezone = data.properties.find((item) => item.id === reservation.propertyId)?.timezone ?? "Asia/Almaty";
   const events = data.guestActivity.filter((event) => event.reservationId === reservation.id || event.stayId === stay.id);
   const items: StayTimelineItem[] = events.map((event: GuestActivityEvent) => ({ id: event.id, at: event.at,
     title: event.title, description: event.description, amount: event.amount, employeeId: event.employeeId }));
@@ -111,7 +113,7 @@ export const timelineForStay = (data: CrmDataset, reservation: Reservation, stay
     if (events.some((event) => event.metadata?.serviceReservationId === service.id)) continue;
     items.push({ id: service.id, at: service.completedAt ?? service.cancelledAt ?? service.startAt,
       title: `${data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"} · ${service.status === "scheduled" ? "запланирована" : service.status === "completed" ? "оказана" : "отменена"}`,
-      description: service.status === "scheduled" ? `Начало ${new Date(service.startAt).toLocaleString("ru-RU", { timeZone: "Asia/Qyzylorda", dateStyle: "short", timeStyle: "short" })}` : undefined,
+      description: service.status === "scheduled" ? `Начало ${new Date(service.startAt).toLocaleString("ru-RU", { timeZone: timezone, dateStyle: "short", timeStyle: "short" })}` : undefined,
       amount: service.status === "cancelled" ? undefined : service.totalAmount });
   }
   for (const task of data.tasks.filter((item) => belongsToStay(item, reservation, stay))) {

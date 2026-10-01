@@ -10,9 +10,9 @@ const timestamp = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const DAY_MS = 86_400_000;
 
-const propertyDate = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
-const nightCount = (arrivalAt: string, departureAt: string) => Math.max(1,
-  Math.round((Date.parse(`${propertyDate(departureAt)}T00:00:00Z`) - Date.parse(`${propertyDate(arrivalAt)}T00:00:00Z`)) / DAY_MS));
+const propertyDate = (value: string, timezone: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: timezone });
+const nightCount = (arrivalAt: string, departureAt: string, timezone: string) => Math.max(1,
+  Math.round((Date.parse(`${propertyDate(departureAt, timezone)}T00:00:00Z`) - Date.parse(`${propertyDate(arrivalAt, timezone)}T00:00:00Z`)) / DAY_MS));
 
 const recordStayActivity = async (tx: Tx, stay: typeof s.guestStays.$inferSelect, input: {
   employeeId?: string; type: string; title: string; description?: string; amount?: number;
@@ -105,8 +105,10 @@ export const extendStay = async (tx: Tx, reservationId: string, input: { departu
     inArray(s.reservationUnits.status, ["active", "assigned"])));
   const allocation = allocations.find((item) => item.roomId === roomId);
   if (!allocation) throw new StayConflict("Активное назначение домика не найдено");
+  const [property] = await tx.select().from(s.properties).where(eq(s.properties.id, reservation.propertyId)).limit(1);
+  const timezone = property?.timezone ?? "Asia/Almaty";
   const oldNights = stay.nights;
-  const newNights = nightCount(reservation.arrivalAt, input.departureAt);
+  const newNights = nightCount(reservation.arrivalAt, input.departureAt, timezone);
   if (newNights <= oldNights) throw new StayConflict("Продление должно добавить хотя бы одну ночь");
   const at = timestamp();
   const [folio] = await tx.select().from(s.folios).where(eq(s.folios.reservationId, reservation.id)).limit(1);
@@ -148,7 +150,7 @@ export const extendStay = async (tx: Tx, reservationId: string, input: { departu
   if (reservation.requestId) await tx.update(s.leads).set({ checkOut: input.departureAt, nights: newNights,
     roomAmount: sql`${s.leads.roomAmount} + ${addedCharge}`, updatedAt: at }).where(eq(s.leads.id, reservation.requestId));
   await recordStayActivity(tx, updatedStay, { employeeId: input.employeeId, type: "stay_extended",
-    title: "Проживание продлено", description: `${propertyDate(reservation.departureAt)} → ${propertyDate(input.departureAt)}`,
+    title: "Проживание продлено", description: `${propertyDate(reservation.departureAt, timezone)} → ${propertyDate(input.departureAt, timezone)}`,
     amount: addedCharge, metadata: { previousDepartureAt: reservation.departureAt,
       departureAt: input.departureAt, previousNights: oldNights, nights: newNights, roomId: room.id }, at });
   return { reservation: updatedReservation, stay: updatedStay, addedCharge };
@@ -164,7 +166,9 @@ export const changeDepartureTime = async (tx: Tx, reservationId: string, input: 
   if (!stay) throw new StayConflict("У брони нет проживания");
   if (!(["in_house", "due_out"].includes(stay.operationalStatus) && reservation.status === "confirmed"))
     throw new StayConflict("Время выезда можно менять только во время проживания");
-  if (propertyDate(input.departureAt) !== propertyDate(reservation.departureAt))
+  const [property] = await tx.select().from(s.properties).where(eq(s.properties.id, reservation.propertyId)).limit(1);
+  const timezone = property?.timezone ?? "Asia/Almaty";
+  if (propertyDate(input.departureAt, timezone) !== propertyDate(reservation.departureAt, timezone))
     throw new StayConflict("Для изменения даты выезда используйте продление проживания");
   if (Date.parse(input.departureAt) <= Date.now()) throw new StayConflict("Время выезда должно быть в будущем");
   const roomId = stay.roomId;
@@ -182,7 +186,7 @@ export const changeDepartureTime = async (tx: Tx, reservationId: string, input: 
   await tx.update(s.reservationUnits).set({ departureAt: input.departureAt, updatedAt: at }).where(eq(s.reservationUnits.id, allocation.id));
   await tx.update(s.rooms).set({ checkOutAt: input.departureAt, updatedAt: at }).where(eq(s.rooms.id, room.id));
   await recordStayActivity(tx, updatedStay, { employeeId: input.employeeId, type: "departure_time_changed",
-    title: "Изменено время выезда", description: `${new Date(reservation.departureAt).toLocaleTimeString("ru-RU", { timeZone: "Asia/Qyzylorda", hour: "2-digit", minute: "2-digit" })} → ${new Date(input.departureAt).toLocaleTimeString("ru-RU", { timeZone: "Asia/Qyzylorda", hour: "2-digit", minute: "2-digit" })}`,
+    title: "Изменено время выезда", description: `${new Date(reservation.departureAt).toLocaleTimeString("ru-RU", { timeZone: timezone, hour: "2-digit", minute: "2-digit" })} → ${new Date(input.departureAt).toLocaleTimeString("ru-RU", { timeZone: timezone, hour: "2-digit", minute: "2-digit" })}`,
     metadata: { previousDepartureAt: reservation.departureAt, departureAt: input.departureAt, roomId }, at });
   return { reservation: updatedReservation, stay: updatedStay };
 };
@@ -323,11 +327,12 @@ export const checkOutStay = async (tx: Tx, reservationId: string, input: {
   const at = timestamp();
   // Final bill is a versioned immutable snapshot; the live folio stays the accounting source of truth.
   const lines = await tx.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
+  const payments = await tx.select().from(s.guestPayments).where(eq(s.guestPayments.folioId, folio.id));
   const version = folio.finalVersion + 1;
   const snapshot = { version, kind: "final", generatedAt: at, folio: {
     code: folio.code, currency: folio.currency, subtotal: folio.subtotal, discountAmount: folio.discountAmount,
     totalAmount: folio.totalAmount, paidAmount: folio.paidAmount, balance: folio.balance,
-  }, reservation: { code: reservation.code, arrivalAt: reservation.arrivalAt, departureAt: reservation.departureAt }, lines };
+  }, reservation: { code: reservation.code, arrivalAt: reservation.arrivalAt, departureAt: reservation.departureAt }, lines, payments };
   await tx.insert(s.folioDocuments).values({ id: id("folio_document"), folioId: folio.id, version, kind: "final",
     snapshot, createdByEmployeeId: input.employeeId ?? null, createdAt: at });
   await tx.update(s.folios).set({ status: "closed", closedAt: at, finalVersion: version, finalisedAt: at, updatedAt: at })

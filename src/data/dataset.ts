@@ -368,6 +368,12 @@ guestSeeds.forEach((seed, index) => {
   }
 });
 
+// A stable recognition example for front-desk and request quick views.
+notes.push({ id: "note_guest_001_alert", guestId: "guest_001", authorId: employees[0].id,
+  createdAt: at(-2, 14, 30), text: "Мадина предпочитает тихий домик вдали от ресторана. Перед подтверждением брони проверьте расположение и заранее согласуйте поздний выезд.",
+  propertyId: "les_borovoe", priority: "important", pinned: true, alert: true,
+  validUntil: at(90, 23, 59) });
+
 const guestById = (id: string) => guests.find((guest) => guest.id === id) ?? guests[0];
 
 interface LeadPlan {
@@ -376,10 +382,10 @@ interface LeadPlan {
 }
 
 const leadPlan: LeadPlan[] = [
-  { stage: "new", count: 10 },
-  { stage: "qualified", count: 7 },
-  { stage: "planning", count: 6 },
-  { stage: "offer", count: 7 },
+  { stage: "new", count: 38 },
+  { stage: "qualified", count: 24 },
+  { stage: "planning", count: 22 },
+  { stage: "offer", count: 20 },
   { stage: "payment_pending", count: 7 },
   { stage: "confirmed", count: 7 },
   { stage: "completed", count: 3 },
@@ -1831,13 +1837,14 @@ stays.filter((stay) => stay.status === "upcoming" && stay.id.startsWith("stay_le
 // They are intentionally linked through the existing Reservation / Stay / Task / Service records.
 const demoProperty = "les_borovoe" as const;
 const demoEmployeeId = employees[0].id;
-const demoToday = propertyDate(NOW, "Asia/Qyzylorda");
+const demoTimezone = propertyById(demoProperty).timezone ?? "Asia/Almaty";
+const demoToday = propertyDate(NOW, demoTimezone);
 const demoDay = (offset: number) => {
   const date = new Date(`${demoToday}T12:00:00Z`);
   date.setUTCDate(date.getUTCDate() + offset);
   return date.toISOString().slice(0, 10);
 };
-const demoAt = (offset: number, time: string) => propertyDateTimeIso(demoDay(offset), time, "Asia/Qyzylorda");
+const demoAt = (offset: number, time: string) => propertyDateTimeIso(demoDay(offset), time, demoTimezone);
 const demoServices: NonNullable<CrmDataset["serviceReservations"]> = [];
 const demoFixture = (input: { key: string; guestName: string; roomNumber: string; category: string; startOffset: number;
   endOffset: number; amount: number; status?: "in_house" | "due_out" | "checked_out"; }) => {
@@ -1883,6 +1890,10 @@ const addDemoTask = (input: { id: string; guestId: string; reservationId: string
 };
 
 const demoMadina = demoFixture({ key: "normal", guestName: "Мадина Ержанова", roomNumber: "A-102", category: "A-Frame", startOffset: -1, endOffset: 3, amount: 520000 });
+if (demoMadina) demoReservations.push({ id: "reservation_demo_madina_future", code: "DEMO-RETURN", propertyId: demoProperty,
+  bookerCustomerId: demoMadina.guest.id, roomTypeSnapshot: "A-Frame", source: "demo", status: "confirmed",
+  arrivalAt: demoAt(28, "15:00"), departureAt: demoAt(31, "12:00"), adults: 2, children: 0, currency: "KZT",
+  confirmedAt: demoAt(0, "10:00"), createdAt: demoAt(0, "10:00"), updatedAt: demoAt(0, "10:00") });
 const demoNurlan = demoFixture({ key: "balance_request", guestName: "Нурлан Жумабаев", roomNumber: "A-103", category: "A-Frame", startOffset: -1, endOffset: 2, amount: 480000 });
 const demoAlia = demoFixture({ key: "multiple_services", guestName: "Алия Ниязова", roomNumber: "G-301", category: "Glass House", startOffset: -1, endOffset: 3, amount: 405000 });
 const demoTechnical = demoFixture({ key: "technical_request", guestName: "Марат Сейтказы", roomNumber: "N-201", category: "Nest House", startOffset: -1, endOffset: 2, amount: 420000 });
@@ -1894,7 +1905,7 @@ const demoMove = demoFixture({ key: "room_move", guestName: "Рустем Кал
 
 for (const fixture of [demoMadina, demoNurlan, demoAlia, demoTechnical, demoDueOut, demoCheckedOut, demoExtension, demoConflict, demoMove]) {
   if (!fixture) continue;
-  const arrivalOffset = Math.round((Date.parse(propertyDate(fixture.stay.checkIn, "Asia/Qyzylorda")) - Date.parse(demoToday)) / 86_400_000);
+  const arrivalOffset = Math.round((Date.parse(propertyDate(fixture.stay.checkIn, demoTimezone)) - Date.parse(demoToday)) / 86_400_000);
   demoActivity(fixture.reservation.code, fixture.guest.id, fixture.reservation.id, fixture.stay.id, "check_in", "Гость заселён", arrivalOffset, "15:00");
   if (fixture.stay.operationalStatus === "checked_out") demoActivity(`${fixture.reservation.code}_out`, fixture.guest.id, fixture.reservation.id, fixture.stay.id, "check_out", "Гость выселен", -1, "12:00");
 }
@@ -2129,6 +2140,21 @@ const demoTasks = [...tasks, ...legacyFollowUpTasks].map((task) => {
   return { ...task, conversationId: task.conversationId ?? conversation?.id,
     reservationId: task.reservationId ?? reservation?.id, stayId: task.stayId ?? stay?.id, roomId: task.roomId ?? stay?.roomId };
 });
+
+// One deliberately incomplete request exercises human-readable offer blockers in mock mode.
+const demoIncompleteRequest = leads.find((lead) => lead.stage === "new");
+if (demoIncompleteRequest) {
+  demoIncompleteRequest.roomType = null;
+  demoIncompleteRequest.checkIn = null;
+  demoIncompleteRequest.checkOut = null;
+  demoIncompleteRequest.nights = 0;
+  demoIncompleteRequest.roomAmount = 0;
+  demoIncompleteRequest.totalAmount = 0;
+  demoIncompleteRequest.deposit = 0;
+  demoIncompleteRequest.services = [];
+  demoIncompleteRequest.items = [];
+  demoIncompleteRequest.classification.missingData = ["даты", "категория", "стоимость"];
+}
 
 export const crmDataset: CrmDataset = {
   organization,

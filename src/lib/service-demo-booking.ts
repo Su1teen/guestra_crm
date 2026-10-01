@@ -47,7 +47,8 @@ export const linkDemoServiceToReservation = (data: CrmDataset, serviceId: string
   if (service.customerId !== reservation.bookerCustomerId && !data.reservationGuests.some((item) => item.reservationId === reservation.id && item.customerId === service.customerId))
     throw new Error("Услуга принадлежит другому клиенту");
   if (service.propertyId !== reservation.propertyId) throw new Error("Услуга и бронь относятся к разным объектам");
-  const dateKey = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
+  const timezone = data.properties.find((item) => item.id === reservation.propertyId)?.timezone ?? "Asia/Almaty";
+  const dateKey = (value: string) => new Date(value).toLocaleDateString("sv-SE", { timeZone: timezone });
   if (dateKey(service.startAt) < dateKey(reservation.arrivalAt) || dateKey(service.startAt) >= dateKey(reservation.departureAt))
     throw new Error("Услуга не попадает в даты проживания");
   const stay = data.stays.find((item) => item.reservationId === reservation.id);
@@ -89,12 +90,13 @@ export const bookDemoService = (data: CrmDataset, input: ServiceBookingInput): C
   const catalog = data.serviceCatalog.find((item) => item.id === input.catalogItemId && item.propertyId === input.propertyId && item.active);
   if (!catalog) throw new Error("Услуга не найдена");
   if (!data.guests.some((item) => item.id === input.customerId)) throw new Error("Клиент не найден");
-  const serviceDay = new Date(input.startAt).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" });
+  const timezone = data.properties.find((item) => item.id === input.propertyId)?.timezone ?? "Asia/Almaty";
+  const serviceDay = new Date(input.startAt).toLocaleDateString("sv-SE", { timeZone: timezone });
   const matchingReservations = data.reservations.filter((item) => item.propertyId === input.propertyId &&
     !["cancelled", "no_show", "completed"].includes(item.status) &&
     (!input.requestId || item.requestId === input.requestId) &&
-    serviceDay >= new Date(item.arrivalAt).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" }) &&
-    serviceDay < new Date(item.departureAt).toLocaleDateString("sv-SE", { timeZone: "Asia/Qyzylorda" }) &&
+    serviceDay >= new Date(item.arrivalAt).toLocaleDateString("sv-SE", { timeZone: timezone }) &&
+    serviceDay < new Date(item.departureAt).toLocaleDateString("sv-SE", { timeZone: timezone }) &&
     (item.bookerCustomerId === input.customerId ||
       data.stays.some((stay) => stay.reservationId === item.id && stay.guestId === input.customerId &&
         !["checked_out", "cancelled", "no_show"].includes(stay.operationalStatus)) ||

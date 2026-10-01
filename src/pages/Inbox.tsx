@@ -28,10 +28,11 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { conversationQueueState } from "@/lib/conversations";
 import { inboxAttention, inboxQueueMatches, type InboxQueue } from "@/lib/inbox-attention";
-import { apiRequest } from "@/lib/api";
+import { ApiError, apiRequest } from "@/lib/api";
 import { customerContext, effectiveStayStatus, operationalStatusLabels, reservationReadiness, reservationStatusLabels } from "@/lib/hospitality";
 import { attentionForStay, folioForReservation, todayForStay } from "@/lib/stay-workspace";
 import { propertyTime } from "@/lib/service-time";
+import { previewMockOffer } from "@/lib/document-preview";
 
 const channelOptions = [
   { value: "all", label: "Все каналы" },
@@ -80,6 +81,7 @@ const Inbox = () => {
   const [search, setSearch] = useState("");
   const [teamScope, setTeamScope] = useState<"team" | "mine" | "unassigned">("team");
   const [offerOpen, setOfferOpen] = useState(false);
+  const [offerBlockers, setOfferBlockers] = useState<string[]>([]);
   const [paymentRequestOpen, setPaymentRequestOpen] = useState(false);
   const [paymentRequestMethod, setPaymentRequestMethod] = useState<"card_link" | "invoice" | "transfer">("card_link");
   const [paymentUrl, setPaymentUrl] = useState("");
@@ -261,8 +263,9 @@ const Inbox = () => {
     if (!request) return;
     try {
       const offerId = await createOfferFromLead(request.id);
-      if (offerId) { setOfferOpen(true); toast({ title: "Предложение сформировано" }); }
+      if (offerId) { setOfferBlockers([]); setOfferOpen(true); toast({ title: "Предложение сформировано" }); }
     } catch (error) {
+      if (error instanceof ApiError) setOfferBlockers(error.blockers?.map((blocker) => blocker.label) ?? []);
       toast({ title: "Не удалось сформировать предложение", description: error instanceof Error ? error.message : undefined, variant: "destructive" });
     }
   };
@@ -579,9 +582,10 @@ const Inbox = () => {
       </div>
 
       <Sheet open={contextOpen} onOpenChange={setContextOpen}><SheetContent side="right" className="w-[min(380px,92vw)] overflow-y-auto p-0"><SheetHeader className="sr-only"><SheetTitle>Контекст гостя</SheetTitle><SheetDescription>Текущая бронь, обращение и задача</SheetDescription></SheetHeader>{commandPanel}</SheetContent></Sheet>
-      <Dialog open={offerOpen} onOpenChange={setOfferOpen}><DialogContent><DialogHeader><DialogTitle>Коммерческое предложение</DialogTitle><DialogDescription>Проверьте состав и сумму перед отправкой в текущий диалог.</DialogDescription></DialogHeader>
-        {offer ? <div className="space-y-2 text-sm"><p className="font-medium">{offer.code} · {offer.roomType ?? request?.roomType ?? "Размещение"}</p>{offer.lines.map((line, index) => <div key={index} className="flex justify-between gap-3"><span>{line.label}</span><span>{formatTenge(line.amount)}</span></div>)}<div className="flex justify-between border-t pt-2 font-semibold"><span>Итого</span><span>{formatTenge(offer.total)}</span></div><p className="text-xs text-muted-foreground">Предоплата {formatTenge(offer.deposit)}</p></div> : <p className="text-sm text-muted-foreground">КП ещё не сформировано.</p>}
-        <DialogFooter>{folio?.id && dataMode === "database" && <Button variant="ghost" onClick={() => window.open(`/api/crm/folios/${folio.id}/print`, "_blank", "noopener,noreferrer")}>Печать / PDF</Button>}<Button variant="outline" onClick={() => void createOffer()} disabled={!request || busy}>Сформировать / обновить</Button>{offer && <Button onClick={() => void sendOffer()} disabled={busy || offer.status !== "draft"}>Отправить КП</Button>}</DialogFooter>
+      <Dialog open={offerOpen} onOpenChange={setOfferOpen}><DialogContent className="sm:max-w-xl"><DialogHeader><DialogTitle>Коммерческое предложение</DialogTitle><DialogDescription>Проверьте состав и сумму перед отправкой в текущий диалог.</DialogDescription></DialogHeader>
+        {offerBlockers.length > 0 && <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><p className="font-semibold">Для КП нужно заполнить:</p><ul className="mt-1 list-inside list-disc">{offerBlockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul><Button size="sm" variant="outline" className="mt-2" onClick={() => request && navigate(`/requests/${request.id}`)}>Исправить обращение</Button></div>}
+        {offer ? <div className="space-y-2 text-sm"><p className="font-medium">{offer.code} · {offer.roomType ?? request?.roomType ?? "Размещение"}</p>{offer.checkIn && <p className="text-xs text-muted-foreground">{formatStayRange(offer.checkIn, offer.checkOut)} · {occupancyLabel(offer.adults, offer.children)} · действует до {formatDateLong(offer.expiresAt)}</p>}{offer.lines.map((line, index) => <div key={index} className="flex justify-between gap-3 border-b border-border py-1"><span>{line.label}{line.quantity ? ` · ${line.quantity}` : ""}</span><span>{formatTenge(line.amount)}</span></div>)}<div className="flex justify-between pt-2 font-semibold"><span>Итого</span><span>{formatTenge(offer.total)}</span></div><p className="text-xs text-muted-foreground">Предоплата {formatTenge(offer.deposit)}</p></div> : <p className="text-sm text-muted-foreground">КП ещё не сформировано.</p>}
+        <DialogFooter>{offer && <Button variant="ghost" onClick={() => dataMode === "database" ? window.open(`/api/crm/offers/${offer.id}/preview`, "_blank", "noopener,noreferrer") : previewMockOffer(data, offer)}>Просмотр / PDF</Button>}<Button variant="outline" onClick={() => void createOffer()} disabled={!request || busy}>Сформировать / обновить</Button>{offer && <Button onClick={() => void sendOffer()} disabled={busy || offer.status !== "draft"}>Отправить КП</Button>}</DialogFooter>
       </DialogContent></Dialog>
       <Dialog open={followOpen} onOpenChange={setFollowOpen}><DialogContent><DialogHeader><DialogTitle>Follow-up гостю</DialogTitle><DialogDescription>Проверьте сообщение перед отправкой.</DialogDescription></DialogHeader><Textarea value={followText} onChange={(event) => setFollowText(event.target.value)} rows={5} /><DialogFooter><Button variant="outline" onClick={() => setFollowOpen(false)}>Отмена</Button><Button disabled={busy || !followText.trim()} onClick={() => void sendFollowUp()}>Отправить</Button></DialogFooter></DialogContent></Dialog>
       <Dialog open={paymentRequestOpen} onOpenChange={setPaymentRequestOpen}><DialogContent><DialogHeader><DialogTitle>Запрос оплаты</DialogTitle><DialogDescription>Запрос будет отправлен гостю. Отправка не подтверждает получение денег.</DialogDescription></DialogHeader><FilterSelect value={paymentRequestMethod} onChange={(value) => setPaymentRequestMethod(value as typeof paymentRequestMethod)} options={[{ value: "card_link", label: "Ссылка на оплату" }, { value: "invoice", label: "Счёт" }, { value: "transfer", label: "Перевод" }]} ariaLabel="Способ запроса оплаты" />{paymentRequestMethod === "card_link" && <Input type="url" aria-label="Ссылка на оплату" placeholder="https://…" value={paymentUrl} onChange={(event) => setPaymentUrl(event.target.value)} />}<DialogFooter><Button variant="outline" onClick={() => setPaymentRequestOpen(false)}>Отмена</Button><Button disabled={busy || (paymentRequestMethod === "card_link" && !/^https:\/\//i.test(paymentUrl))} onClick={() => void sendPaymentRequest()}>Отправить</Button></DialogFooter></DialogContent></Dialog>

@@ -23,9 +23,9 @@ const Today = () => {
   if (status === "loading") return <LoadingScreen />;
   const now = new Date();
   const timezone = propertyById(property === "all" ? scoped.reservations[0]?.propertyId ?? data.properties[0]?.id : property)?.timezone ?? "Asia/Almaty";
-  const arrivals = scoped.reservations.filter((item) => item.status === "confirmed" && sameDate(item.arrivalAt, now, timezone) &&
+  const arrivals = scoped.reservations.filter((item) => item.status === "confirmed" && sameDate(item.arrivalAt, now, propertyById(item.propertyId)?.timezone ?? timezone) &&
     !scoped.stays.some((stay) => stay.reservationId === item.id && stay.actualCheckIn));
-  const departures = scoped.reservations.filter((item) => item.status === "confirmed" && sameDate(item.departureAt, now, timezone) &&
+  const departures = scoped.reservations.filter((item) => item.status === "confirmed" && sameDate(item.departureAt, now, propertyById(item.propertyId)?.timezone ?? timezone) &&
     scoped.stays.some((stay) => stay.reservationId === item.id && ["in_house", "due_out"].includes(stay.operationalStatus ?? "")));
   const inHouse = scoped.stays.filter((item) => ["in_house", "due_out"].includes(effectiveStayStatus(item, now)));
   const staysWithAgenda = inHouse.map((stay) => {
@@ -35,7 +35,7 @@ const Today = () => {
   const newRequests = scoped.leads.filter((item) => item.requestStatus === "new" || (!item.requestStatus && item.stage === "new"));
   const unread = scoped.conversations.filter((item) => item.unreadCount > 0 && item.status !== "closed");
   const pendingPayment = scoped.reservations.filter((item) => item.status === "pending_payment");
-  const todaysServices = data.serviceReservations.filter((item) => item.status === "scheduled" && sameDate(item.startAt, now, timezone) &&
+  const todaysServices = data.serviceReservations.filter((item) => item.status === "scheduled" && sameDate(item.startAt, now, propertyById(item.propertyId)?.timezone ?? timezone) &&
     (property === "all" || item.propertyId === property)).sort((a, b) => a.startAt.localeCompare(b.startAt));
   const unassigned = arrivals.filter((item) => !scoped.reservationUnits.some((unit) => unit.reservationId === item.id));
   const notReady = arrivals.filter((item) => reservationReadiness(data, item).warnings.some((warning) =>
@@ -84,7 +84,7 @@ const Today = () => {
     </SectionCard>
     <SectionCard title={`Услуги сегодня · ${todaysServices.length}`} actions={<Button variant="ghost" size="sm" onClick={() => navigate("/services")}>Расписание</Button>}>
       {todaysServices.length ? <ul className="space-y-2">{todaysServices.slice(0, 8).map((service) => <li key={service.id} className="flex justify-between rounded-lg border px-3 py-2 text-sm">
-        <span>{new Date(service.startAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} · {data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"} · {data.guests.find((item) => item.id === service.customerId)?.fullName ?? "Гость"}</span>
+        <span>{propertyTime(service.startAt, propertyById(service.propertyId)?.timezone ?? timezone)} · {data.serviceCatalog.find((item) => item.id === service.catalogItemId)?.name ?? "Услуга"} · {data.guests.find((item) => item.id === service.customerId)?.fullName ?? "Гость"}</span>
         <span>{service.quantity} ед.</span></li>)}</ul> : <p className="text-sm text-muted-foreground">На сегодня услуг нет.</p>}
     </SectionCard>
     <SectionCard title="Сегодня у проживающих гостей" description="Ближайшие услуги, запросы и задачи по текущим проживаниям.">
@@ -92,7 +92,7 @@ const Today = () => {
         <button type="button" className="mb-2 text-left text-sm font-semibold hover:text-brand-700" onClick={() => navigate(`/reservations?reservation=${reservation.id}`)}>
           {data.guests.find((guest) => guest.id === reservation.bookerCustomerId)?.fullName ?? "Гость"} · открыть проживание
         </button>
-        {items.length ? <ul className="space-y-1">{items.slice(0, 4).map((item) => <li key={item.id} className="text-sm"><span className="mr-2 font-semibold tabular-nums">{propertyTime(item.at, "Asia/Qyzylorda")}</span>{item.kind === "request" ? "Запрос: " : ""}{item.title}{item.detail ? <span className="text-muted-foreground"> · {item.detail}</span> : null}</li>)}</ul> : <p className="text-xs text-muted-foreground">Сегодня ничего не запланировано.</p>}
+        {items.length ? <ul className="space-y-1">{items.slice(0, 4).map((item) => <li key={item.id} className="text-sm"><span className="mr-2 font-semibold tabular-nums">{propertyTime(item.at, propertyById(reservation.propertyId)?.timezone ?? timezone)}</span>{item.kind === "request" ? "Запрос: " : ""}{item.title}{item.detail ? <span className="text-muted-foreground"> · {item.detail}</span> : null}</li>)}</ul> : <p className="text-xs text-muted-foreground">Сегодня ничего не запланировано.</p>}
         {stayAttention.issues.length > 0 && <p className="mt-1 text-xs text-amber-700">{stayAttention.issues.slice(0, 2).join(" · ")}</p>}
       </li>)}</ul> : <p className="text-sm text-muted-foreground">Сейчас никто не проживает.</p>}
     </SectionCard>

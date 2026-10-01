@@ -26,6 +26,8 @@ import { addStayPayment, changeDepartureTime, checkInStay, checkOutStay, extendS
 import { bookService, changeServiceStatus, linkServiceToReservation, rescheduleService, ServiceConflict } from "../services/service-reservation-service.js";
 import { assessServiceSlot, loadServiceCatalogItem, lockServiceGroups, ServiceAvailabilityConflict } from "../services/service-availability-service.js";
 import { sendConversationMessage } from "../services/outbound-messaging.js";
+import { evaluateOfferReadiness } from "../../shared/offer-readiness.js";
+import { renderDocument, type DocumentLine } from "../../shared/document-renderer.js";
 import { buildFollowUpMessage } from "../services/follow-up-message.js";
 import { PaymentConflict, receivePaymentRequest } from "../services/payment-service.js";
 import { planPreArrivalMessages } from "../services/payment-service.js";
@@ -1042,7 +1044,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
       depositRequired: z.number().int().min(0).optional(),
       discountAmount: z.number().int().min(0).optional(),
     }).parse(request.body);
-    const [folio] = await db.select().from(s.folios).where(eq(s.folios.id, request.params.id)).limit(1);
+    const [folio] = await db.select().from(s.folios).where(eq(s.folios.id, request.params.id as string)).limit(1);
     if (!folio) return response.status(404).json({ error: "Фолио не найден" });
     await db.transaction(async (tx) => {
       await tx.update(s.folios).set({
@@ -1067,16 +1069,49 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
       propertyName: property?.name, lines: lines.filter((line) => line.status !== "cancelled") });
   });
 
-  /** Print-ready HTML is intentionally dependency-free: the browser's print dialog produces the downloadable PDF. */
-  router.get("/folios/:id/print", async (request, response) => {
-    const [folio] = await db.select().from(s.folios).where(eq(s.folios.id, request.params.id)).limit(1);
+  /** Visual document endpoint; guest-view remains a JSON API for integrations. */
+  router.get(["/folios/:id/preview", "/folios/:id/print"], async (request, response) => {
+    const [folio] = await db.select().from(s.folios).where(eq(s.folios.id, request.params.id as string)).limit(1);
     if (!folio) return response.status(404).send("Folio not found");
-    const [guest] = await db.select({ fullName: s.guests.fullName }).from(s.guests).where(eq(s.guests.id, folio.guestId)).limit(1);
-    const [property] = await db.select({ name: s.properties.name }).from(s.properties).where(eq(s.properties.id, folio.propertyId)).limit(1);
-    const lines = await db.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
-    const esc = (value: unknown) => String(value ?? "").replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]!);
-    const money = (value: number) => new Intl.NumberFormat("ru-RU").format(value) + ` ${folio.currency}`;
-    response.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(folio.code)}</title><style>body{font-family:Arial,sans-serif;max-width:760px;margin:36px auto;color:#172033}table{width:100%;border-collapse:collapse;margin:24px 0}th,td{border-bottom:1px solid #ddd;padding:9px;text-align:left}th:last-child,td:last-child{text-align:right}.muted{color:#667085}.total{font-size:18px;font-weight:700}@media print{body{margin:18px}}</style></head><body><h1>${folio.status === "closed" ? "Final Folio" : "Interim Folio"} · ${esc(folio.code)}</h1><p class="muted">${esc(property?.name)} · ${esc(guest?.fullName)} · ${esc(folio.createdAt)}</p><table><thead><tr><th>Позиция</th><th>Кол-во</th><th>Сумма</th></tr></thead><tbody>${lines.filter((line) => line.status !== "cancelled").map((line) => `<tr><td>${esc(line.description)}</td><td>${line.quantity}</td><td>${money(line.lineTotal)}</td></tr>`).join("")}</tbody></table><p>Итого: ${money(folio.totalAmount)}<br>Оплачено: ${money(folio.paidAmount)}</p><p class="total">Остаток: ${money(folio.balance)}</p>${folio.finalVersion ? `<p class="muted">Immutable final version ${folio.finalVersion} · ${esc(folio.finalisedAt)}</p>` : ""}</body></html>`);
+    const [guest, property, reservation, liveLines, payments, finalDocument] = await Promise.all([
+      db.select().from(s.guests).where(eq(s.guests.id, folio.guestId)).limit(1).then((rows) => rows[0]),
+      db.select().from(s.properties).where(eq(s.properties.id, folio.propertyId)).limit(1).then((rows) => rows[0]),
+      folio.reservationId ? db.select().from(s.reservations).where(eq(s.reservations.id, folio.reservationId)).limit(1).then((rows) => rows[0]) : Promise.resolve(undefined),
+      db.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id)),
+      db.select().from(s.guestPayments).where(eq(s.guestPayments.folioId, folio.id)),
+      folio.finalVersion ? db.select().from(s.folioDocuments).where(and(eq(s.folioDocuments.folioId, folio.id), eq(s.folioDocuments.version, folio.finalVersion))).limit(1).then((rows) => rows[0]) : Promise.resolve(undefined),
+    ]);
+    const [organization] = property ? await db.select().from(s.organizations).where(eq(s.organizations.id, property.organizationId)).limit(1) : [];
+    const snapshot = finalDocument?.snapshot as { folio?: { subtotal: number; discountAmount: number; totalAmount: number; paidAmount: number; balance: number }; reservation?: { code: string; arrivalAt: string; departureAt: string }; lines?: typeof liveLines; payments?: typeof payments } | undefined;
+    const bill = snapshot?.folio ?? folio;
+    const documentLines = (snapshot?.lines ?? liveLines).filter((line) => line.status !== "cancelled");
+    response.type("html").send(renderDocument({ kind: "FOLIO", code: folio.code, issueDate: finalDocument?.createdAt ?? folio.createdAt,
+      propertyName: property?.name ?? "", city: property?.city, legalName: organization?.legalName, guestName: guest?.fullName ?? "", guestContact: guest?.phone ?? guest?.email,
+      reservationCode: snapshot?.reservation?.code ?? reservation?.code, roomType: reservation?.roomTypeSnapshot,
+      checkIn: snapshot?.reservation?.arrivalAt ?? reservation?.arrivalAt, checkOut: snapshot?.reservation?.departureAt ?? reservation?.departureAt,
+      guests: reservation ? reservation.adults + reservation.children : undefined,
+      lines: documentLines.map((line): DocumentLine => ({ date: line.createdAt, description: line.description, quantity: line.quantity, unit: line.unit, rate: line.unitPrice, amount: line.lineTotal })),
+      currency: folio.currency, subtotal: bill.subtotal, discount: bill.discountAmount, total: bill.totalAmount, paid: bill.paidAmount, balance: bill.balance,
+      finalVersion: finalDocument?.version, finalisedAt: finalDocument?.createdAt,
+      payments: (snapshot?.payments ?? payments).filter((payment) => payment.status === "paid" || payment.status === "completed").map((payment) => ({ date: payment.date, amount: payment.amount, method: payment.method, reference: payment.reference })) }));
+  });
+
+  router.get(["/offers/:id/preview", "/offers/:id/print"], async (request, response) => {
+    const [offer] = await db.select().from(s.offers).where(eq(s.offers.id, request.params.id as string)).limit(1);
+    if (!offer) return response.status(404).send("Offer not found");
+    const [guest, property, lines] = await Promise.all([
+      db.select().from(s.guests).where(eq(s.guests.id, offer.guestId)).limit(1).then((rows) => rows[0]),
+      db.select().from(s.properties).where(eq(s.properties.id, offer.propertyId)).limit(1).then((rows) => rows[0]),
+      db.select().from(s.offerLines).where(eq(s.offerLines.offerId, offer.id)),
+    ]);
+    const [organization] = property ? await db.select().from(s.organizations).where(eq(s.organizations.id, property.organizationId)).limit(1) : [];
+    const subtotal = lines.reduce((sum, line) => sum + line.amount, 0);
+    response.type("html").send(renderDocument({ kind: "COMMERCIAL_OFFER", code: offer.code, issueDate: offer.createdAt, validUntil: offer.expiresAt,
+      propertyName: property?.name ?? "", city: property?.city, legalName: organization?.legalName, guestName: guest?.fullName ?? "", guestContact: guest?.phone ?? guest?.email,
+      roomType: offer.roomType, checkIn: offer.checkIn, checkOut: offer.checkOut, nights: offer.nights, guests: offer.adults + offer.children,
+      lines: lines.sort((a, b) => a.position - b.position).map((line): DocumentLine => ({ description: line.label, quantity: line.quantity,
+        rate: Number.parseFloat(line.quantity ?? "") > 0 ? Math.round(line.amount / Number.parseFloat(line.quantity!)) : null, amount: line.amount })),
+      currency: offer.currency, subtotal, discount: Math.max(0, subtotal - offer.total), total: offer.total, deposit: offer.deposit, terms: offer.terms }));
   });
 
   router.post("/leads/:id/activities", async (request, response) => {
@@ -1116,45 +1151,36 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     response.status(201).json(entry);
   });
 
-  /**
-   * Сформировать предложение из фолио (snapshot). Если лид на этапе planning —
-   * проверяются требования и лид переходит в offer. Для более ранних этапов
-   * предложение создать нельзя — нужно пройти journey.
-   */
+  /** Create an immutable commercial snapshot once the actual request and folio are ready. */
   router.post("/leads/:id/offers", async (request, response) => {
     const body = z.object({ deposit: z.number().int().min(0).optional() }).parse(request.body ?? {});
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
     const ctx = await loadJourneyContext(db, request.params.id);
     if (!ctx) return response.status(404).json({ error: "Лид не найден" });
-    const { lead, folio, evaluation } = ctx;
-    const stage = lead.stage as JourneyStage;
-    if (body.deposit !== undefined) {
-      await db.update(s.folios).set({ depositRequired: body.deposit, updatedAt: now() }).where(eq(s.folios.id, folio.id));
-      await recalcFolio(db, folio.id);
-    }
-    let offer;
-    if (stage === "planning") {
-      if (!evaluation.canAdvance) {
-        return response.status(409).json({ error: "stage_requirements_not_met", blockers: evaluation.blockers, journey: evaluation });
+    const { lead, folio } = ctx;
+    const lines = await db.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id));
+    const readiness = evaluateOfferReadiness({ ...ctx.lead, items: ctx.input.items, folio: ctx.folio, lines });
+    if (!readiness.ready) return response.status(409).json({ error: "offer_not_ready", ...readiness });
+    const offer = await db.transaction(async (tx) => {
+      if (body.deposit !== undefined) {
+        if (body.deposit > folio.totalAmount) return null;
+        await tx.update(s.folios).set({ depositRequired: body.deposit, updatedAt: now() }).where(eq(s.folios.id, folio.id));
+        await recalcFolio(tx, folio.id);
       }
-      offer = await db.transaction(async (tx) => {
-        const fresh = await loadJourneyContext(tx, lead.id);
+      const [freshFolio] = await tx.select().from(s.folios).where(eq(s.folios.id, folio.id)).limit(1);
+      const created = await createOfferFromFolio(tx, lead, freshFolio, employeeId);
+      if (["new", "qualified", "planning"].includes(lead.stage)) {
         const timestamp = now();
-        const created = await createOfferFromFolio(tx, lead, fresh!.folio, employeeId);
         await tx.update(s.leads).set({ stage: "offer", probability: 60, lastActivityAt: timestamp, updatedAt: timestamp }).where(eq(s.leads.id, lead.id));
         await tx.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: "offer", employeeId, changedAt: timestamp });
         await tx.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, employeeId, type: "stage_change", title: "Этап: Предложение", occurredAt: timestamp });
-        await tx.update(s.leadItems).set({ status: "quoted", updatedAt: timestamp })
-          .where(and(eq(s.leadItems.leadId, lead.id), inArray(s.leadItems.status, ["interest", "selected"])));
-        await tx.update(s.folios).set({ status: "quoted", updatedAt: timestamp }).where(eq(s.folios.id, fresh!.folio.id));
-        await recalcFolio(tx, fresh!.folio.id);
-        return created;
-      });
-    } else {
-      // Лид уже на offer+ — допускаем новую версию предложения из фолио.
-      const fresh = await loadJourneyContext(db, lead.id);
-      offer = await createOfferFromFolio(db, lead, fresh!.folio, employeeId);
-    }
+      }
+      await tx.update(s.leadItems).set({ status: "quoted", updatedAt: now() })
+        .where(and(eq(s.leadItems.leadId, lead.id), inArray(s.leadItems.status, ["interest", "selected"])));
+      await tx.update(s.folios).set({ status: "quoted", updatedAt: now() }).where(eq(s.folios.id, folio.id));
+      return created;
+    });
+    if (!offer) return response.status(409).json({ error: "offer_not_ready", ready: false, blockers: [{ code: "deposit", label: "Предоплата превышает стоимость" }] });
     response.status(201).json(offer);
   });
 

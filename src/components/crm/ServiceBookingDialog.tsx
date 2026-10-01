@@ -37,7 +37,7 @@ export const ServiceBookingDialog = ({ reservation, customerId: initialCustomerI
   const [selectedCustomerId, setSelectedCustomerId] = useState(initialCustomerId ?? "");
   const [newGuestOpen, setNewGuestOpen] = useState(false);
   const [startAt, setStartAt] = useState(() => localDateTime(new Date()));
-  const [managedDate, setManagedDate] = useState(() => propertyDate(new Date(), "Asia/Qyzylorda"));
+  const [managedDate, setManagedDate] = useState(() => propertyDate(new Date(), "Asia/Almaty"));
   const [participants, setParticipants] = useState(1);
   const [quantity, setQuantity] = useState(1);
   const [duration, setDuration] = useState(60);
@@ -57,7 +57,8 @@ export const ServiceBookingDialog = ({ reservation, customerId: initialCustomerI
   const selected = catalog.find((item) => item.id === catalogItemId);
   const managed = selected?.bookingMode === "resource" || selected?.bookingMode === "capacity";
   const window = selected?.metadata?.bookingWindow as { start?: string; end?: string; timeZone?: string } | undefined;
-  const timeZone = window?.timeZone ?? "Asia/Qyzylorda";
+  const propertyTimezone = data.properties.find((item) => item.id === resolvedPropertyId)?.timezone ?? "Asia/Almaty";
+  const timeZone = window?.timeZone ?? propertyTimezone;
   const startsAt = useMemo(() => managed && managedDate && window?.start && window?.end ?
     slotsForDate(managedDate, window.start, window.end, selected?.slotIntervalMinutes ?? 60, timeZone) : [],
     [managed, managedDate, window?.start, window?.end, selected?.slotIntervalMinutes, timeZone]);
@@ -75,7 +76,7 @@ export const ServiceBookingDialog = ({ reservation, customerId: initialCustomerI
     setCatalogItemId(initialCatalogItemId ?? "");
     setSelectedCustomerId(initialCustomerId ?? "");
     setStartAt(localDateTime(new Date()));
-    setManagedDate(initialDate ?? propertyDate(new Date(), "Asia/Qyzylorda"));
+    setManagedDate(initialDate ?? propertyDate(new Date(), propertyTimezone));
     setParticipants(1);
     setQuantity(1);
     setDuration(60);
@@ -88,7 +89,7 @@ export const ServiceBookingDialog = ({ reservation, customerId: initialCustomerI
     setEditingSlot(!initialStartAt);
     setPreferred({});
     idempotencyKey.current = crypto.randomUUID();
-  }, [open, initialCatalogItemId, initialCustomerId, initialDate, initialStartAt, initialResourceId]);
+  }, [open, initialCatalogItemId, initialCustomerId, initialDate, initialStartAt, initialResourceId, propertyTimezone]);
 
   useEffect(() => {
     if (!open || !selected || !managed || !startsAt.length || participants < 1 || actualQuantity < 1) { setSlots([]); setSelectedSlot(""); return; }
@@ -141,7 +142,7 @@ export const ServiceBookingDialog = ({ reservation, customerId: initialCustomerI
         setEditingSlot(true);
         setDuration(catalog.find((item) => item.id === value)?.defaultDurationMinutes ?? 60);
         const bookingWindow = catalog.find((item) => item.id === value)?.metadata?.bookingWindow as { timeZone?: string } | undefined;
-        setManagedDate(propertyDate(new Date(), bookingWindow?.timeZone ?? "Asia/Qyzylorda")); }}><SelectTrigger><SelectValue placeholder="Выберите из каталога" /></SelectTrigger><SelectContent>{catalog.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>
+        setManagedDate(propertyDate(new Date(), bookingWindow?.timeZone ?? timeZone)); }}><SelectTrigger><SelectValue placeholder="Выберите из каталога" /></SelectTrigger><SelectContent>{catalog.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>
       <div className="grid grid-cols-2 gap-3"><div className="space-y-1"><Label htmlFor="service-participants">Участники</Label><Input id="service-participants" type="number" min={1} value={participants} onChange={(event) => setParticipants(Number(event.target.value))} /></div>
         {selected?.pricingUnit !== "person" && <div className="space-y-1"><Label htmlFor="service-quantity">Количество</Label><Input id="service-quantity" type="number" min={1} value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} /></div>}</div>
       {managed ? <>

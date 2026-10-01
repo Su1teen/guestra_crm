@@ -12,7 +12,7 @@ Profile notes and reservation notes are separate records. Both carry author, pro
 
 ## Folio and checkout
 
-The live `folios` / `folio_lines` ledger remains the accounting source of truth. `GET /api/crm/folios/:id/guest-view` exposes a guest-safe view. `GET /api/crm/folios/:id/print` is a print-ready document that can be saved as PDF by the browser.
+The live `folios` / `folio_lines` ledger remains the accounting source of truth. `GET /api/crm/folios/:id/guest-view` remains a guest-safe JSON data endpoint. `GET /api/crm/folios/:id/preview` and `/print` render a human-readable A4 folio, using `folio_documents.snapshot` for final versions. `GET /api/crm/offers/:id/preview` and `/print` render a separate commercial offer from the `offers` / `offer_lines` snapshot. Both use the shared document renderer and browser printing can save a PDF. Offer creation checks actual request composition and folio prices; a 409 `offer_not_ready` includes `{code, label}` blockers independently of the legacy CRM stage.
 
 At checkout, the server locks reservation, stay and room rows, rejects a positive balance and scheduled services, writes an immutable final folio snapshot, closes the folio, checks out the stay, completes the reservation, releases allocation, sets the room to vacant-dirty (or out-of-order), creates housekeeping and records guest activity. Corporate AR / direct-bill deliberately remains a future privileged settlement method, not a receptionist bypass.
 

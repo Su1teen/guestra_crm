@@ -22,7 +22,7 @@ export const ServiceReservationDialog = ({ serviceId, onOpenChange }: { serviceI
   const catalog = data.serviceCatalog.find((item) => item.id === service?.catalogItemId);
   const customer = data.guests.find((item) => item.id === service?.customerId);
   const [moving, setMoving] = useState(false);
-  const [date, setDate] = useState(() => propertyDate(new Date(), "Asia/Qyzylorda"));
+  const [date, setDate] = useState(() => propertyDate(new Date(), "Asia/Almaty"));
   const [slots, setSlots] = useState<Slot[]>([]);
   const [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false);
@@ -35,7 +35,7 @@ export const ServiceReservationDialog = ({ serviceId, onOpenChange }: { serviceI
   const activeAllocations = data.serviceResourceAllocations.filter((item) => item.serviceReservationId === serviceId && item.status === "active");
   const newReservation = data.reservations.find((item) => item.id === newReservationId);
   const window = catalog?.metadata?.bookingWindow as { start?: string; end?: string; timeZone?: string } | undefined;
-  const timeZone = window?.timeZone ?? "Asia/Qyzylorda";
+  const timeZone = window?.timeZone ?? data.properties.find((item) => item.id === service?.propertyId)?.timezone ?? "Asia/Almaty";
   const matchingReservations = useMemo(() => {
     if (!service) return [];
     const serviceDay = propertyDate(service.startAt, timeZone);

@@ -36,7 +36,6 @@ import {
   stageTone,
   stayStatusLabels,
 } from "@/lib/labels";
-import { isOpen } from "@/lib/analytics";
 import CashbackWallet from "@/components/common/CashbackWallet";
 import { buildReputationReviews, CHANNELS } from "@/lib/reputation-demo";
 import { customerContext, reservationStatusLabels, operationalStatusLabels } from "@/lib/hospitality";
@@ -107,7 +106,6 @@ const GuestDetail = () => {
     .map((review) => ({ ...review, date: review.reviewAt })) :
     [...data.reviews.filter((review) => review.guestId === guest.id).map((review) => ({ ...review, date: review.reviewAt })),
       ...buildReputationReviews(data.guests).filter((review) => review.guestId === guest.id)];
-  const activeLead = related.leads.find(isOpen);
   const lastStay = related.stays.find((stay) => stay.status === "completed");
   const context = customerContext(data, guest.id);
   const currentFolio = context.reservation ? folioForReservation(data, context.reservation, context.stay) : undefined;
@@ -118,10 +116,10 @@ const GuestDetail = () => {
 
   const tabs: { value: TabKey; label: string; count?: number }[] = [
     { value: "overview", label: "Обзор" },
-    { value: "bookings", label: "Бронирования", count: related.reservations.length },
-    { value: "spending", label: "Услуги и расходы", count: related.services.length + related.serviceReservations.length },
+    { value: "bookings", label: "Проживания", count: related.reservations.length },
     { value: "conversations", label: "Переписка", count: related.conversations.length },
-    { value: "profile", label: "Профиль" },
+    { value: "profile", label: "Заметки и предпочтения" },
+    { value: "spending", label: "Финансы и услуги", count: related.services.length + related.serviceReservations.length },
   ];
 
   return (
@@ -178,7 +176,7 @@ const GuestDetail = () => {
         </div>)}</div>
       </SectionCard>}
 
-      <SectionCard title="Что происходит сейчас" description="Контекст гостя и ближайшее действие">
+      <SectionCard title="Сейчас" description="Текущее отношение с гостем и ближайшее действие">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-2">
             <StatusPill tone={context.state === "in_house" ? "success" : context.state === "reserved" ? "info" : "neutral"}>{context.state === "in_house" ? "Сейчас проживает" : context.state === "reserved" ? "Будущий гость" : context.state === "request" ? "Есть обращение" : context.state === "post_stay" ? "Проживал" : "Контакт"}</StatusPill>
@@ -186,34 +184,17 @@ const GuestDetail = () => {
               <p className="text-sm text-muted-foreground">{formatStayRange(context.reservation.arrivalAt, context.reservation.departureAt)} · {context.reservation.adults} взрослых</p>
               {currentFolio && <p className="text-sm">Остаток: <strong>{formatTenge(currentFolio.balance)}</strong></p>}</>
               : context.request ? <p className="text-sm">Обращение {context.request.code} · {context.request.roomType ?? "запрос уточняется"}</p>
-                : <p className="text-sm text-muted-foreground">Активных обращений и бронирований нет.</p>}
-            {context.task && <p className="text-xs text-muted-foreground">Следующее действие: {context.task.title} · {formatDateNumeric(context.task.dueAt)}</p>}
+                : lastStay ? <p className="text-sm text-muted-foreground">Последний визит: {formatStayRange(lastStay.checkIn, lastStay.checkOut)} · {lastStay.roomType}</p> : <p className="text-sm text-muted-foreground">Активных обращений и бронирований нет.</p>}
+            {context.task ? <p className="text-xs text-muted-foreground">Следующее действие: {context.task.title} · {formatDateNumeric(context.task.dueAt)}</p> : context.request?.nextAction && <p className="text-xs text-muted-foreground">Следующее действие: {context.request.nextAction.label}</p>}
             {context.state === "in_house" && <><p className="text-xs text-muted-foreground">Запланированные услуги: {related.serviceReservations.filter((item) => item.reservationId === context.reservation?.id || item.stayId === context.stay?.id).filter((item) => item.status === "scheduled").length} · открытые запросы: {data.tasks.filter((item) => (item.reservationId === context.reservation?.id || item.stayId === context.stay?.id) && item.type === "guest_request" && item.status !== "done").length}</p>
-              {currentAgenda.length > 0 && <div className="space-y-1 rounded-lg bg-secondary/60 p-2 text-xs"><p className="font-semibold">Сегодня у гостя</p>{currentAgenda.slice(0, 3).map((item) => <p key={item.id}><strong>{propertyTime(item.at, "Asia/Qyzylorda")}</strong> · {item.title}</p>)}</div>}</>}
+              {currentAgenda.length > 0 && <div className="space-y-1 rounded-lg bg-secondary/60 p-2 text-xs"><p className="font-semibold">Сегодня у гостя</p>{currentAgenda.slice(0, 3).map((item) => <p key={item.id}><strong>{propertyTime(item.at, propertyById(context.reservation?.propertyId ?? guest.preferredPropertyId)?.timezone ?? "Asia/Almaty")}</strong> · {item.title}</p>)}</div>}</>}
           </div>
           <div className="flex gap-2">{context.reservation && <Button variant="outline" onClick={() => navigate(`/reservations?reservation=${context.reservation?.id}`)}>{context.state === "in_house" ? "Открыть проживание" : "Открыть бронь"}</Button>}
             {context.request && <Button variant="outline" onClick={() => navigate(`/requests/${context.request?.id}`)}>Открыть обращение</Button>}</div>
         </div>
       </SectionCard>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <SectionCard>
-          <Field label="Сумма покупок">
-            <span className="text-lg font-semibold">{formatTenge(guest.lifetimeValue)}</span>
-          </Field>
-        </SectionCard>
-        <SectionCard>
-          <Field label="Проживаний">
-            <span className="text-lg font-semibold">{guest.staysCount}</span>
-          </Field>
-        </SectionCard>
-        <SectionCard>
-          <Field label="Любимый объект">{propertyById(guest.preferredPropertyId)?.name ?? guest.preferredPropertyId}</Field>
-        </SectionCard>
-        <SectionCard>
-          <Field label="Последний визит">{guest.lastStayDate ? formatDateLong(guest.lastStayDate) : "—"}</Field>
-        </SectionCard>
-      </div>
+      <div className="flex flex-wrap gap-x-8 gap-y-2 rounded-xl border border-border bg-card px-5 py-3 text-sm"><span>Проживаний <strong>{guest.staysCount}</strong></span><span>LTV <strong>{formatTenge(guest.lifetimeValue)}</strong></span><span>Последний визит <strong>{guest.lastStayDate ? formatDateLong(guest.lastStayDate) : "—"}</strong></span><span>Любимый объект <strong>{propertyById(guest.preferredPropertyId)?.name ?? "—"}</strong></span></div>
 
       <SegmentedTabs value={tab} onChange={setTab} options={tabs} />
 
@@ -242,44 +223,7 @@ const GuestDetail = () => {
       {tab === "overview" && (
         <div className="grid gap-5 xl:grid-cols-3">
           <div className="space-y-5 xl:col-span-2">
-            <SectionCard title="Активное обращение">
-              {activeLead ? (
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Link to={`/leads/${activeLead.id}`} className="text-sm font-semibold text-brand-600 hover:underline">
-                      {activeLead.code}
-                    </Link>
-                    <StatusPill tone={stageTone[activeLead.stage]} withDot>
-                      {stageLabels[activeLead.stage]}
-                    </StatusPill>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <Field label="Объект">{propertyById(activeLead.propertyId)?.name ?? activeLead.propertyId}</Field>
-                    <Field label="Проживание">
-                      {formatStayRange(activeLead.checkIn, activeLead.checkOut)} · {nightsLabel(activeLead.nights)}
-                    </Field>
-                    <Field label="Сумма">{formatTenge(activeLead.totalAmount)}</Field>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">Открытых обращений нет.</p>
-              )}
-            </SectionCard>
-
-            <SectionCard title="Последнее проживание">
-              {lastStay ? (
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <Field label="Объект">{propertyById(lastStay.propertyId)?.name ?? lastStay.propertyId}</Field>
-                  <Field label="Даты">{formatStayRange(lastStay.checkIn, lastStay.checkOut)}</Field>
-                  <Field label="Сумма">{formatTenge(lastStay.amount)}</Field>
-                  <Field label="Категория">{lastStay.roomType}</Field>
-                  <Field label="Бронь">{lastStay.bookingReference}</Field>
-                  <Field label="Услуги">{lastStay.serviceNames.join(", ") || "—"}</Field>
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">Завершённых проживаний нет.</p>
-              )}
-            </SectionCard>
+            <SectionCard title="Предпочтения гостя"><div className="flex flex-wrap gap-x-6 gap-y-2 text-sm"><span>Размещение: <strong>{guest.preferences.roomPreference || "—"}</strong></span><span>Питание: <strong>{guest.preferences.foodPreference || "—"}</strong></span>{guest.preferences.specialRequests.length > 0 && <span>Пожелания: {guest.preferences.specialRequests.join(", ")}</span>}</div></SectionCard>
 
             <SectionCard title="История активности">
               {related.activity.length === 0 ? (
@@ -311,7 +255,7 @@ const GuestDetail = () => {
         </div>
       )}
 
-      {tab === "bookings" && (
+      {tab === "bookings" && related.reservations.length === 0 && (
         <SectionCard padded={false} bodyClassName="p-0">
           <ul className="divide-y divide-border">
             {related.stays.map((stay) => (
