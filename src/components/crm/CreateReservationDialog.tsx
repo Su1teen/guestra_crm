@@ -40,10 +40,15 @@ export const CreateReservationDialog = ({ request, stayInContext = false }: { re
     ...data.serviceCatalog.filter((item) => item.propertyId === request.propertyId && item.serviceType === "accommodation").map((item) => item.name),
     ...(request.roomType ? [request.roomType] : [])]));
   const availableRooms = rooms.filter((room) => !roomType || room.category === roomType);
-  const roomAvailable = (candidateId: string) => !data.maintenanceTickets.some((ticket) => ticket.roomId === candidateId && ticket.blocksRoom && !["verified", "cancelled"].includes(ticket.status)) &&
+  const roomAvailable = (candidateId: string) => {
+    const room = data.rooms.find((item) => item.id === candidateId);
+    return !!room && ["vacant_clean", "inspected"].includes(room.status) &&
+    !data.housekeepingTasks.some((task) => task.roomId === candidateId && !["inspected", "skipped"].includes(task.status)) &&
+    !data.maintenanceTickets.some((ticket) => ticket.roomId === candidateId && ticket.blocksRoom && !["verified", "cancelled"].includes(ticket.status)) &&
     !data.reservationUnits.some((allocation) => allocation.roomId === candidateId && ["active", "assigned"].includes(allocation.status) &&
       data.reservations.some((reservation) => reservation.id === allocation.reservationId && !["cancelled", "no_show", "completed"].includes(reservation.status)) &&
       new Date(allocation.arrivalAt) < new Date(toDateTime(departure, "12:00")) && new Date(toDateTime(arrival, "15:00")) < new Date(allocation.departureAt));
+  };
   const nightlyRate = accommodationNightlyRate(data.serviceCatalog, request.propertyId, roomType);
   useEffect(() => {
     if (amountEdited || agreedAmount > 0) return;

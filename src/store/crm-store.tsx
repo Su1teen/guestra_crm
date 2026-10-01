@@ -424,6 +424,12 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     const request = data.leads.find((item) => item.id === requestId);
     if (!request) throw new Error("Обращение не найдено");
     if (new Date(input.departureAt) <= new Date(input.arrivalAt)) throw new Error("Дата выезда должна быть позже даты заезда");
+    if (input.roomId) {
+      const room = data.rooms.find((item) => item.id === input.roomId);
+      if (!room || !["vacant_clean", "inspected"].includes(room.status) || data.housekeepingTasks.some((task) => task.roomId === input.roomId && !["inspected", "skipped"].includes(task.status))) {
+        throw new Error("Домик недоступен: завершите уборку и проверку");
+      }
+    }
     if (input.roomId && data.reservationUnits.some((unit) => unit.roomId === input.roomId &&
       data.reservations.some((reservation) => reservation.id === unit.reservationId && !["cancelled", "no_show", "completed"].includes(reservation.status)) &&
       new Date(unit.arrivalAt) < new Date(input.departureAt) && new Date(input.arrivalAt) < new Date(unit.departureAt))) {
@@ -460,7 +466,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         totalAmount: input.totalAmount ?? item.totalAmount, deposit: input.depositRequired ?? item.deposit } : item),
     }));
     return reservationId;
-  }, [data.leads, data.reservations, data.reservationUnits, dataMode, persist]);
+  }, [data.housekeepingTasks, data.leads, data.reservations, data.reservationUnits, data.rooms, dataMode, persist]);
 
   const createQuickReservation = useCallback(async (input: { guestId: string; propertyId: string; arrivalAt: string; departureAt: string; roomType: string; roomId?: string; adults: number; children: number; totalAmount: number; depositRequired: number }) => {
     if (dataMode === "database") {
@@ -469,6 +475,12 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     }
     if (new Date(input.departureAt) <= new Date(input.arrivalAt)) throw new Error("Дата выезда должна быть позже даты заезда");
     if (input.depositRequired > input.totalAmount) throw new Error("Предоплата не может быть больше стоимости");
+    if (input.roomId) {
+      const room = data.rooms.find((item) => item.id === input.roomId);
+      if (!room || !["vacant_clean", "inspected"].includes(room.status) || data.housekeepingTasks.some((task) => task.roomId === input.roomId && !["inspected", "skipped"].includes(task.status))) {
+        throw new Error("Домик недоступен: завершите уборку и проверку");
+      }
+    }
     if (input.roomId && data.reservationUnits.some((unit) => unit.roomId === input.roomId && ["active", "assigned"].includes(unit.status) &&
       data.reservations.some((reservation) => reservation.id === unit.reservationId && !["cancelled", "no_show", "completed"].includes(reservation.status)) &&
       new Date(unit.arrivalAt) < new Date(input.departureAt) && new Date(input.arrivalAt) < new Date(unit.departureAt))) throw new Error("Домик занят на выбранные даты");
@@ -506,7 +518,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
         adults: input.adults, children: input.children, amount: lineTotal, bookingReference: code, status: requiresPayment ? "pending_payment" : "confirmed",
         operationalStatus: "upcoming", serviceNames: [] }], folios: [folio, ...previous.folios] }));
     return reservationId;
-  }, [data.guests, data.properties, data.reservations, data.reservationUnits, data.rooms, dataMode, persist]);
+  }, [data.guests, data.housekeepingTasks, data.properties, data.reservations, data.reservationUnits, data.rooms, dataMode, persist]);
 
   const updateRequestStatus = useCallback(async (requestId: string, requestLifecycle: Extract<RequestStatus, "enquire" | "tentative" | "definite" | "won" | "lost" | "closed">, reason?: string) => {
     if (dataMode === "database") {

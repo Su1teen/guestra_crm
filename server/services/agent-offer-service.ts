@@ -29,7 +29,7 @@ export const createAgentOffer = async (db: Database, input: {
   await tx.execute(sql`SELECT id FROM leads WHERE id = ${input.leadId} FOR UPDATE`);
   const [lead] = await tx.select().from(s.leads).where(and(eq(s.leads.id, input.leadId),
     eq(s.leads.guestId, input.customerId), eq(s.leads.propertyId, input.propertyId))).limit(1);
-  if (!lead) throw new AgentOfferConflict("Запрос не найден для этого Telegram-контакта");
+  if (!lead) throw new AgentOfferConflict("Запрос не найден для этого контакта канала");
   if (["confirmed", "cancelled", "lost", "completed"].includes(lead.stage)) {
     throw new AgentOfferConflict("Для завершённого или подтверждённого запроса нельзя создать новое предложение");
   }

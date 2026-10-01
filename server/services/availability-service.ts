@@ -16,13 +16,21 @@ export class AvailabilityConflict extends Error {
  */
 export const assertRoomAvailable = async (
   tx: Tx,
-  input: { roomId: string; propertyId: string; arrivalAt: string; departureAt: string; excludeReservationId?: string },
+  input: { roomId: string; propertyId: string; arrivalAt: string; departureAt: string; excludeReservationId?: string; allowUnreadyRoom?: boolean },
 ) => {
   if (!(new Date(input.departureAt) > new Date(input.arrivalAt))) throw new AvailabilityConflict("Дата выезда должна быть позже даты заезда");
   await tx.execute(sql`SELECT id FROM rooms WHERE id = ${input.roomId} FOR UPDATE`);
   const [room] = await tx.select().from(s.rooms).where(and(eq(s.rooms.id, input.roomId), eq(s.rooms.propertyId, input.propertyId))).limit(1);
   if (!room) throw new AvailabilityConflict("Домик не найден в выбранном объекте");
   if (["out_of_order", "out_of_service"].includes(room.status)) throw new AvailabilityConflict("Домик недоступен для продажи");
+  if (!input.allowUnreadyRoom && !["vacant_clean", "inspected"].includes(room.status)) {
+    throw new AvailabilityConflict("Домик ещё не готов: завершите уборку и проверку");
+  }
+  const [unfinishedCleaning] = await tx.select({ id: s.housekeepingTasks.id }).from(s.housekeepingTasks).where(and(
+    eq(s.housekeepingTasks.roomId, input.roomId),
+    inArray(s.housekeepingTasks.status, ["pending", "assigned", "in_progress", "completed"]),
+  )).limit(1);
+  if (unfinishedCleaning && !input.allowUnreadyRoom) throw new AvailabilityConflict("Домик находится в уборке");
   const allocations = await tx.select({ id: s.reservationUnits.id }).from(s.reservationUnits)
     .innerJoin(s.reservations, eq(s.reservationUnits.reservationId, s.reservations.id))
     .where(and(

@@ -6,6 +6,7 @@ import type { Database } from "./client.js";
 import { createDatabase } from "./client.js";
 import { readConfig, type AppConfig } from "../config.js";
 import * as s from "./schema.js";
+import { AgentInboundMessageSchema } from "../contracts/agent-contract.js";
 import { lesBorovoeUnitTypes, lesBorovoeLegacyCategoryNames } from "../../shared/les-borovoe-inventory.js";
 import { demoServiceBookingConfig, demoServiceResourceGroups, demoServiceResources, demoServiceRequirements } from "../../shared/service-demo-inventory.js";
 
@@ -876,7 +877,7 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
     firstName: "Алмас", text: duplicateFixture.text, propertyId: "les_borovoe" };
   await db.insert(s.integrationEvents).values({ id: "event_demo_agent_duplicate", provider: "telegram",
     eventType: "agent_inbound_message", externalEventId: "agent-demo-duplicate-update",
-    payloadHash: createHash("sha256").update(JSON.stringify(duplicatePayload)).digest("hex"),
+    payloadHash: createHash("sha256").update(JSON.stringify(AgentInboundMessageSchema.parse(duplicatePayload))).digest("hex"),
     guestId: duplicateFixture.guestId, leadId: null }).onConflictDoNothing();
 };
 

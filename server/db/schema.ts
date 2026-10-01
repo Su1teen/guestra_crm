@@ -1085,3 +1085,44 @@ export const folioLines = pgTable("folio_lines", {
   index("folio_lines_folio_idx").on(table.folioId),
   index("folio_lines_item_idx").on(table.leadItemId),
 ]);
+
+export const messageAttachments = pgTable("message_attachments", {
+  id: text("id").primaryKey(),
+  messageId: text("message_id").notNull().references(() => messages.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  mimeType: text("mime_type"),
+  fileName: text("file_name"),
+  fileSize: integer("file_size"),
+  externalFileId: text("external_file_id"),
+  storageProvider: text("storage_provider"),
+  storageKey: text("storage_key"),
+  durationMs: integer("duration_ms"),
+  processingStatus: text("processing_status").notNull().default("received"),
+  transcript: text("transcript"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [
+  index("message_attachments_message_idx").on(table.messageId),
+  uniqueIndex("message_attachments_external_file_uidx").on(table.messageId, table.externalFileId),
+]);
+
+export const agentToolEvents = pgTable("agent_tool_events", {
+  id: text("id").primaryKey(),
+  propertyId: text("property_id").references(() => properties.id, { onDelete: "set null" }),
+  conversationId: text("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+  guestId: text("guest_id").references(() => guests.id, { onDelete: "set null" }),
+  tool: text("tool").notNull(),
+  channel: text("channel"),
+  requestId: text("request_id"),
+  success: boolean("success").notNull(),
+  statusCode: integer("status_code").notNull(),
+  errorCode: text("error_code"),
+  durationMs: integer("duration_ms").notNull(),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: createdAt(),
+}, (table) => [
+  index("agent_tool_events_conversation_idx").on(table.conversationId, table.createdAt),
+  index("agent_tool_events_tool_idx").on(table.tool, table.createdAt),
+  index("agent_tool_events_guest_idx").on(table.guestId, table.createdAt),
+]);

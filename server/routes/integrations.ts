@@ -8,6 +8,7 @@ import { ensureFolio, recalcFolio, resolveItemPricing, syncFolioLineForItem, set
 import { AvailabilityConflict } from "../services/availability-service.js";
 import { confirmBooking, ReservationConflict } from "../services/reservation-service.js";
 import { resolveOrCreateExternalCustomer } from "../services/customer-service.js";
+import { AGENT_CHANNELS } from "../contracts/agent-contract.js";
 
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
@@ -29,8 +30,9 @@ const safeEqual = (left: string | undefined, right: string) => {
 };
 const nullableString = z.string().nullable().optional();
 
+const integrationChannel = z.enum(AGENT_CHANNELS);
 const leadUpsertSchema = z.object({
-  channel: z.literal("telegram"), externalUserId: z.string().min(1), externalChatId: nullableString,
+  channel: integrationChannel, externalUserId: z.string().min(1), externalChatId: nullableString,
   externalMessageId: z.string().min(1), username: nullableString, firstName: nullableString,
   propertyId: z.string().min(1),
   stage: z.enum(["new", "qualified", "planning", "offer", "payment_pending", "confirmed", "completed", "lost", "cancelled"]),
@@ -65,7 +67,7 @@ const leadUpsertSchema = z.object({
 });
 
 const offerUpsertSchema = z.object({
-  channel: z.literal("telegram"), externalUserId: z.string().min(1), propertyId: z.string().min(1), externalQuoteId: z.string().optional(),
+  channel: integrationChannel, externalUserId: z.string().min(1), propertyId: z.string().min(1), externalQuoteId: z.string().optional(),
   roomType: z.string().min(1).nullable().optional(), checkIn: nullableString, checkOut: nullableString,
   adults: z.number().int().min(0).default(0), children: z.number().int().min(0).default(0),
   lines: z.array(z.object({ label: z.string(), quantity: z.string().optional(), amount: z.number().int(), leadItemId: z.string().optional() })).min(1),
@@ -74,7 +76,7 @@ const offerUpsertSchema = z.object({
 });
 
 const bookingSchema = z.object({
-  channel: z.literal("telegram"), externalUserId: z.string().min(1), propertyId: z.string().min(1),
+  channel: integrationChannel, externalUserId: z.string().min(1), propertyId: z.string().min(1),
   confirmationNumber: z.string().min(1), reservationId: z.string().min(1), roomType: z.string().min(1),
   roomId: z.string().min(1).optional(),
   checkIn: z.string().refine((value) => Number.isFinite(Date.parse(value))),
@@ -132,9 +134,9 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
     if (!lead) {
       const ownerId = await ownerForProperty(db, input.propertyId);
       const leadId = id("lead");
-      [lead] = await db.insert(s.leads).values({ id: leadId, code: `G-AI-${Date.now().toString().slice(-7)}`, guestId, propertyId: input.propertyId, source: "telegram", stage: requestedStage, requestStatus: requestedStage === "new" ? "new" : "active", intent: input.temperature, roomType: input.roomType ?? null, checkIn: input.checkIn ? new Date(input.checkIn).toISOString() : null, checkOut: input.checkOut ? new Date(input.checkOut).toISOString() : null, nights: input.checkIn && input.checkOut ? Math.max(1, Math.round((new Date(input.checkOut).getTime() - new Date(input.checkIn).getTime()) / 86_400_000)) : 0, adults: input.adults ?? 0, children: input.children ?? 0, totalAmount: input.totalAmount ?? 0, ownerId, lastActivityAt: timestamp, nextActionLabel: input.nextActionLabel ?? null, nextActionDueAt: input.nextActionDueAt ?? null, probability: input.probability, slaMinutes: input.direction === "accommodation" ? 15 : 30 }).returning();
+      [lead] = await db.insert(s.leads).values({ id: leadId, code: `G-AI-${Date.now().toString().slice(-7)}`, guestId, propertyId: input.propertyId, source: input.channel, stage: requestedStage, requestStatus: requestedStage === "new" ? "new" : "active", intent: input.temperature, roomType: input.roomType ?? null, checkIn: input.checkIn ? new Date(input.checkIn).toISOString() : null, checkOut: input.checkOut ? new Date(input.checkOut).toISOString() : null, nights: input.checkIn && input.checkOut ? Math.max(1, Math.round((new Date(input.checkOut).getTime() - new Date(input.checkIn).getTime()) / 86_400_000)) : 0, adults: input.adults ?? 0, children: input.children ?? 0, totalAmount: input.totalAmount ?? 0, ownerId, lastActivityAt: timestamp, nextActionLabel: input.nextActionLabel ?? null, nextActionDueAt: input.nextActionDueAt ?? null, probability: input.probability, slaMinutes: input.direction === "accommodation" ? 15 : 30 }).returning();
       await db.insert(s.leadStageHistory).values({ id: id("stage"), leadId: lead.id, stage: requestedStage, employeeId: null, changedAt: timestamp });
-      await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "lead_created", title: "AI: лид создан из Telegram", occurredAt: timestamp });
+      await db.insert(s.leadActivities).values({ id: id("activity"), leadId: lead.id, type: "lead_created", title: `AI: лид создан из канала ${input.channel}`, occurredAt: timestamp });
       await ensureFolio(db, lead);
     } else {
       const patch: Record<string, unknown> = { lastActivityAt: timestamp, updatedAt: timestamp, intent: input.temperature, probability: input.probability };

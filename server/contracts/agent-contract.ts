@@ -1,7 +1,13 @@
 import { z } from "zod";
 
 export const AGENT_API_VERSION = "agent-api-v1" as const;
-export const AGENT_CHANNELS = ["telegram"] as const;
+export const AGENT_CHANNELS = ["telegram", "whatsapp", "instagram", "simulator"] as const;
+export const AgentChannelSchema = z.enum(AGENT_CHANNELS);
+export type AgentChannel = z.infer<typeof AgentChannelSchema>;
+export const AGENT_MESSAGE_TYPES = ["text", "image", "document", "audio", "video"] as const;
+export const AGENT_ATTACHMENT_KINDS = ["image", "document", "audio", "video", "other"] as const;
+export const AGENT_ATTACHMENT_PROCESSING_STATES = ["received", "processing", "ready", "failed"] as const;
+export const AGENT_MEMORY_SCHEMA_VERSION = 1;
 
 export const AgentLifecycleSchema = z.enum(["new_contact", "active_request", "offer", "pending_payment", "reserved",
   "pre_arrival", "in_house", "due_out", "post_stay", "service_only", "non_target"]);
@@ -10,10 +16,11 @@ export type AgentLifecycle = z.infer<typeof AgentLifecycleSchema>;
 export const AgentAutomationModeSchema = z.enum(["ai", "human", "needs_human"]);
 export const AgentToolSchema = z.enum([
   "get_context", "classify_conversation", "get_property_knowledge", "get_accommodation_options",
-  "check_accommodation_availability", "create_or_update_request", "create_offer", "book_accommodation",
+  "check_accommodation_availability", "create_or_update_request", "update_request_lifecycle", "create_offer",
+  "book_accommodation",
   "get_service_options", "check_service_availability", "book_service", "reschedule_service", "cancel_service",
   "get_stay_context", "get_folio_summary", "create_guest_request", "check_stay_extension", "extend_stay",
-  "handoff_to_human",
+  "handoff_to_human", "update_guest_profile", "update_conversation_memory",
 ]);
 export const AGENT_TOOLS = AgentToolSchema.options;
 export type AgentTool = z.infer<typeof AgentToolSchema>;
@@ -39,6 +46,7 @@ export const AGENT_TOOL_DESCRIPTORS: Record<AgentTool, AgentToolDescriptor> = {
   get_accommodation_options: { name: "get_accommodation_options", method: "GET", path: "/accommodations/options", mutation: false, confirmationRequired: false, description: "List accommodation categories for occupancy" },
   check_accommodation_availability: { name: "check_accommodation_availability", method: "POST", path: "/accommodations/availability", mutation: false, confirmationRequired: false, description: "Check category availability for dates" },
   create_or_update_request: { name: "create_or_update_request", method: "POST", path: "/requests/upsert", mutation: true, confirmationRequired: false, description: "Upsert commercial lead/request" },
+  update_request_lifecycle: { name: "update_request_lifecycle", method: "POST", path: "/requests/lifecycle", mutation: true, confirmationRequired: false, description: "Move request through enquire/tentative/definite/lost/closed lifecycle" },
   create_offer: { name: "create_offer", method: "POST", path: "/offers/create", mutation: true, confirmationRequired: false, description: "Generate binding commercial offer" },
   book_accommodation: { name: "book_accommodation", method: "POST", path: "/accommodations/book", mutation: true, confirmationRequired: true, description: "Confirm accommodation booking from accepted offer" },
   get_service_options: { name: "get_service_options", method: "GET", path: "/services/options", mutation: false, confirmationRequired: false, description: "List service catalog items" },
@@ -52,6 +60,8 @@ export const AGENT_TOOL_DESCRIPTORS: Record<AgentTool, AgentToolDescriptor> = {
   check_stay_extension: { name: "check_stay_extension", method: "POST", path: "/stays/extension/preview", mutation: false, confirmationRequired: false, description: "Preview stay extension price and feasibility" },
   extend_stay: { name: "extend_stay", method: "POST", path: "/stays/extend", mutation: true, confirmationRequired: true, description: "Extend active stay with confirmed payment" },
   handoff_to_human: { name: "handoff_to_human", method: "POST", path: "/handoff", mutation: true, confirmationRequired: false, description: "Escalate conversation to human staff" },
+  update_guest_profile: { name: "update_guest_profile", method: "POST", path: "/guests/profile", mutation: true, confirmationRequired: false, description: "Persist allowlisted guest facts collected in conversation" },
+  update_conversation_memory: { name: "update_conversation_memory", method: "POST", path: "/conversations/memory", mutation: true, confirmationRequired: false, description: "Store versioned compact conversation memory" },
 };
 
 const id = z.string().trim().min(1);
@@ -64,15 +74,49 @@ const qualitySchema = z.enum(["target", "needs_qualification", "non_target"]);
 const temperatureSchema = z.enum(["hot", "warm", "cold"]);
 const reasonSchema = z.object({ code: z.string().trim().min(1).max(80), label: z.string().trim().min(1).max(240) });
 
-export const AgentInboundMessageSchema = z.object({
-  channel: z.literal("telegram").default("telegram"), externalUserId: id, externalChatId: id,
-  externalMessageId: id, externalUpdateId: id.optional(), username: z.string().nullable().optional(),
-  firstName: z.string().nullable().optional(), text: z.string().trim().min(1).max(10000), propertyId: id,
+/** Channel-aware identity scope shared by every identity-sensitive Agent API operation.
+ *  `channel` defaults to "telegram" so pre-existing Telegram callers keep working unchanged. */
+export const agentIdentityFields = {
+  channel: AgentChannelSchema.default("telegram"),
+  externalUserId: id,
+  propertyId: id,
+} as const;
+export const agentConversationFields = {
+  ...agentIdentityFields,
+  conversationId: id,
+} as const;
+export const agentOptionalConversationFields = {
+  ...agentIdentityFields,
+  conversationId: id.optional(),
+  externalChatId: id.optional(),
+} as const;
+
+export const AgentAttachmentInputSchema = z.object({
+  kind: z.enum(AGENT_ATTACHMENT_KINDS),
+  mimeType: z.string().trim().max(200).optional(),
+  fileName: z.string().trim().max(500).optional(),
+  fileSize: z.number().int().min(0).optional(),
+  externalFileId: z.string().trim().max(300).optional(),
+  storageProvider: z.string().trim().max(60).optional(),
+  storageKey: z.string().trim().max(1000).optional(),
+  durationMs: z.number().int().min(0).optional(),
+  metadata: z.record(z.unknown()).optional(),
 });
-export const AgentContextRequestSchema = z.object({ propertyId: id, externalUserId: id,
-  conversationId: id.optional(), externalChatId: id.optional() });
+export type AgentAttachmentInput = z.infer<typeof AgentAttachmentInputSchema>;
+
+export const AgentInboundMessageSchema = z.object({
+  channel: AgentChannelSchema.default("telegram"), externalUserId: id, externalChatId: id,
+  externalMessageId: id, externalUpdateId: id.optional(), username: z.string().nullable().optional(),
+  firstName: z.string().nullable().optional(), lastName: z.string().nullable().optional(),
+  displayName: z.string().nullable().optional(), phone: z.string().nullable().optional(),
+  email: z.string().nullable().optional(), language: z.string().trim().min(2).max(12).nullable().optional(),
+  text: z.string().trim().max(10000).optional(), propertyId: id,
+  attachments: z.array(AgentAttachmentInputSchema).max(10).default([]),
+}).refine((value) => Boolean(value.text) || value.attachments.length > 0,
+  { message: "text or attachments are required" });
+export const AgentContextRequestSchema = z.object({ ...agentOptionalConversationFields });
 export const AgentClassifyConversationSchema = z.object({
-  propertyId: id, externalUserId: id, conversationId: id, direction: directionSchema,
+  ...agentConversationFields, direction: directionSchema,
   quality: qualitySchema, temperature: temperatureSchema.optional(), probability: z.number().int().min(0).max(100).optional(),
   reasons: z.array(reasonSchema).max(20).optional(), summary: z.string().trim().max(1000).optional(),
   recommendedAction: z.string().trim().max(500).optional(),
@@ -90,7 +134,7 @@ export const AgentAccommodationAvailabilitySchema = z.object({
   adults: z.number().int().min(0), children: z.number().int().min(0), unitTypeId: id.optional(),
 });
 export const AgentRequestUpsertSchema = z.object({
-  propertyId: id, externalUserId: id, conversationId: id.optional(), externalChatId: id.optional(),
+  ...agentOptionalConversationFields,
   idempotencyKey: id.max(120), direction: commercialDirectionSchema,
   checkIn: isoDateTime.nullable().optional(), checkOut: isoDateTime.nullable().optional(),
   adults: z.number().int().min(0).optional(), children: z.number().int().min(0).optional(),
@@ -101,8 +145,42 @@ export const AgentRequestUpsertSchema = z.object({
   recommendedAction: z.string().trim().min(1).max(500).default("Продолжить подбор и уточнить недостающие параметры"),
   directions: z.array(commercialDirectionSchema).max(12).optional(),
 });
-export const AgentOfferCreateSchema = z.object({ propertyId: id, externalUserId: id, conversationId: id,
+export const AgentOfferCreateSchema = z.object({ ...agentConversationFields,
   category: z.string().trim().min(1).optional(), idempotencyKey: id.max(120) });
+export const AgentRequestLifecycleUpdateSchema = z.object({ ...agentConversationFields,
+  requestId: id, status: z.enum(["enquire", "tentative", "definite", "lost", "closed"]),
+  reason: z.string().trim().max(1000).optional(), dueAt: isoDateTime.optional(),
+  idempotencyKey: z.string().trim().min(8).max(120) });
+export const AgentGuestProfileUpdateSchema = z.object({ ...agentConversationFields,
+  sourceMessageId: id, idempotencyKey: id.max(120),
+  firstName: z.string().trim().max(120).optional(), lastName: z.string().trim().max(120).optional(),
+  phone: z.string().trim().max(32).optional(), email: z.string().trim().max(200).optional(),
+  language: z.string().trim().min(2).max(12).optional(), company: z.string().trim().max(200).optional(),
+  preferences: z.object({
+    roomPreference: z.string().trim().max(200).optional(),
+    bedPreference: z.string().trim().max(200).optional(),
+    foodPreference: z.string().trim().max(200).optional(),
+    specialRequests: z.array(z.string().trim().max(300)).max(20).optional(),
+  }).optional(),
+});
+export const AgentConversationMemorySchema = z.object({
+  narrative: z.string().trim().max(2000).optional(),
+  knownFacts: z.array(z.string().trim().max(300)).max(30).optional(),
+  unresolvedFacts: z.array(z.string().trim().max(300)).max(30).optional(),
+  lastCommitment: z.string().trim().max(500).optional(),
+  nextBestAction: z.string().trim().max(500).optional(),
+});
+export const AgentConversationMemoryUpdateSchema = z.object({ ...agentConversationFields,
+  sourceMessageId: id, idempotencyKey: id.max(120), memory: AgentConversationMemorySchema });
+export const AgentConversationMessagesQuerySchema = z.object({ ...agentIdentityFields,
+  after: id.optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
+export const AgentAttachmentProcessResultSchema = z.object({
+  propertyId: id, idempotencyKey: id.max(120),
+  processingStatus: z.enum(["processing", "ready", "failed"]),
+  transcript: z.string().trim().max(50000).optional(),
+  storageProvider: z.string().trim().max(60).optional(), storageKey: z.string().trim().max(1000).optional(),
+  durationMs: z.number().int().min(0).optional(), metadata: z.record(z.unknown()).optional(),
+});
 export const AgentServiceOptionsQuerySchema = z.object({ propertyId: id, category: z.string().trim().min(1).optional(),
   direction: z.string().trim().min(1).optional(), language: z.string().trim().min(2).max(12).default("ru") });
 export const AgentServiceAvailabilitySchema = z.object({ propertyId: id, catalogItemId: id,
@@ -125,42 +203,40 @@ export const AgentProposedActionSchema = z.discriminatedUnion("actionType", [pro
   proposedBookService, proposedRescheduleService, proposedCancelService, proposedExtendStay]);
 export type AgentProposedAction = z.infer<typeof AgentProposedActionSchema>;
 
-export const AgentOutboundPrepareSchema = z.object({ propertyId: id, externalUserId: id, conversationId: id,
+export const AgentOutboundPrepareSchema = z.object({ ...agentConversationFields,
   text: z.string().trim().min(1).max(10000), idempotencyKey: id.max(120),
   proposedAction: AgentProposedActionSchema.optional() });
-export const AgentOutboundResultSchema = z.object({ propertyId: id, externalUserId: id, conversationId: id,
+export const AgentOutboundResultSchema = z.object({ ...agentConversationFields,
   messageId: id, idempotencyKey: id.max(120), success: z.boolean(), externalMessageId: id.optional(), error: z.string().trim().max(1000).optional(),
 }).refine((value) => value.success ? Boolean(value.externalMessageId) : true, { message: "externalMessageId is required on success" });
-export const AgentServiceBookSchema = z.object({ propertyId: id, externalUserId: id, conversationId: id,
+export const AgentServiceBookSchema = z.object({ ...agentConversationFields,
   proposalMessageId: id, confirmationMessageId: id, catalogItemId: id, startAt: isoDateTime, endAt: isoDateTime.optional(),
   participants: z.number().int().positive(), quantity: z.number().int().positive().default(1),
   idempotencyKey: id.max(120), notes: z.string().trim().max(1000).optional() });
-export const AgentServiceCancelSchema = z.object({ propertyId: id, externalUserId: id, conversationId: id,
+export const AgentServiceCancelSchema = z.object({ ...agentConversationFields,
   proposalMessageId: id, confirmationMessageId: id, serviceReservationId: id, idempotencyKey: id.max(120) });
-export const AgentServiceRescheduleSchema = z.object({ propertyId: id, externalUserId: id, conversationId: id,
+export const AgentServiceRescheduleSchema = z.object({ ...agentConversationFields,
   proposalMessageId: id, confirmationMessageId: id, serviceReservationId: id, startAt: isoDateTime,
   endAt: isoDateTime.optional(), idempotencyKey: id.max(120) });
-export const AgentAccommodationBookSchema = z.object({ propertyId: id, externalUserId: id, conversationId: id,
+export const AgentAccommodationBookSchema = z.object({ ...agentConversationFields,
   offerId: id, proposalMessageId: id, confirmationMessageId: id, idempotencyKey: id.max(120) });
-export const AgentGuestRequestSchema = z.object({ propertyId: id, externalUserId: id,
-  conversationId: id.optional(), externalChatId: id.optional(), sourceMessageId: id,
+export const AgentGuestRequestSchema = z.object({ ...agentOptionalConversationFields, sourceMessageId: id,
   title: z.string().trim().min(2).max(160), description: z.string().trim().max(2000).optional(),
   department: z.enum(["reception", "housekeeping", "maintenance", "restaurant", "spa", "transport", "other"]).default("reception"),
   priority: z.enum(["low", "medium", "high", "urgent"]).default("medium"), idempotencyKey: id.max(120),
 });
-export const AgentHandoffSchema = z.object({ propertyId: id, externalUserId: id, conversationId: id,
+export const AgentHandoffSchema = z.object({ ...agentConversationFields,
   reasonCode: z.enum(["custom_discount", "refund_or_payment_issue", "complaint_or_conflict", "uncertain_intent",
     "unavailable_nonstandard_solution", "corporate_or_event_complex", "guest_requested_human", "unsupported_action"]),
   summary: z.string().trim().max(1000).optional(), requestedAction: z.string().trim().max(500).optional(),
   priority: z.enum(["low", "medium", "high", "urgent"]).default("medium") });
-export const AgentStayContextSchema = z.object({ propertyId: id, externalUserId: id, conversationId: id });
-export const AgentFolioSummarySchema = z.object({ propertyId: id, externalUserId: id, conversationId: id });
-export const AgentIdentityVerifySchema = z.object({ propertyId: id, externalUserId: id,
+export const AgentStayContextSchema = z.object({ ...agentConversationFields });
+export const AgentFolioSummarySchema = z.object({ ...agentConversationFields });
+export const AgentIdentityVerifySchema = z.object({ ...agentIdentityFields,
   bookingReference: z.string().trim().min(3).max(80), phone: z.string().trim().min(7).max(32),
   idempotencyKey: id.max(120) });
-export const AgentStayExtensionPreviewSchema = z.object({ propertyId: id, externalUserId: id,
-  conversationId: id, departureAt: isoDateTime });
-export const AgentStayExtensionSchema = z.object({ propertyId: id, externalUserId: id, conversationId: id,
+export const AgentStayExtensionPreviewSchema = z.object({ ...agentConversationFields, departureAt: isoDateTime });
+export const AgentStayExtensionSchema = z.object({ ...agentConversationFields,
   proposalMessageId: id, confirmationMessageId: id, reservationId: id, departureAt: isoDateTime,
   expectedAddedCharge: z.number().int().min(0), currency: id.max(12), idempotencyKey: id.max(120) });
 
@@ -169,7 +245,8 @@ export const AGENT_ERROR_CODES = [
   "CONVERSATION_NOT_FOUND", "CONVERSATION_HUMAN_OWNED", "ACTION_NOT_ALLOWED", "CONFIRMATION_REQUIRED",
   "CONFIRMATION_STALE", "CONFIRMATION_PAYLOAD_MISMATCH", "IDEMPOTENCY_CONFLICT", "NO_AVAILABILITY",
   "PRICE_NOT_AUTHORITATIVE", "SERVICE_NOT_LIVE_BOOKABLE", "RESOURCE_CONFLICT", "REQUEST_NOT_FOUND",
-  "OFFER_EXPIRED", "HANDOFF_REQUIRED", "DELIVERY_FAILED", "MESSAGE_NOT_FOUND", "CLASSIFICATION_MANUAL_OVERRIDE",
+  "REQUEST_CLOSED", "OFFER_EXPIRED", "HANDOFF_REQUIRED", "DELIVERY_FAILED", "MESSAGE_NOT_FOUND",
+  "CLASSIFICATION_MANUAL_OVERRIDE", "GUEST_PROFILE_CONFLICT", "ATTACHMENT_NOT_FOUND",
 ] as const;
 export const AgentErrorCodeSchema = z.enum(AGENT_ERROR_CODES);
 export type AgentErrorCode = z.infer<typeof AgentErrorCodeSchema>;

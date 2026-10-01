@@ -2,10 +2,13 @@
   "contractVersion": "agent-api-v1",
   "basePath": "/api/integrations/agent",
   "auth": { "header": "x-crm-api-key", "environment": "CRM_INTEGRATION_API_KEY" },
-  "channels": ["telegram"],
+  "channels": ["telegram", "whatsapp", "instagram", "simulator"],
+  "messageTypes": ["text", "image", "document", "audio", "video"],
+  "attachmentKinds": ["image", "document", "audio", "video", "other"],
+  "attachmentProcessingStates": ["received", "processing", "ready", "failed"],
   "lifecycles": ["new_contact", "active_request", "offer", "pending_payment", "reserved", "pre_arrival", "in_house", "due_out", "post_stay", "service_only", "non_target"],
   "bookingModes": ["live_booking", "request_only", "info_only", "disabled"],
-  "tools": ["get_context", "classify_conversation", "get_property_knowledge", "get_accommodation_options", "check_accommodation_availability", "create_or_update_request", "create_offer", "book_accommodation", "get_service_options", "check_service_availability", "book_service", "reschedule_service", "cancel_service", "get_stay_context", "get_folio_summary", "create_guest_request", "check_stay_extension", "extend_stay", "handoff_to_human"],
+  "tools": ["get_context", "classify_conversation", "get_property_knowledge", "get_accommodation_options", "check_accommodation_availability", "create_or_update_request", "update_request_lifecycle", "create_offer", "book_accommodation", "get_service_options", "check_service_availability", "book_service", "reschedule_service", "cancel_service", "get_stay_context", "get_folio_summary", "create_guest_request", "check_stay_extension", "extend_stay", "handoff_to_human", "update_guest_profile", "update_conversation_memory"],
   "toolDescriptors": {
     "get_context": { "name": "get_context", "method": "POST", "path": "/context", "mutation": false, "confirmationRequired": false, "description": "Load identity-scoped CRM context" },
     "classify_conversation": { "name": "classify_conversation", "method": "POST", "path": "/conversations/classify", "mutation": true, "confirmationRequired": false, "description": "Record AI conversation classification" },
@@ -13,6 +16,7 @@
     "get_accommodation_options": { "name": "get_accommodation_options", "method": "GET", "path": "/accommodations/options", "mutation": false, "confirmationRequired": false, "description": "List accommodation categories for occupancy" },
     "check_accommodation_availability": { "name": "check_accommodation_availability", "method": "POST", "path": "/accommodations/availability", "mutation": false, "confirmationRequired": false, "description": "Check category availability for dates" },
     "create_or_update_request": { "name": "create_or_update_request", "method": "POST", "path": "/requests/upsert", "mutation": true, "confirmationRequired": false, "description": "Upsert commercial lead/request" },
+    "update_request_lifecycle": { "name": "update_request_lifecycle", "method": "POST", "path": "/requests/lifecycle", "mutation": true, "confirmationRequired": false, "description": "Move request through enquire/tentative/definite/lost/closed lifecycle" },
     "create_offer": { "name": "create_offer", "method": "POST", "path": "/offers/create", "mutation": true, "confirmationRequired": false, "description": "Generate binding commercial offer" },
     "book_accommodation": { "name": "book_accommodation", "method": "POST", "path": "/accommodations/book", "mutation": true, "confirmationRequired": true, "description": "Confirm accommodation booking from accepted offer" },
     "get_service_options": { "name": "get_service_options", "method": "GET", "path": "/services/options", "mutation": false, "confirmationRequired": false, "description": "List service catalog items" },
@@ -25,20 +29,27 @@
     "create_guest_request": { "name": "create_guest_request", "method": "POST", "path": "/guest-requests", "mutation": true, "confirmationRequired": false, "description": "Create operational in-house guest request" },
     "check_stay_extension": { "name": "check_stay_extension", "method": "POST", "path": "/stays/extension/preview", "mutation": false, "confirmationRequired": false, "description": "Preview stay extension price and feasibility" },
     "extend_stay": { "name": "extend_stay", "method": "POST", "path": "/stays/extend", "mutation": true, "confirmationRequired": true, "description": "Extend active stay with confirmed payment" },
-    "handoff_to_human": { "name": "handoff_to_human", "method": "POST", "path": "/handoff", "mutation": true, "confirmationRequired": false, "description": "Escalate conversation to human staff" }
+    "handoff_to_human": { "name": "handoff_to_human", "method": "POST", "path": "/handoff", "mutation": true, "confirmationRequired": false, "description": "Escalate conversation to human staff" },
+    "update_guest_profile": { "name": "update_guest_profile", "method": "POST", "path": "/guests/profile", "mutation": true, "confirmationRequired": false, "description": "Persist allowlisted guest facts collected in conversation" },
+    "update_conversation_memory": { "name": "update_conversation_memory", "method": "POST", "path": "/conversations/memory", "mutation": true, "confirmationRequired": false, "description": "Store versioned compact conversation memory" }
   },
   "confirmation": { "requiredFor": ["book_accommodation", "book_service", "reschedule_service", "cancel_service", "extend_stay"], "sentProposalRequired": true, "laterInboundConfirmationRequired": true, "maximumAgeMinutes": 30, "oneUse": true },
-  "context": { "contractVersion": "agent-api-v1", "activeProposal": { "nullable": true, "requires": ["sent_ai_message", "unexpired", "not_consumed"], "fields": ["messageId", "actionType", "payload", "expiresAt", "sentAt"] }, "recentMessages": { "excludesOutboundDeliveryStates": ["pending", "failed"] } },
-  "errors": ["UNAUTHORIZED", "VALIDATION_ERROR", "INTERNAL_ERROR", "IDENTITY_NOT_FOUND", "IDENTITY_VERIFICATION_REQUIRED", "CONVERSATION_NOT_FOUND", "CONVERSATION_HUMAN_OWNED", "ACTION_NOT_ALLOWED", "CONFIRMATION_REQUIRED", "CONFIRMATION_STALE", "CONFIRMATION_PAYLOAD_MISMATCH", "IDEMPOTENCY_CONFLICT", "NO_AVAILABILITY", "PRICE_NOT_AUTHORITATIVE", "SERVICE_NOT_LIVE_BOOKABLE", "RESOURCE_CONFLICT", "REQUEST_NOT_FOUND", "OFFER_EXPIRED", "HANDOFF_REQUIRED", "DELIVERY_FAILED", "MESSAGE_NOT_FOUND", "CLASSIFICATION_MANUAL_OVERRIDE"],
+  "context": { "contractVersion": "agent-api-v1", "activeProposal": { "nullable": true, "requires": ["sent_ai_message", "unexpired", "not_consumed"], "fields": ["messageId", "actionType", "payload", "expiresAt", "sentAt"] }, "recentMessages": { "excludesOutboundDeliveryStates": ["pending", "failed"], "attachmentFields": ["id", "kind", "mimeType", "fileName", "fileSize", "durationMs", "processingStatus", "transcript"] }, "conversationMemory": { "storedUnder": "conversation.summary.memory", "schemaVersion": 1 } },
+  "errors": ["UNAUTHORIZED", "VALIDATION_ERROR", "INTERNAL_ERROR", "IDENTITY_NOT_FOUND", "IDENTITY_VERIFICATION_REQUIRED", "CONVERSATION_NOT_FOUND", "CONVERSATION_HUMAN_OWNED", "ACTION_NOT_ALLOWED", "CONFIRMATION_REQUIRED", "CONFIRMATION_STALE", "CONFIRMATION_PAYLOAD_MISMATCH", "IDEMPOTENCY_CONFLICT", "NO_AVAILABILITY", "PRICE_NOT_AUTHORITATIVE", "SERVICE_NOT_LIVE_BOOKABLE", "RESOURCE_CONFLICT", "REQUEST_NOT_FOUND", "REQUEST_CLOSED", "OFFER_EXPIRED", "HANDOFF_REQUIRED", "DELIVERY_FAILED", "MESSAGE_NOT_FOUND", "CLASSIFICATION_MANUAL_OVERRIDE", "GUEST_PROFILE_CONFLICT", "ATTACHMENT_NOT_FOUND"],
   "endpoints": [
     ["GET", "/capabilities"], ["POST", "/messages/inbound"], ["POST", "/context"], ["GET", "/property-knowledge"],
     ["GET", "/accommodations/options"], ["POST", "/accommodations/availability"], ["POST", "/conversations/classify"],
-    ["POST", "/requests/upsert"], ["POST", "/offers/create"], ["GET", "/services/options"], ["POST", "/services/availability"],
+    ["POST", "/requests/upsert"], ["POST", "/requests/lifecycle"], ["POST", "/offers/create"], ["GET", "/services/options"], ["POST", "/services/availability"],
     ["POST", "/services/book"], ["POST", "/services/reschedule"], ["POST", "/services/cancel"],
     ["POST", "/accommodations/book"], ["POST", "/guest-requests"], ["POST", "/handoff"], ["POST", "/stay-context"],
     ["POST", "/folio-summary"], ["POST", "/identity/verify"], ["POST", "/messages/outbound/prepare"],
-    ["POST", "/messages/outbound/result"], ["POST", "/stays/extension/preview"], ["POST", "/stays/extend"]
+    ["POST", "/messages/outbound/result"], ["POST", "/stays/extension/preview"], ["POST", "/stays/extend"],
+    ["POST", "/guests/profile"], ["POST", "/conversations/memory"],
+    ["GET", "/conversations/:id/messages"],
+    ["POST", "/messages/:messageId/attachments/:attachmentId/process-result"]
   ],
-  "outbound": { "webhookTokenEnvironment": "AGENT_OUTBOUND_WEBHOOK_TOKEN", "confirmDeliveryRequired": true },
-  "featureFlags": { "restaurantTableInventory": false, "autonomousDiscounts": false, "autonomousRefunds": false, "roomMove": false, "vacancyAutomation": false }
+  "outbound": { "webhookTokenEnvironment": "AGENT_OUTBOUND_WEBHOOK_TOKEN", "confirmDeliveryRequired": true,
+    "transports": { "telegram": "webhook", "whatsapp": "webhook", "simulator": "local", "instagram": "unsupported" } },
+  "featureFlags": { "restaurantTableInventory": false, "autonomousDiscounts": false, "autonomousRefunds": false, "roomMove": false, "vacancyAutomation": false,
+    "structuredConversationMemory": true, "guestProfileExtraction": true, "mediaAttachments": true, "simulatorChannel": true, "agentTrace": true, "conversationMessagePolling": true }
 }

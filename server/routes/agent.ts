@@ -1,19 +1,24 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
-import { and, asc, desc, eq, gte, inArray, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
-import { AGENT_API_VERSION, AGENT_BOOKING_MODES, AGENT_CONFIRMATION_POLICY, AGENT_LIFECYCLES, AGENT_TOOLS,
-  AGENT_TOOL_DESCRIPTORS,
+import { AGENT_API_VERSION, AGENT_ATTACHMENT_KINDS, AGENT_ATTACHMENT_PROCESSING_STATES, AGENT_BOOKING_MODES,
+  AGENT_CHANNELS, AGENT_CONFIRMATION_POLICY, AGENT_LIFECYCLES, AGENT_MEMORY_SCHEMA_VERSION, AGENT_MESSAGE_TYPES,
+  AGENT_TOOLS, AGENT_TOOL_DESCRIPTORS,
   AgentAccommodationAvailabilitySchema, AgentAccommodationBookSchema, AgentAccommodationOptionsQuerySchema,
-  AgentClassifyConversationSchema, AgentContextRequestSchema, AgentFolioSummarySchema, AgentGuestRequestSchema,
+  AgentAttachmentProcessResultSchema, AgentClassifyConversationSchema, AgentContextRequestSchema,
+  AgentConversationMemoryUpdateSchema, AgentConversationMessagesQuerySchema, AgentFolioSummarySchema,
+  AgentGuestProfileUpdateSchema, AgentGuestRequestSchema,
   AgentHandoffSchema, AgentIdentityVerifySchema, AgentInboundMessageSchema, AgentOutboundPrepareSchema,
-  AgentOutboundResultSchema, AgentPropertyKnowledgeQuerySchema, AgentRequestUpsertSchema, AgentServiceAvailabilitySchema,
+  AgentOutboundResultSchema, AgentPropertyKnowledgeQuerySchema, AgentRequestLifecycleUpdateSchema,
+  AgentRequestUpsertSchema, AgentServiceAvailabilitySchema,
   AgentServiceBookSchema, AgentServiceCancelSchema, AgentServiceOptionsQuerySchema, AgentServiceRescheduleSchema,
   AgentStayContextSchema, AgentStayExtensionPreviewSchema, AgentStayExtensionSchema, AgentOfferCreateSchema,
   isExplicitConfirmation, stableAgentPayloadString,
 } from "../contracts/agent-contract.js";
 import { AgentActionError, executeConfirmedAgentAction, hashAgentPayload } from "../services/agent-action-service.js";
-import { normalizePhone } from "../services/customer-service.js";
+import { agentToolTraceMiddleware } from "../services/agent-tool-trace.js";
+import { normalizeEmail, normalizePhone } from "../services/customer-service.js";
 import { extendStay, StayConflict } from "../services/stay-service.js";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
@@ -61,11 +66,11 @@ const contextAllows = async (db: Database, conversationId: string, customerId: s
   const context = await getAgentContext(db, conversationId, customerId);
   return { context, allowed: Boolean(context?.aiReplyAllowed && context.allowedActions.includes(action as never)) };
 };
-const identityFor = async (db: Pick<Database, "select">, propertyId: string, externalUserId: string) => {
+const identityFor = async (db: Pick<Database, "select">, channel: string, propertyId: string, externalUserId: string) => {
   const [property] = await db.select().from(s.properties).where(eq(s.properties.id, propertyId)).limit(1);
   if (!property) return null;
   const [identity] = await db.select().from(s.guestContactIdentities).where(and(
-    eq(s.guestContactIdentities.channel, "telegram"), eq(s.guestContactIdentities.externalUserId, externalUserId),
+    eq(s.guestContactIdentities.channel, channel), eq(s.guestContactIdentities.externalUserId, externalUserId),
   )).limit(1);
   if (!identity) return null;
   const [guest] = await db.select({ id: s.guests.id, organizationId: s.guests.organizationId })
@@ -74,18 +79,18 @@ const identityFor = async (db: Pick<Database, "select">, propertyId: string, ext
 };
 
 const findConversation = async (db: Pick<Database, "select">, input: {
-  guestId: string; propertyId: string; conversationId?: string; externalChatId?: string;
+  channel: string; guestId: string; propertyId: string; conversationId?: string; externalChatId?: string;
 }) => {
   if (input.conversationId) {
     const [conversation] = await db.select().from(s.conversations).where(and(
       eq(s.conversations.id, input.conversationId), eq(s.conversations.guestId, input.guestId),
-      eq(s.conversations.propertyId, input.propertyId), eq(s.conversations.channel, "telegram"),
+      eq(s.conversations.propertyId, input.propertyId), eq(s.conversations.channel, input.channel),
     )).limit(1);
     return conversation;
   }
   const [conversation] = await db.select().from(s.conversations).where(and(
     eq(s.conversations.guestId, input.guestId), eq(s.conversations.propertyId, input.propertyId),
-    eq(s.conversations.channel, "telegram"), ...(input.externalChatId ? [eq(s.conversations.externalChatId, input.externalChatId)] : []),
+    eq(s.conversations.channel, input.channel), ...(input.externalChatId ? [eq(s.conversations.externalChatId, input.externalChatId)] : []),
   )).orderBy(desc(s.conversations.lastMessageAt)).limit(1);
   return conversation;
 };
@@ -138,35 +143,44 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
     if (!safeEqual(provided, apiKey)) return sendError(response, 401, "UNAUTHORIZED", "Invalid integration API key");
     next();
   });
+  router.use(agentToolTraceMiddleware(db));
 
     router.get("/capabilities", (_request, response) => response.json({
     contractVersion: AGENT_API_VERSION,
-    supportedChannels: ["telegram"],
+    supportedChannels: [...AGENT_CHANNELS],
+    supportedMessageTypes: [...AGENT_MESSAGE_TYPES],
+    supportedAttachmentKinds: [...AGENT_ATTACHMENT_KINDS],
+    attachmentProcessingStates: [...AGENT_ATTACHMENT_PROCESSING_STATES],
     supportedTools: AGENT_TOOLS,
     toolDescriptors: AGENT_TOOL_DESCRIPTORS,
     supportedLifecycleStates: AGENT_LIFECYCLES,
+    lifecycleStates: AGENT_LIFECYCLES,
     supportedAgentBookingModes: AGENT_BOOKING_MODES,
+    agentBookingModes: AGENT_BOOKING_MODES,
     confirmationPolicy: AGENT_CONFIRMATION_POLICY,
     featureFlags: {
       conversationClassification: true, reservationParticipantContext: true, identityVerification: true,
       durableAiOutbound: true, actionBoundConfirmation: true, extensionPreview: true,
+      structuredConversationMemory: true, guestProfileExtraction: true, mediaAttachments: true,
+      simulatorChannel: true, agentTrace: true, conversationMessagePolling: true,
       restaurantTableInventory: false, autonomousDiscounts: false, autonomousRefunds: false,
       roomMove: false, vacancyAutomation: false,
     },
   }));
-// Telegram updates create only a Customer, Conversation and Message. Intent
-  // classification and commercial Request creation remain separate tool calls.
+// Inbound updates create only a Customer, Conversation and Message regardless
+  // of channel. Intent classification and commercial Request creation remain
+  // separate tool calls.
   router.post("/messages/inbound", async (request, response) => {
     const input = AgentInboundMessageSchema.parse(request.body);
-    const messageKey = `telegram:${input.externalChatId}:${input.externalUserId}:${input.externalMessageId}`;
+    const messageKey = `${input.channel}:${input.externalChatId}:${input.externalUserId}:${input.externalMessageId}`;
     const eventId = input.externalUpdateId ?? messageKey;
     const payloadHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
     const inboundMessageHash = hashAgentPayload({ channel: input.channel, externalUserId: input.externalUserId,
       externalChatId: input.externalChatId, externalMessageId: input.externalMessageId,
-      propertyId: input.propertyId, text: input.text });
+      propertyId: input.propertyId, text: input.text ?? "", attachments: input.attachments });
     const result = await db.transaction(async (tx) => {
       const [priorEvent] = await tx.select().from(s.integrationEvents).where(and(
-        eq(s.integrationEvents.provider, "telegram"), eq(s.integrationEvents.eventType, "agent_inbound_message"),
+        eq(s.integrationEvents.provider, input.channel), eq(s.integrationEvents.eventType, "agent_inbound_message"),
         eq(s.integrationEvents.externalEventId, eventId),
       )).limit(1);
       const [priorMessage] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, messageKey)).limit(1);
@@ -184,12 +198,12 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
           guestId: priorEvent?.guestId ?? priorConversation?.guestId ?? null,
           messageId: priorMessage?.id ?? null, conflict: false };
       }
-      const [event] = await tx.insert(s.integrationEvents).values({ id: id("event"), provider: "telegram",
+      const [event] = await tx.insert(s.integrationEvents).values({ id: id("event"), provider: input.channel,
         eventType: "agent_inbound_message", externalEventId: eventId, payloadHash, guestId: null, leadId: null,
       }).onConflictDoNothing().returning();
       if (!event) {
         const [existingEvent] = await tx.select().from(s.integrationEvents).where(and(
-          eq(s.integrationEvents.provider, "telegram"), eq(s.integrationEvents.eventType, "agent_inbound_message"),
+          eq(s.integrationEvents.provider, input.channel), eq(s.integrationEvents.eventType, "agent_inbound_message"),
           eq(s.integrationEvents.externalEventId, eventId),
         )).limit(1);
         if (existingEvent && existingEvent.payloadHash !== payloadHash) {
@@ -197,42 +211,58 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
         }
         const [message] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, messageKey)).limit(1);
         const [identity] = await tx.select().from(s.guestContactIdentities).where(and(
-          eq(s.guestContactIdentities.channel, "telegram"), eq(s.guestContactIdentities.externalUserId, input.externalUserId),
+          eq(s.guestContactIdentities.channel, input.channel), eq(s.guestContactIdentities.externalUserId, input.externalUserId),
         )).limit(1);
         return { duplicate: true, conversationId: message?.conversationId ?? null,
           guestId: existingEvent?.guestId ?? identity?.guestId ?? null,
           messageId: message?.id ?? null, conflict: false };
       }
       const customer = await resolveOrCreateExternalCustomer(tx, {
-        channel: "telegram", externalUserId: input.externalUserId, externalChatId: input.externalChatId,
-        propertyId: input.propertyId, firstName: input.firstName, username: input.username, createAsStub: true,
+        channel: input.channel, externalUserId: input.externalUserId, externalChatId: input.externalChatId,
+        propertyId: input.propertyId, firstName: input.firstName, lastName: input.lastName,
+        displayName: input.displayName, language: input.language, username: input.username, createAsStub: true,
       });
-      const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, customer.customerId)).limit(1);
-      if (guest?.profileStatus === "stub" && input.firstName?.trim()) {
-        await tx.update(s.guests).set({ firstName: input.firstName.trim(), fullName: input.firstName.trim(),
-          profileStatus: "stub", updatedAt: now() }).where(eq(s.guests.id, guest.id));
-      }
       const timestamp = now();
+      const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, customer.customerId)).limit(1);
+      if (guest?.profileStatus === "stub") {
+        // Provider-supplied names/language fill empty stub fields only; phone and
+        // email stay untouched here so identity merges never happen silently.
+        const fill: Record<string, string> = {};
+        if (input.firstName?.trim() && !guest.firstName) fill.firstName = input.firstName.trim();
+        if (input.lastName?.trim() && !guest.lastName) fill.lastName = input.lastName.trim();
+        const displayName = input.displayName?.trim() ||
+          [fill.firstName ?? guest.firstName, fill.lastName ?? guest.lastName].filter(Boolean).join(" ").trim() || null;
+        if (displayName && (!guest.fullName || guest.fullName.startsWith("Контакт ") || fill.firstName || fill.lastName)) {
+          fill.fullName = displayName;
+        }
+        if (input.language?.trim() && !guest.language?.trim()) fill.language = input.language.trim();
+        if (Object.keys(fill).length) {
+          await tx.update(s.guests).set({ ...fill, updatedAt: timestamp }).where(eq(s.guests.id, guest.id));
+        }
+      }
       let [conversation] = await tx.select().from(s.conversations).where(and(
         eq(s.conversations.guestId, customer.customerId), eq(s.conversations.propertyId, input.propertyId),
-        eq(s.conversations.channel, "telegram"), eq(s.conversations.externalChatId, input.externalChatId),
+        eq(s.conversations.channel, input.channel), eq(s.conversations.externalChatId, input.externalChatId),
       )).limit(1);
       if (!conversation) {
         [conversation] = await tx.insert(s.conversations).values({ id: id("conversation"), guestId: customer.customerId,
-          channel: "telegram", propertyId: input.propertyId, externalChatId: input.externalChatId,
+          channel: input.channel, propertyId: input.propertyId, externalChatId: input.externalChatId,
           status: "open", automationMode: "ai", unreadCount: 0, lastMessageAt: timestamp, slaMinutes: 15,
         }).onConflictDoNothing({ target: [s.conversations.channel, s.conversations.propertyId, s.conversations.guestId, s.conversations.externalChatId] }).returning();
         if (!conversation) [conversation] = await tx.select().from(s.conversations).where(and(
           eq(s.conversations.guestId, customer.customerId), eq(s.conversations.propertyId, input.propertyId),
-          eq(s.conversations.channel, "telegram"), eq(s.conversations.externalChatId, input.externalChatId),
+          eq(s.conversations.channel, input.channel), eq(s.conversations.externalChatId, input.externalChatId),
         )).limit(1);
       }
-      if (!conversation) throw new Error("Не удалось создать Telegram-диалог");
+      if (!conversation) throw new Error("Не удалось создать диалог канала");
       const [message] = await tx.insert(s.messages).values({ id: id("message"), conversationId: conversation.id,
-        direction: "in", senderType: "contact", text: input.text, sentAt: timestamp, createdAt: timestamp,
+        direction: "in", senderType: "contact", text: input.text ?? "", sentAt: timestamp, createdAt: timestamp,
         externalMessageId: input.externalMessageId, externalUpdateId: input.externalUpdateId,
         deliveryStatus: "received", idempotencyKey: messageKey,
-        metadata: { channel: "telegram", username: input.username ?? null, inboundMessageHash },
+        metadata: { channel: input.channel, username: input.username ?? null, inboundMessageHash,
+          messageType: input.attachments.length ? input.attachments[0].kind : "text",
+          contact: { firstName: input.firstName ?? null, lastName: input.lastName ?? null,
+            displayName: input.displayName ?? null, phone: input.phone ?? null, email: input.email ?? null } },
       }).onConflictDoNothing({ target: s.messages.idempotencyKey }).returning();
       if (!message) {
         const [existingMessage] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, messageKey)).limit(1);
@@ -240,12 +270,23 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
         return { duplicate: true, conversationId: conversation.id, guestId: customer.customerId,
           messageId: existingMessage?.id ?? null, conflict: false };
       }
+      if (input.attachments.length) {
+        await tx.insert(s.messageAttachments).values(input.attachments.map((attachment) => ({
+          id: id("attachment"), messageId: message.id, kind: attachment.kind,
+          mimeType: attachment.mimeType ?? null, fileName: attachment.fileName ?? null,
+          fileSize: attachment.fileSize ?? null, externalFileId: attachment.externalFileId ?? null,
+          storageProvider: attachment.storageProvider ?? null, storageKey: attachment.storageKey ?? null,
+          durationMs: attachment.durationMs ?? null,
+          processingStatus: attachment.storageKey ? "ready" : "received",
+          metadata: attachment.metadata ?? {},
+        }))).onConflictDoNothing();
+      }
       await tx.update(s.conversations).set({ status: "open", unreadCount: sql`${s.conversations.unreadCount} + 1`,
         lastMessageAt: timestamp, updatedAt: timestamp }).where(eq(s.conversations.id, conversation.id));
       await tx.update(s.integrationEvents).set({ guestId: customer.customerId }).where(eq(s.integrationEvents.id, event.id));
       return { duplicate: false, conversationId: conversation.id, guestId: customer.customerId, messageId: message.id, conflict: false };
     });
-    if (result.conflict) return writeError(response, 409, "Update idempotency key was reused for a different Telegram payload", { code: "IDEMPOTENCY_CONFLICT" });
+    if (result.conflict) return writeError(response, 409, "Update idempotency key was reused for a different payload", { code: "IDEMPOTENCY_CONFLICT" });
     if (!result.conversationId || !result.guestId) return writeError(response, 409,
       "Duplicate update was received before its original transaction completed", { code: "IDEMPOTENCY_CONFLICT", retryable: true });
     const context = await getAgentContext(db, result.conversationId, result.guestId);
@@ -256,11 +297,11 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/context", async (request, response) => {
     const input = AgentContextRequestSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId, externalChatId: input.externalChatId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     response.json(await getAgentContext(db, conversation.id, identity.guestId));
   });
 
@@ -326,11 +367,11 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/conversations/classify", async (request, response) => {
     const input = AgentClassifyConversationSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     if (conversation.automationMode !== "ai") return writeError(response, 409, "Conversation is owned by a human", { code: "CONVERSATION_HUMAN_OWNED" });
     const prior = conversation.classification ?? {};
     const manuallyOverridden = prior.manualOverride === true || Boolean(prior.manualOverrideEmployeeId) ||
@@ -354,14 +395,14 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
   });
   router.post("/requests/upsert", async (request, response) => {
     const input = AgentRequestUpsertSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId, externalChatId: input.externalChatId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     if (conversation.automationMode !== "ai") return writeError(response, 409, "Conversation is owned by a human", { code: "CONVERSATION_HUMAN_OWNED" });
     const { context, allowed } = await contextAllows(db, conversation.id, identity.guestId, "create_or_update_request");
-    if (!context) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!context) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     if (!allowed || input.quality === "non_target" || conversation.classification?.quality === "non_target") {
       return writeError(response, 409, "A commercial Request is not allowed for this conversation classification", { code: "ACTION_NOT_ALLOWED" });
     }
@@ -369,11 +410,11 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
         context.reservation?.departureAt && Date.parse(input.checkIn) < Date.parse(context.reservation.departureAt)) {
       return writeError(response, 409, "Future accommodation Request must start after the current stay", { code: "ACTION_NOT_ALLOWED" });
     }
-    const requestEventId = identity.guestId + ":" + input.propertyId + ":" + input.idempotencyKey;
+    const requestEventId = `${input.channel}:${identity.guestId}:${input.propertyId}:${input.idempotencyKey}`;
     const requestPayloadHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
     const result = await db.transaction(async (tx) => {
       const [prior] = await tx.select().from(s.integrationEvents).where(and(
-        eq(s.integrationEvents.provider, "telegram"), eq(s.integrationEvents.eventType, "agent_request_upsert"),
+        eq(s.integrationEvents.eventType, "agent_request_upsert"),
         eq(s.integrationEvents.externalEventId, requestEventId),
       )).limit(1);
       if (prior && (prior.payloadHash !== requestPayloadHash || prior.guestId !== identity.guestId)) return { conflict: true };
@@ -382,13 +423,13 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
           eq(s.leads.guestId, identity.guestId), eq(s.leads.propertyId, input.propertyId))).limit(1);
         return existingLead ? { requestId: existingLead.id, duplicate: true, conflict: false } : { conflict: true };
       }
-      const [event] = await tx.insert(s.integrationEvents).values({ id: id("event"), provider: "telegram",
+      const [event] = await tx.insert(s.integrationEvents).values({ id: id("event"), provider: "agent",
         eventType: "agent_request_upsert", externalEventId: requestEventId,
         payloadHash: requestPayloadHash, guestId: identity.guestId,
         leadId: null }).onConflictDoNothing().returning();
       if (!event) {
         const [existingEvent] = await tx.select().from(s.integrationEvents).where(and(
-          eq(s.integrationEvents.provider, "telegram"), eq(s.integrationEvents.eventType, "agent_request_upsert"),
+          eq(s.integrationEvents.eventType, "agent_request_upsert"),
           eq(s.integrationEvents.externalEventId, requestEventId))).limit(1);
         if (existingEvent && existingEvent.payloadHash === requestPayloadHash && existingEvent.guestId === identity.guestId && existingEvent.leadId) {
           const [existingLead] = await tx.select().from(s.leads).where(and(eq(s.leads.id, existingEvent.leadId),
@@ -409,7 +450,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
         const [assignment] = await tx.select().from(s.employeeProperties).where(eq(s.employeeProperties.propertyId, input.propertyId)).limit(1);
         if (!assignment) throw new Error("Для объекта не назначен сотрудник");
         [lead] = await tx.insert(s.leads).values({ id: id("request"), code: `G-${randomUUID().slice(0, 10).toUpperCase()}`,
-          guestId: identity.guestId, propertyId: input.propertyId, source: "telegram", stage: "new",
+          guestId: identity.guestId, propertyId: input.propertyId, source: input.channel, stage: "new",
           requestStatus: "active", intent: input.temperature, roomType: input.category ?? null,
           checkIn: input.checkIn ?? null, checkOut: input.checkOut ?? null,
           nights: input.checkIn && input.checkOut ? Math.max(0, Math.round((new Date(input.checkOut).getTime() - new Date(input.checkIn).getTime()) / 86_400_000)) : 0,
@@ -458,22 +499,25 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
   });
 
   router.post("/requests/lifecycle", async (request, response) => {
-    const input = z.object({ propertyId: z.string().min(1), externalUserId: z.string().min(1),
-      conversationId: z.string().min(1), requestId: z.string().min(1),
-      status: z.enum(["enquire", "tentative", "definite", "lost", "closed"]),
-      reason: z.string().trim().max(1000).optional(), dueAt: z.string().datetime().optional(),
-      idempotencyKey: z.string().min(8) }).parse(request.body);
+    const input = AgentRequestLifecycleUpdateSchema.parse(request.body);
     if (["lost", "closed"].includes(input.status) && !input.reason) {
-      return writeError(response, 400, "Reason is required for terminal outcome", { code: "INVALID_OUTCOME" });
+      return writeError(response, 400, "Reason is required for terminal outcome", { code: "VALIDATION_ERROR" });
     }
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Identity not found", { code: "IDENTITY_NOT_FOUND" });
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversationCheck = await findConversation(db, { channel: input.channel, guestId: identity.guestId,
+      propertyId: input.propertyId, conversationId: input.conversationId });
+    if (!conversationCheck) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
+    const { allowed } = await contextAllows(db, conversationCheck.id, identity.guestId, "update_request_lifecycle");
+    if (!allowed) return writeError(response, 409, "Request lifecycle changes are not available for this state",
+      { code: conversationCheck.automationMode === "ai" ? "ACTION_NOT_ALLOWED" : "CONVERSATION_HUMAN_OWNED" });
     const result = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT id FROM leads WHERE id = ${input.requestId} FOR UPDATE`);
       const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.id, input.conversationId)).limit(1);
       const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, input.requestId)).limit(1);
       if (!conversation || !lead || lead.guestId !== identity.guestId || lead.propertyId !== input.propertyId ||
-        conversation.guestId !== identity.guestId || conversation.leadId !== lead.id) return { error: "Request not found", code: "REQUEST_NOT_FOUND" } as const;
+        conversation.guestId !== identity.guestId || conversation.channel !== input.channel ||
+        conversation.leadId !== lead.id) return { error: "Request not found", code: "REQUEST_NOT_FOUND" } as const;
       const eventId = `lifecycle:${input.idempotencyKey}`;
       const payloadHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
       const [existing] = await tx.select().from(s.integrationEvents).where(and(eq(s.integrationEvents.provider, "agent"),
@@ -494,10 +538,16 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
         id: id("request_lifecycle"), leadId: lead.id, fromStatus: lead.requestLifecycle,
         toStatus: input.status, source: "agent", reason: input.reason ?? null, changedAt: timestamp });
       if (input.status === "tentative") {
+        const [classificationRow] = await tx.select().from(s.leadClassifications)
+          .where(eq(s.leadClassifications.leadId, lead.id)).limit(1);
+        const [primaryInterest] = await tx.select().from(s.leadInterests).where(and(
+          eq(s.leadInterests.leadId, lead.id), eq(s.leadInterests.isPrimary, true))).limit(1);
         const [open] = await tx.select().from(s.followUps).where(and(eq(s.followUps.leadId, lead.id), eq(s.followUps.status, "open"))).limit(1);
         if (open) await tx.update(s.followUps).set({ dueAt: dueAt!, updatedAt: timestamp }).where(eq(s.followUps.id, open.id));
         else await tx.insert(s.followUps).values({ id: id("follow_up"), leadId: lead.id, guestId: lead.guestId,
-          propertyId: lead.propertyId, channel: conversation.channel, direction: "accommodation", reason: input.reason ?? "Гость думает",
+          propertyId: lead.propertyId, channel: conversation.channel,
+          direction: primaryInterest?.direction ?? classificationRow?.direction ?? "accommodation",
+          reason: input.reason ?? "Гость думает",
           queue: "today", status: "open", stage: lead.stage, temperature: lead.intent, potentialAmount: lead.totalAmount,
           dueAt: dueAt!, ownerId: lead.ownerId, context: lead.roomType ?? "Предложение", recommendedAction: "Отправить follow-up",
           createdAt: timestamp, updatedAt: timestamp });
@@ -519,11 +569,11 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/offers/create", async (request, response) => {
     const input = AgentOfferCreateSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     const { context, allowed } = await contextAllows(db, conversation.id, identity.guestId, "create_offer");
     if (!context) return writeError(response, 404, "Conversation context not found", { code: "CONVERSATION_NOT_FOUND" });
     if (!allowed) return writeError(response, 409, "Offer creation is not available for this lifecycle", {
@@ -598,11 +648,11 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/services/book", async (request, response) => {
     const input = AgentServiceBookSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     const catalog = await loadServiceCatalogItem(db, input.catalogItemId, input.propertyId);
     if (!catalog || catalog.agentBookingMode !== "live_booking" || !["resource", "capacity"].includes(catalog.bookingMode)) {
       return writeError(response, 409, "Для услуги не включено онлайн-бронирование", { code: "SERVICE_NOT_LIVE_BOOKABLE" });
@@ -618,7 +668,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
       const result = await executeConfirmedAgentAction(db, {
         propertyId: input.propertyId, customerId: identity.guestId, conversationId: conversation.id,
         proposalMessageId: input.proposalMessageId, confirmationMessageId: input.confirmationMessageId,
-        actionType: "book_service", payload: actionPayload,
+        actionType: "book_service", payload: actionPayload, channel: input.channel,
       }, async (tx) => {
         const currentCatalog = await loadServiceCatalogItem(tx, input.catalogItemId, input.propertyId);
         if (!currentCatalog || currentCatalog.agentBookingMode !== "live_booking" || !["resource", "capacity"].includes(currentCatalog.bookingMode)) {
@@ -649,16 +699,17 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/services/cancel", async (request, response) => {
     const input = AgentServiceCancelSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     try {
       const result = await executeConfirmedAgentAction(db, {
         propertyId: input.propertyId, customerId: identity.guestId, conversationId: conversation.id,
         proposalMessageId: input.proposalMessageId, confirmationMessageId: input.confirmationMessageId,
         actionType: "cancel_service", payload: { serviceReservationId: input.serviceReservationId },
+        channel: input.channel,
       }, async (tx) => {
         const [service] = await tx.select().from(s.serviceReservations).where(and(
           eq(s.serviceReservations.id, input.serviceReservationId), eq(s.serviceReservations.customerId, identity.guestId),
@@ -685,11 +736,11 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/services/reschedule", async (request, response) => {
     const input = AgentServiceRescheduleSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     const [existingService] = await db.select().from(s.serviceReservations).where(and(
       eq(s.serviceReservations.id, input.serviceReservationId), eq(s.serviceReservations.customerId, identity.guestId),
       eq(s.serviceReservations.propertyId, input.propertyId))).limit(1);
@@ -705,7 +756,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
       const result = await executeConfirmedAgentAction(db, {
         propertyId: input.propertyId, customerId: identity.guestId, conversationId: conversation.id,
         proposalMessageId: input.proposalMessageId, confirmationMessageId: input.confirmationMessageId,
-        actionType: "reschedule_service", payload: actionPayload,
+        actionType: "reschedule_service", payload: actionPayload, channel: input.channel,
       }, async (tx) => {
         const [service] = await tx.select().from(s.serviceReservations).where(and(
           eq(s.serviceReservations.id, input.serviceReservationId), eq(s.serviceReservations.customerId, identity.guestId),
@@ -737,19 +788,19 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/accommodations/book", async (request, response) => {
     const input = AgentAccommodationBookSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     try {
       const result = await executeConfirmedAgentAction(db, {
         propertyId: input.propertyId, customerId: identity.guestId, conversationId: conversation.id,
         proposalMessageId: input.proposalMessageId, confirmationMessageId: input.confirmationMessageId,
-        actionType: "book_accommodation", payload: { offerId: input.offerId },
+        actionType: "book_accommodation", payload: { offerId: input.offerId }, channel: input.channel,
       }, async (tx) => bookAcceptedOfferByCategoryInTransaction(tx, {
         customerId: identity.guestId, propertyId: input.propertyId, offerId: input.offerId,
-        idempotencyKey: `agent-confirm:${input.proposalMessageId}`,
+        idempotencyKey: `agent-confirm:${input.proposalMessageId}`, channel: input.channel,
       }));
       response.status(result.duplicate ? 200 : 201).json({ ...result.result, duplicate: result.duplicate });
     } catch (error) {
@@ -762,14 +813,14 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
   });
   router.post("/guest-requests", async (request, response) => {
     const input = AgentGuestRequestSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId, externalChatId: input.externalChatId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     if (conversation.automationMode !== "ai") return writeError(response, 409, "Conversation is owned by a human", { code: "CONVERSATION_HUMAN_OWNED" });
     const { context, allowed } = await contextAllows(db, conversation.id, identity.guestId, "create_guest_request");
-    if (!context) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!context) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     if (!allowed) return writeError(response, 409, "Guest requests require an active in-house stay", { code: "ACTION_NOT_ALLOWED" });
     const [sourceMessage] = await db.select().from(s.messages).where(and(
       eq(s.messages.id, input.sourceMessageId), eq(s.messages.conversationId, conversation.id),
@@ -835,11 +886,11 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/handoff", async (request, response) => {
     const input = AgentHandoffSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     if (conversation.automationMode === "human") return writeError(response, 409, "Conversation is owned by a human", { code: "CONVERSATION_HUMAN_OWNED" });
     if (conversation.automationMode === "needs_human" && conversation.handoffReasonCode === input.reasonCode) {
       return response.json({ conversationId: conversation.id, automationMode: conversation.automationMode,
@@ -860,13 +911,13 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/stay-context", async (request, response) => {
     const input = AgentStayContextSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
     const context = await getAgentContext(db, input.conversationId, identity.guestId);
-    if (!context || !conversation || context.conversation.channel !== "telegram") return writeError(response, 404,
-      "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!context || !conversation || context.conversation.channel !== input.channel) return writeError(response, 404,
+      "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     if (!context.allowedActions.includes("get_stay_context")) return writeError(response, 409, "Stay context is not available for this lifecycle", { code: "ACTION_NOT_ALLOWED" });
     response.json({ lifecycle: context.lifecycle, reservation: context.reservation,
       serviceReservations: context.serviceReservations, openGuestRequests: context.reservation?.openGuestRequests ?? [] });
@@ -874,12 +925,12 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/folio-summary", async (request, response) => {
     const input = AgentFolioSummarySchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
     const context = await getAgentContext(db, input.conversationId, identity.guestId);
-    if (!context || !conversation) return writeError(response, 404, "Conversation not found for this Telegram identity",
+    if (!context || !conversation) return writeError(response, 404, "Conversation not found for this identity",
       { code: "CONVERSATION_NOT_FOUND" });
     if (!context.allowedActions.includes("get_folio_summary")) return writeError(response, 409, "Folio details are not available for this identity or lifecycle", { code: "ACTION_NOT_ALLOWED" });
     response.json({ folio: context.folio });
@@ -890,9 +941,9 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
     const verificationHash = hashAgentPayload({ bookingReference: input.bookingReference.toLocaleUpperCase("en-US"),
       phone: normalizePhone(input.phone) });
     const result = await db.transaction(async (tx) => {
-      await tx.execute(sql`SELECT id FROM guest_contact_identities WHERE channel = 'telegram' AND external_user_id = ${input.externalUserId} FOR UPDATE`);
+      await tx.execute(sql`SELECT id FROM guest_contact_identities WHERE channel = ${input.channel} AND external_user_id = ${input.externalUserId} FOR UPDATE`);
       const [identity] = await tx.select().from(s.guestContactIdentities).where(and(
-        eq(s.guestContactIdentities.channel, "telegram"), eq(s.guestContactIdentities.externalUserId, input.externalUserId),
+        eq(s.guestContactIdentities.channel, input.channel), eq(s.guestContactIdentities.externalUserId, input.externalUserId),
       )).limit(1);
       const [property] = await tx.select().from(s.properties).where(eq(s.properties.id, input.propertyId)).limit(1);
       if (!identity || !property) return { linked: false, invalid: true };
@@ -902,7 +953,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
       if (!stub) return { linked: false, invalid: true };
       const attemptId = `${identity.id}:${input.idempotencyKey}`;
       const [priorAttempt] = await tx.select().from(s.integrationEvents).where(and(
-        eq(s.integrationEvents.provider, "telegram"), eq(s.integrationEvents.eventType, "agent_identity_verification"),
+        eq(s.integrationEvents.provider, input.channel), eq(s.integrationEvents.eventType, "agent_identity_verification"),
         eq(s.integrationEvents.externalEventId, attemptId),
       )).limit(1);
       if (priorAttempt) {
@@ -923,7 +974,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
           if (isBooker || participant) {
             const [verifiedConversation] = await tx.select().from(s.conversations).where(and(
               eq(s.conversations.guestId, stub.id), eq(s.conversations.propertyId, input.propertyId),
-              eq(s.conversations.channel, "telegram"), ...(identity.externalChatId ? [eq(s.conversations.externalChatId, identity.externalChatId)] : []),
+              eq(s.conversations.channel, input.channel), ...(identity.externalChatId ? [eq(s.conversations.externalChatId, identity.externalChatId)] : []),
             )).limit(1);
             return { linked: true, customerId: stub.id, conversationId: verifiedConversation?.id ?? null, duplicate: true };
           }
@@ -932,17 +983,17 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
       }
       const cutoff = new Date(Date.now() - 10 * 60_000).toISOString();
       const priorAttempts = await tx.select({ id: s.integrationEvents.id }).from(s.integrationEvents).where(and(
-        eq(s.integrationEvents.provider, "telegram"), eq(s.integrationEvents.eventType, "agent_identity_verification"),
+        eq(s.integrationEvents.provider, input.channel), eq(s.integrationEvents.eventType, "agent_identity_verification"),
         eq(s.integrationEvents.guestId, stub.id), gte(s.integrationEvents.createdAt, cutoff),
       ));
       if (priorAttempts.length >= 5) {
         await tx.update(s.conversations).set({ automationMode: "needs_human", handoffReasonCode: "uncertain_intent",
           handoffPriority: "high", handoffNote: "Подтверждение существующей брони требует проверки сотрудника.",
-          requestedAction: "Проверить личность гостя и связать Telegram с карточкой клиента.",
+          requestedAction: "Проверить личность гостя и связать канал с карточкой клиента.",
           handoffRequestedAt: now(), updatedAt: now() }).where(eq(s.conversations.guestId, stub.id));
         return { linked: false, handoff: true };
       }
-      const [attempt] = await tx.insert(s.integrationEvents).values({ id: id("event"), provider: "telegram",
+      const [attempt] = await tx.insert(s.integrationEvents).values({ id: id("event"), provider: input.channel,
         eventType: "agent_identity_verification", externalEventId: attemptId,
         payloadHash: verificationHash, guestId: stub.id, leadId: null,
       }).onConflictDoNothing().returning();
@@ -1010,7 +1061,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
         )).limit(1) : [];
         if (!targetConversation) {
           await tx.update(s.conversations).set({ guestId: target.id, updatedAt: now() }).where(eq(s.conversations.id, source.id));
-          if (source.propertyId === input.propertyId && source.channel === "telegram" &&
+          if (source.propertyId === input.propertyId && source.channel === input.channel &&
               source.externalChatId === identity.externalChatId) currentConversationId = source.id;
           continue;
         }
@@ -1026,7 +1077,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
             handoffRequestedAt: source.handoffRequestedAt,
           } : {}), updatedAt: now() }).where(eq(s.conversations.id, targetConversation.id));
         await tx.delete(s.conversations).where(eq(s.conversations.id, source.id));
-        if (source.propertyId === input.propertyId && source.channel === "telegram" && source.externalChatId === identity.externalChatId) {
+        if (source.propertyId === input.propertyId && source.channel === input.channel && source.externalChatId === identity.externalChatId) {
           currentConversationId = targetConversation.id;
         }
       }
@@ -1046,8 +1097,8 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/messages/outbound/prepare", async (request, response) => {
     const input = AgentOutboundPrepareSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
     const idempotencyKey = `agent-ai:${identity.guestId}:${input.propertyId}:${input.idempotencyKey}`;
     const requestPayloadHash = hashAgentPayload({ text: input.text, proposedAction: input.proposedAction ?? null });
     try {
@@ -1055,9 +1106,9 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
         await tx.execute(sql`SELECT id FROM conversations WHERE id = ${input.conversationId} FOR UPDATE`);
         const [conversation] = await tx.select().from(s.conversations).where(and(
           eq(s.conversations.id, input.conversationId), eq(s.conversations.guestId, identity.guestId),
-          eq(s.conversations.propertyId, input.propertyId), eq(s.conversations.channel, "telegram"),
+          eq(s.conversations.propertyId, input.propertyId), eq(s.conversations.channel, input.channel),
         )).limit(1);
-        if (!conversation) throw new AgentActionError("CONVERSATION_NOT_FOUND", "Conversation not found for this Telegram identity", 404);
+        if (!conversation) throw new AgentActionError("CONVERSATION_NOT_FOUND", "Conversation not found for this identity", 404);
         const [prior] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, idempotencyKey)).limit(1);
         if (prior) {
           if (prior.conversationId !== conversation.id || prior.metadata?.requestPayloadHash !== requestPayloadHash) {
@@ -1182,8 +1233,8 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/messages/outbound/result", async (request, response) => {
     const input = AgentOutboundResultSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
     const idempotencyKey = `agent-ai:${identity.guestId}:${input.propertyId}:${input.idempotencyKey}`;
     const outcome = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT id FROM messages WHERE id = ${input.messageId} FOR UPDATE`);
@@ -1192,16 +1243,16 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
       const [conversation] = message ? await tx.select().from(s.conversations).where(and(
         eq(s.conversations.id, message.conversationId), eq(s.conversations.id, input.conversationId),
         eq(s.conversations.guestId, identity.guestId), eq(s.conversations.propertyId, input.propertyId),
-        eq(s.conversations.channel, "telegram"))).limit(1) : [];
+        eq(s.conversations.channel, input.channel))).limit(1) : [];
       if (!message || !conversation || message.direction !== "out" || message.senderType !== "ai") {
-        return { error: "Message not found for this Telegram identity" };
+        return { error: "Message not found for this identity" };
       }
       if (message.deliveryStatus === "sent") {
         if (input.success && message.externalMessageId === input.externalMessageId) return { message, duplicate: true };
         return { conflict: true };
       }
       if (!input.success && message.deliveryStatus === "failed") {
-        const safeError = (input.error ?? "Telegram delivery failed")
+        const safeError = (input.error ?? "Channel delivery failed")
           .replace(/bot\d+:[A-Za-z0-9_-]{20,}|Bearer\s+\S+|(?:token|secret|api[_-]?key)[=: ]+\S+/giu, "[redacted]").slice(0, 1000);
         const [updated] = await tx.update(s.messages).set({ metadata: { ...message.metadata, deliveryError: safeError,
           deliveryResultAt: now() } }).where(eq(s.messages.id, message.id)).returning();
@@ -1216,7 +1267,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
         await tx.update(s.conversations).set({ lastMessageAt: timestamp, updatedAt: timestamp }).where(eq(s.conversations.id, conversation.id));
         return { message: updated, duplicate: false };
       }
-      const safeError = (input.error ?? "Telegram delivery failed")
+      const safeError = (input.error ?? "Channel delivery failed")
         .replace(/bot\d+:[A-Za-z0-9_-]{20,}|Bearer\s+\S+|(?:token|secret|api[_-]?key)[=: ]+\S+/giu, "[redacted]").slice(0, 1000);
       const [updated] = await tx.update(s.messages).set({ deliveryStatus: "failed",
         metadata: { ...message.metadata, deliveryError: safeError, deliveryResultAt: timestamp } })
@@ -1230,15 +1281,251 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
       duplicate: outcome.duplicate ?? false });
   });
 
+  // Identity-scoped transcript read for orchestration clients such as the
+  // Agent Hub simulator. Cursor is a message id; ordering is chronological.
+  router.get("/conversations/:id/messages", async (request, response) => {
+    const query = AgentConversationMessagesQuerySchema.parse(request.query);
+    const identity = await identityFor(db, query.channel, query.propertyId, query.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const [conversation] = await db.select().from(s.conversations).where(and(
+      eq(s.conversations.id, request.params.id), eq(s.conversations.guestId, identity.guestId),
+      eq(s.conversations.propertyId, query.propertyId), eq(s.conversations.channel, query.channel),
+    )).limit(1);
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
+    const conditions = [eq(s.messages.conversationId, conversation.id)];
+    if (query.after) {
+      const [cursor] = await db.select({ id: s.messages.id, sentAt: s.messages.sentAt }).from(s.messages)
+        .where(and(eq(s.messages.id, query.after), eq(s.messages.conversationId, conversation.id))).limit(1);
+      if (!cursor) return writeError(response, 404, "Cursor message not found in this conversation", { code: "MESSAGE_NOT_FOUND" });
+      conditions.push(or(gt(s.messages.sentAt, cursor.sentAt),
+        and(eq(s.messages.sentAt, cursor.sentAt), gt(s.messages.id, cursor.id)))!);
+    }
+    const rows = await db.select().from(s.messages).where(and(...conditions))
+      .orderBy(asc(s.messages.sentAt), asc(s.messages.id)).limit(query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const nextCursor = rows.length > query.limit && page.length ? page[page.length - 1].id : null;
+    const attachmentRows = page.length ? await db.select().from(s.messageAttachments)
+      .where(inArray(s.messageAttachments.messageId, page.map((message) => message.id))) : [];
+    const attachmentsByMessage = new Map<string, typeof attachmentRows>();
+    for (const attachment of attachmentRows) {
+      const list = attachmentsByMessage.get(attachment.messageId) ?? [];
+      list.push(attachment);
+      attachmentsByMessage.set(attachment.messageId, list);
+    }
+    response.json({ conversationId: conversation.id, nextCursor, messages: page.map((message) => ({
+      id: message.id, direction: message.direction, senderType: message.senderType,
+      text: message.text, at: message.sentAt, deliveryStatus: message.deliveryStatus,
+      externalMessageId: message.externalMessageId,
+      attachments: (attachmentsByMessage.get(message.id) ?? []).map((attachment) => ({
+        id: attachment.id, kind: attachment.kind, mimeType: attachment.mimeType, fileName: attachment.fileName,
+        fileSize: attachment.fileSize, durationMs: attachment.durationMs,
+        processingStatus: attachment.processingStatus,
+        ...(attachment.processingStatus === "ready" && attachment.transcript ? { transcript: attachment.transcript } : {}),
+      })),
+    })) });
+  });
+
+  router.post("/guests/profile", async (request, response) => {
+    const input = AgentGuestProfileUpdateSchema.parse(request.body);
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId,
+      propertyId: input.propertyId, conversationId: input.conversationId });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (conversation.automationMode !== "ai") return writeError(response, 409, "Conversation is owned by a human", { code: "CONVERSATION_HUMAN_OWNED" });
+    const { context, allowed } = await contextAllows(db, conversation.id, identity.guestId, "update_guest_profile");
+    if (!context) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!allowed) return writeError(response, 409, "Guest profile updates are not available for this state", { code: "ACTION_NOT_ALLOWED" });
+    const [sourceMessage] = await db.select({ id: s.messages.id }).from(s.messages).where(and(
+      eq(s.messages.id, input.sourceMessageId), eq(s.messages.conversationId, conversation.id),
+      eq(s.messages.direction, "in"), eq(s.messages.senderType, "contact"),
+    )).limit(1);
+    if (!sourceMessage) return writeError(response, 409,
+      "Profile update must be grounded in an inbound message from this conversation", { code: "ACTION_NOT_ALLOWED" });
+    const eventId = `guest_profile:${identity.guestId}:${conversation.id}:${input.idempotencyKey}`;
+    const payloadHash = hashAgentPayload(input);
+    const result = await db.transaction(async (tx) => {
+      const [prior] = await tx.select().from(s.integrationEvents).where(and(
+        eq(s.integrationEvents.provider, "agent"), eq(s.integrationEvents.eventType, "guest_profile_update"),
+        eq(s.integrationEvents.externalEventId, eventId))).limit(1);
+      if (prior) return prior.payloadHash === payloadHash ? { guestId: identity.guestId, duplicate: true } :
+        { conflict: true };
+      const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, identity.guestId)).limit(1);
+      if (!guest) return { error: "Identity not found", code: "IDENTITY_NOT_FOUND" } as const;
+      const isStub = guest.profileStatus === "stub";
+      const conflicts: string[] = [];
+      const updates: Record<string, unknown> = {};
+      const conflictCandidate = async (column: "normalizedPhone" | "normalizedEmail", value: string | null) => {
+        if (!value) return false;
+        const field = column === "normalizedPhone" ? s.guests.normalizedPhone : s.guests.normalizedEmail;
+        const [other] = await tx.select({ id: s.guests.id }).from(s.guests).where(and(
+          eq(s.guests.organizationId, guest.organizationId), eq(field, value),
+          sql`${s.guests.id} <> ${guest.id}`)).limit(1);
+        return Boolean(other);
+      };
+      if (input.phone !== undefined) {
+        const normalized = normalizePhone(input.phone);
+        if (guest.normalizedPhone && guest.normalizedPhone !== normalized) conflicts.push("phone");
+        else if (!guest.normalizedPhone && normalized) {
+          if (await conflictCandidate("normalizedPhone", normalized)) conflicts.push("phone_matches_other_guest");
+          else { updates.phone = input.phone.trim(); updates.normalizedPhone = normalized; }
+        } else if (!normalized && input.phone) conflicts.push("phone");
+      }
+      if (input.email !== undefined) {
+        const normalized = normalizeEmail(input.email);
+        if (guest.normalizedEmail && guest.normalizedEmail !== normalized) conflicts.push("email");
+        else if (!guest.normalizedEmail && normalized) {
+          if (await conflictCandidate("normalizedEmail", normalized)) conflicts.push("email_matches_other_guest");
+          else { updates.email = normalized; updates.normalizedEmail = normalized; }
+        } else if (!normalized && input.email) conflicts.push("email");
+      }
+      if (input.firstName !== undefined) {
+        if (!isStub && guest.firstName && guest.firstName.trim() !== input.firstName.trim()) conflicts.push("firstName");
+        else updates.firstName = input.firstName;
+      }
+      if (input.lastName !== undefined) {
+        if (!isStub && guest.lastName && guest.lastName.trim() !== input.lastName.trim()) conflicts.push("lastName");
+        else updates.lastName = input.lastName;
+      }
+      if (input.language !== undefined) updates.language = input.language;
+      if (input.company !== undefined) updates.company = input.company;
+      if (input.preferences) {
+        const merged = { ...(guest.preferences ?? {}) };
+        for (const key of ["roomPreference", "bedPreference", "foodPreference"] as const) {
+          const value = input.preferences[key];
+          if (value !== undefined) merged[key] = value;
+        }
+        if (input.preferences.specialRequests !== undefined) {
+          const existing = Array.isArray(merged.specialRequests) ? merged.specialRequests as string[] : [];
+          merged.specialRequests = [...new Set([...existing, ...input.preferences.specialRequests])];
+        }
+        updates.preferences = merged;
+      }
+      if (conflicts.length) return { conflicts };
+      if (updates.firstName || updates.lastName) {
+        const fullName = [updates.firstName ?? guest.firstName, updates.lastName ?? guest.lastName]
+          .filter(Boolean).join(" ").trim();
+        if (fullName) updates.fullName = fullName;
+      }
+      const changedFields = Object.keys(updates).filter((key) => key !== "normalizedPhone" && key !== "normalizedEmail");
+      if (Object.keys(updates).length) {
+        await tx.update(s.guests).set({ ...updates, updatedAt: now() }).where(eq(s.guests.id, guest.id));
+      }
+      await tx.insert(s.integrationEvents).values({ id: id("event"), provider: "agent",
+        eventType: "guest_profile_update", externalEventId: eventId, payloadHash,
+        guestId: guest.id, leadId: conversation.leadId });
+      await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: guest.id,
+        propertyId: input.propertyId, type: "agent_profile_update", title: "AI обновил профиль гостя",
+        description: changedFields.join(", ") || "без изменений",
+        metadata: { fields: changedFields, conflicts, sourceMessageId: input.sourceMessageId,
+          channel: input.channel, conversationId: conversation.id }, occurredAt: now() });
+      return { guestId: guest.id, updated: changedFields, duplicate: false };
+    });
+    if ("conflict" in result && result.conflict) return writeError(response, 409,
+      "Idempotency key was reused for a different profile update", { code: "IDEMPOTENCY_CONFLICT" });
+    if ("conflicts" in result && result.conflicts?.length) return writeError(response, 409,
+      "Profile values conflict with an existing guest record; a human must reconcile",
+      { code: "GUEST_PROFILE_CONFLICT", handoffRecommended: true });
+    if ("error" in result && result.error) return writeError(response, 404, result.error, { code: result.code });
+    response.json({ guestId: result.guestId, updated: "updated" in result ? result.updated : [],
+      duplicate: result.duplicate });
+  });
+
+  router.post("/conversations/memory", async (request, response) => {
+    const input = AgentConversationMemoryUpdateSchema.parse(request.body);
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId,
+      propertyId: input.propertyId, conversationId: input.conversationId });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (conversation.automationMode !== "ai") return writeError(response, 409, "Conversation is owned by a human", { code: "CONVERSATION_HUMAN_OWNED" });
+    const { context, allowed } = await contextAllows(db, conversation.id, identity.guestId, "update_conversation_memory");
+    if (!context) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!allowed) return writeError(response, 409, "Conversation memory updates are not available for this state", { code: "ACTION_NOT_ALLOWED" });
+    const [sourceMessage] = await db.select({ id: s.messages.id }).from(s.messages).where(and(
+      eq(s.messages.id, input.sourceMessageId), eq(s.messages.conversationId, conversation.id),
+      eq(s.messages.direction, "in"), eq(s.messages.senderType, "contact"),
+    )).limit(1);
+    if (!sourceMessage) return writeError(response, 409,
+      "Memory update must be grounded in an inbound message from this conversation", { code: "ACTION_NOT_ALLOWED" });
+    const eventId = `conversation_memory:${conversation.id}:${input.idempotencyKey}`;
+    const payloadHash = hashAgentPayload(input.memory);
+    const result = await db.transaction(async (tx) => {
+      const [prior] = await tx.select().from(s.integrationEvents).where(and(
+        eq(s.integrationEvents.provider, "agent"), eq(s.integrationEvents.eventType, "conversation_memory"),
+        eq(s.integrationEvents.externalEventId, eventId))).limit(1);
+      if (prior) return prior.payloadHash === payloadHash ? { conversation, duplicate: true } : { conflict: true };
+      const timestamp = now();
+      const memory = { schemaVersion: AGENT_MEMORY_SCHEMA_VERSION, ...input.memory,
+        sourceMessageId: input.sourceMessageId, updatedAt: timestamp };
+      const existingSummary = (conversation.summary ?? {}) as Record<string, unknown>;
+      const summary = { ...existingSummary, memory,
+        ...(input.memory.narrative ? { text: input.memory.narrative } : {}),
+        ...(input.memory.nextBestAction ? { nextAction: input.memory.nextBestAction } : {}) };
+      await tx.update(s.conversations).set({ summary, updatedAt: timestamp })
+        .where(eq(s.conversations.id, conversation.id));
+      await tx.insert(s.integrationEvents).values({ id: id("event"), provider: "agent",
+        eventType: "conversation_memory", externalEventId: eventId, payloadHash,
+        guestId: identity.guestId, leadId: conversation.leadId });
+      return { conversation, memory, duplicate: false };
+    });
+    if ("conflict" in result && result.conflict) return writeError(response, 409,
+      "Idempotency key was reused for a different memory payload", { code: "IDEMPOTENCY_CONFLICT" });
+    response.json({ conversationId: conversation.id, memory: "memory" in result ? result.memory : null,
+      duplicate: result.duplicate });
+  });
+
+  router.post("/messages/:messageId/attachments/:attachmentId/process-result", async (request, response) => {
+    const input = AgentAttachmentProcessResultSchema.parse(request.body);
+    const [message] = await db.select().from(s.messages).where(eq(s.messages.id, request.params.messageId)).limit(1);
+    const [conversation] = message ? await db.select().from(s.conversations).where(and(
+      eq(s.conversations.id, message.conversationId), eq(s.conversations.propertyId, input.propertyId),
+    )).limit(1) : [];
+    if (!message || !conversation) return writeError(response, 404,
+      "Message not found for this property", { code: "MESSAGE_NOT_FOUND" });
+    const eventId = `attachment_process:${request.params.attachmentId}:${input.idempotencyKey}`;
+    const payloadHash = hashAgentPayload({ processingStatus: input.processingStatus, transcript: input.transcript ?? null,
+      storageProvider: input.storageProvider ?? null, storageKey: input.storageKey ?? null,
+      durationMs: input.durationMs ?? null, metadata: input.metadata ?? null });
+    const result = await db.transaction(async (tx) => {
+      const [attachment] = await tx.select().from(s.messageAttachments).where(and(
+        eq(s.messageAttachments.id, request.params.attachmentId),
+        eq(s.messageAttachments.messageId, message.id),
+      )).limit(1);
+      if (!attachment) return { notFound: true };
+      const [prior] = await tx.select().from(s.integrationEvents).where(and(
+        eq(s.integrationEvents.provider, "agent"), eq(s.integrationEvents.eventType, "attachment_process_result"),
+        eq(s.integrationEvents.externalEventId, eventId))).limit(1);
+      if (prior) return prior.payloadHash === payloadHash ? { attachment, duplicate: true } : { conflict: true };
+      await tx.insert(s.integrationEvents).values({ id: id("event"), provider: "agent",
+        eventType: "attachment_process_result", externalEventId: eventId, payloadHash,
+        guestId: conversation.guestId, leadId: conversation.leadId });
+      const [updated] = await tx.update(s.messageAttachments).set({
+        processingStatus: input.processingStatus,
+        ...(input.transcript !== undefined ? { transcript: input.transcript } : {}),
+        ...(input.storageProvider !== undefined ? { storageProvider: input.storageProvider } : {}),
+        ...(input.storageKey !== undefined ? { storageKey: input.storageKey } : {}),
+        ...(input.durationMs !== undefined ? { durationMs: input.durationMs } : {}),
+        ...(input.metadata ? { metadata: { ...attachment.metadata, ...input.metadata } } : {}),
+        updatedAt: now(),
+      }).where(eq(s.messageAttachments.id, attachment.id)).returning();
+      return { attachment: updated, duplicate: false };
+    });
+    if (result.notFound) return writeError(response, 404, "Attachment not found for this message", { code: "ATTACHMENT_NOT_FOUND" });
+    if (result.conflict) return writeError(response, 409, "Idempotency key was reused for a different process result", { code: "IDEMPOTENCY_CONFLICT" });
+    response.json({ attachmentId: result.attachment!.id, messageId: message.id,
+      processingStatus: result.attachment!.processingStatus, duplicate: result.duplicate });
+  });
+
   router.post("/stays/extension/preview", async (request, response) => {
     const input = AgentStayExtensionPreviewSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     const { context, allowed } = await contextAllows(db, conversation.id, identity.guestId, "check_stay_extension");
-    if (!context) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!context) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     if (!allowed || !context.reservation?.id) return writeError(response, 409, "Stay extension is not available for this identity or lifecycle", { code: "ACTION_NOT_ALLOWED" });
     try {
       const preview = await db.transaction((tx) => previewAgentStayExtension(tx, { propertyId: input.propertyId,
@@ -1253,18 +1540,18 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
 
   router.post("/stays/extend", async (request, response) => {
     const input = AgentStayExtensionSchema.parse(request.body);
-    const identity = await identityFor(db, input.propertyId, input.externalUserId);
-    if (!identity) return writeError(response, 404, "Telegram identity not found for this property", { code: "IDENTITY_NOT_FOUND" });
-    const conversation = await findConversation(db, { guestId: identity.guestId, propertyId: input.propertyId,
+    const identity = await identityFor(db, input.channel, input.propertyId, input.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId });
-    if (!conversation) return writeError(response, 404, "Conversation not found for this Telegram identity", { code: "CONVERSATION_NOT_FOUND" });
+    if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
     const actionPayload = { reservationId: input.reservationId, departureAt: new Date(input.departureAt).toISOString(),
       expectedAddedCharge: input.expectedAddedCharge, currency: input.currency };
     try {
       const result = await executeConfirmedAgentAction(db, {
         propertyId: input.propertyId, customerId: identity.guestId, conversationId: conversation.id,
         proposalMessageId: input.proposalMessageId, confirmationMessageId: input.confirmationMessageId,
-        actionType: "extend_stay", payload: actionPayload,
+        actionType: "extend_stay", payload: actionPayload, channel: input.channel,
       }, async (tx) => {
         const preview = await previewAgentStayExtension(tx, { propertyId: input.propertyId, customerId: identity.guestId,
           reservationId: input.reservationId, departureAt: input.departureAt });

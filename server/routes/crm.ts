@@ -1294,7 +1294,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     const result = await db.transaction(async (tx) => {
       const [conversation] = await tx.select().from(s.conversations).where(eq(s.conversations.id, request.params.id)).limit(1);
       if (!conversation) return null;
-      if (!asNote && ["telegram", "whatsapp"].includes(conversation.channel) && conversation.automationMode !== "human") {
+      if (!asNote && ["telegram", "whatsapp", "simulator"].includes(conversation.channel) && conversation.automationMode !== "human") {
         return { conflict: "Сначала возьмите диалог в работу" as const };
       }
       const [message] = await tx.insert(s.messages).values({ id: id("message"), conversationId: conversation.id,

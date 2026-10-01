@@ -11,39 +11,43 @@ const propertyDate = (value: string, timezone: string) => new Intl.DateTimeForma
   timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
 }).format(new Date(value));
 
+const safeWrites: AgentTool[] = ["update_guest_profile", "update_conversation_memory"];
 const lifecycleActions: Record<AgentLifecycle, AgentTool[]> = {
   new_contact: ["get_property_knowledge", "get_accommodation_options", "check_accommodation_availability",
     "get_service_options", "check_service_availability", "classify_conversation", "create_or_update_request",
-    "handoff_to_human"],
+    "handoff_to_human", ...safeWrites],
   active_request: ["get_property_knowledge", "get_accommodation_options", "check_accommodation_availability",
     "get_service_options", "check_service_availability", "classify_conversation", "create_or_update_request",
-    "create_offer", "book_service", "handoff_to_human"],
+    "update_request_lifecycle", "create_offer", "book_service", "handoff_to_human", ...safeWrites],
   offer: ["get_property_knowledge", "get_accommodation_options", "check_accommodation_availability",
     "get_service_options", "check_service_availability", "classify_conversation", "create_or_update_request",
-    "create_offer", "book_accommodation", "book_service", "handoff_to_human"],
+    "update_request_lifecycle", "create_offer", "book_accommodation", "book_service", "handoff_to_human", ...safeWrites],
   pending_payment: ["get_property_knowledge", "get_accommodation_options", "check_accommodation_availability",
     "get_service_options", "check_service_availability", "get_stay_context", "get_folio_summary",
-    "classify_conversation", "create_or_update_request", "handoff_to_human"],
+    "classify_conversation", "create_or_update_request", "update_request_lifecycle", "handoff_to_human", ...safeWrites],
   reserved: ["get_property_knowledge", "get_service_options", "check_service_availability", "book_service",
     "reschedule_service", "cancel_service", "get_stay_context", "get_folio_summary", "create_or_update_request",
-    "classify_conversation", "handoff_to_human"],
+    "update_request_lifecycle", "classify_conversation", "handoff_to_human", ...safeWrites],
   pre_arrival: ["get_property_knowledge", "get_service_options", "check_service_availability", "book_service",
     "reschedule_service", "cancel_service", "get_stay_context", "get_folio_summary", "create_or_update_request",
-    "classify_conversation", "handoff_to_human"],
+    "update_request_lifecycle", "classify_conversation", "handoff_to_human", ...safeWrites],
   in_house: ["get_property_knowledge", "get_service_options", "check_service_availability", "book_service",
     "reschedule_service", "cancel_service", "get_stay_context", "get_folio_summary", "create_guest_request",
-    "check_stay_extension", "extend_stay", "create_or_update_request", "classify_conversation", "handoff_to_human"],
+    "check_stay_extension", "extend_stay", "create_or_update_request", "update_request_lifecycle",
+    "classify_conversation", "handoff_to_human", ...safeWrites],
   due_out: ["get_property_knowledge", "get_service_options", "check_service_availability", "book_service",
     "reschedule_service", "cancel_service", "get_stay_context", "get_folio_summary", "create_guest_request",
-    "check_stay_extension", "extend_stay", "create_or_update_request", "classify_conversation", "handoff_to_human"],
+    "check_stay_extension", "extend_stay", "create_or_update_request", "update_request_lifecycle",
+    "classify_conversation", "handoff_to_human", ...safeWrites],
   post_stay: ["get_property_knowledge", "get_accommodation_options", "check_accommodation_availability",
     "get_service_options", "check_service_availability", "get_stay_context", "get_folio_summary", "create_or_update_request",
-    "classify_conversation", "book_service", "handoff_to_human"],
+    "update_request_lifecycle", "classify_conversation", "book_service", "handoff_to_human", ...safeWrites],
   service_only: ["get_property_knowledge", "get_service_options", "check_service_availability", "book_service",
     "reschedule_service", "cancel_service", "get_folio_summary", "create_or_update_request",
-    "classify_conversation", "handoff_to_human"],
-  non_target: ["get_property_knowledge", "classify_conversation", "handoff_to_human"],
+    "update_request_lifecycle", "classify_conversation", "handoff_to_human", ...safeWrites],
+  non_target: ["get_property_knowledge", "classify_conversation", "handoff_to_human", ...safeWrites],
 };
+const terminalRequestLifecycles = ["won", "lost", "closed"];
 
 /** Compact, identity-scoped CRM context. Physical room numbers and private folio data for participants are withheld. */
 export const getAgentContext = async (db: Pick<Database, "select">, conversationId: string, trustedCustomerId: string) => {
@@ -197,6 +201,10 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
       if (index >= 0) actions.splice(index, 1);
     }
   }
+  if (!request || terminalRequestLifecycles.includes(request.requestLifecycle)) {
+    const index = actions.indexOf("update_request_lifecycle");
+    if (index >= 0) actions.splice(index, 1);
+  }
 
   const reservationContext = reservation ? {
     id: reservation.id, status: reservation.status, category: reservation.roomTypeSnapshot,
@@ -222,6 +230,21 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
   const activeProposalMetadata = activeProposalMessage?.metadata?.proposedAction as
     { actionType: string; payload: Record<string, unknown>; expiresAt: string } | undefined;
 
+  const visibleMessages = messageRows.slice(0, 12).reverse()
+    .filter((message) => message.direction !== "out" || message.deliveryStatus === "sent");
+  const attachmentRows = visibleMessages.length
+    ? await db.select().from(s.messageAttachments)
+      .where(inArray(s.messageAttachments.messageId, visibleMessages.map((message) => message.id)))
+    : [];
+  const attachmentsByMessage = new Map<string, typeof attachmentRows>();
+  for (const attachment of attachmentRows) {
+    const list = attachmentsByMessage.get(attachment.messageId) ?? [];
+    list.push(attachment);
+    attachmentsByMessage.set(attachment.messageId, list);
+  }
+  const summaryRecord = (conversation.summary ?? null) as Record<string, unknown> | null;
+  const conversationMemory = (summaryRecord?.memory ?? null) as Record<string, unknown> | null;
+
   return {
     contractVersion: AGENT_API_VERSION,
     property: { id: property.id, name: property.name, timezone },
@@ -232,6 +255,7 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
       handoffNote: automationMode === "needs_human" ? conversation.handoffNote : null,
       requestedAction: automationMode === "needs_human" ? conversation.requestedAction : null,
       summary: conversation.summary, classification: conversationClassification,
+      memory: conversationMemory,
     },
     customer: {
       id: customer.id, name: customer.fullName, language: customer.language,
@@ -261,10 +285,21 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
     })),
     folio: folio ? { id: folio.id, status: folio.status, totalAmount: folio.totalAmount,
       paidAmount: folio.paidAmount, balance: folio.balance, currency: folio.currency } : null,
-    recentMessages: messageRows.slice(0, 12).reverse()
-      .filter((message) => message.direction !== "out" || message.deliveryStatus === "sent")
-      .map((message) => ({ id: message.id, senderType: message.senderType,
-      direction: message.direction, text: message.text, at: message.sentAt })),
+    recentMessages: visibleMessages
+      .map((message) => {
+        const attachments = (attachmentsByMessage.get(message.id) ?? []).map((attachment) => ({
+          id: attachment.id, kind: attachment.kind, mimeType: attachment.mimeType,
+          fileName: attachment.fileName, fileSize: attachment.fileSize, durationMs: attachment.durationMs,
+          processingStatus: attachment.processingStatus,
+          ...(attachment.processingStatus === "ready" && attachment.transcript ? { transcript: attachment.transcript } : {}),
+        }));
+        const readyTranscript = attachments.find((attachment) => attachment.transcript)?.transcript;
+        return { id: message.id, senderType: message.senderType,
+          direction: message.direction, at: message.sentAt,
+          text: message.text || readyTranscript ||
+            (attachments.length ? `[${attachments.map((attachment) => attachment.kind).join(", ")} attachment]` : message.text),
+          attachments };
+      }),
     activeProposal: activeProposalMessage && activeProposalMetadata ? {
       messageId: activeProposalMessage.id,
       actionType: activeProposalMetadata.actionType,

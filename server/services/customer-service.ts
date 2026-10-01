@@ -39,7 +39,9 @@ export const findCustomerCandidates = async (
 /** Stable ID plus identity unique key makes retries safe without merging people. */
 export const resolveOrCreateExternalCustomer = async (
   db: DbLike,
-  input: { channel: string; externalUserId: string; propertyId: string; firstName?: string | null; externalChatId?: string | null; username?: string | null; createAsStub?: boolean },
+  input: { channel: string; externalUserId: string; propertyId: string; firstName?: string | null;
+    lastName?: string | null; displayName?: string | null; language?: string | null;
+    externalChatId?: string | null; username?: string | null; createAsStub?: boolean },
 ) => {
   const [property] = await db.select().from(s.properties).where(eq(s.properties.id, input.propertyId)).limit(1);
   if (!property) throw new Error("Объект размещения не найден");
@@ -48,16 +50,25 @@ export const resolveOrCreateExternalCustomer = async (
     const [matched] = await db.select().from(s.guests).where(eq(s.guests.id, found.exactCustomerId)).limit(1);
     if (!matched || matched.organizationId !== property.organizationId) throw new Error("Контакт принадлежит другой организации");
     await db.insert(s.guestProperties).values({ guestId: found.exactCustomerId, propertyId: input.propertyId }).onConflictDoNothing();
+    if (input.username) {
+      await db.update(s.guestContactIdentities).set({ username: input.username, updatedAt: new Date().toISOString() })
+        .where(and(eq(s.guestContactIdentities.channel, input.channel),
+          eq(s.guestContactIdentities.externalUserId, input.externalUserId),
+          eq(s.guestContactIdentities.guestId, matched.id)));
+    }
     return { customerId: found.exactCustomerId, created: false };
   }
   const hash = createHash("sha256").update(`${input.channel}\0${input.externalUserId}`).digest("hex").slice(0, 32);
   const customerId = `customer_${hash}`;
+  const displayName = input.displayName?.trim() ||
+    [input.firstName?.trim(), input.lastName?.trim()].filter(Boolean).join(" ") || null;
   await db.insert(s.guests).values({
     id: customerId, organizationId: property.organizationId,
-    firstName: input.firstName?.trim() || null,
-    fullName: input.firstName?.trim() || `Контакт ${input.channel} ${input.externalUserId}`,
+    firstName: input.firstName?.trim() || null, lastName: input.lastName?.trim() || null,
+    fullName: displayName || `Контакт ${input.channel} ${input.externalUserId}`,
     preferredPropertyId: input.propertyId, preferredChannel: input.channel,
-    profileStatus: input.createAsStub ? "stub" : input.firstName?.trim() ? "active" : "stub",
+    ...(input.language?.trim() ? { language: input.language.trim() } : {}),
+    profileStatus: input.createAsStub ? "stub" : displayName ? "active" : "stub",
   }).onConflictDoNothing();
   await db.insert(s.guestContactIdentities).values({
     id: `identity_${hash}`, guestId: customerId, channel: input.channel,

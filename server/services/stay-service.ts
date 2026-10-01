@@ -54,7 +54,7 @@ export const checkInStay = async (tx: Tx, reservationId: string, input: {
   if (allocations.length !== 1) throw new StayConflict("Для заселения должен быть назначен один домик");
   const allocation = allocations[0];
   const room = await assertRoomAvailable(tx, { roomId: allocation.roomId, propertyId: reservation.propertyId,
-    arrivalAt: reservation.arrivalAt, departureAt: reservation.departureAt, excludeReservationId: reservationId });
+    arrivalAt: reservation.arrivalAt, departureAt: reservation.departureAt, excludeReservationId: reservationId, allowUnreadyRoom: true });
   const [otherStay] = await tx.select({ id: s.guestStays.id }).from(s.guestStays).where(and(
     eq(s.guestStays.roomId, room.id), inArray(s.guestStays.operationalStatus, ["in_house", "due_out"]),
     ne(s.guestStays.id, stay.id),
@@ -100,7 +100,7 @@ export const extendStay = async (tx: Tx, reservationId: string, input: { departu
   const roomId = stay.roomId;
   if (!roomId) throw new StayConflict("У проживания не назначен домик");
   const room = await assertRoomAvailable(tx, { roomId, propertyId: reservation.propertyId,
-    arrivalAt: reservation.arrivalAt, departureAt: input.departureAt, excludeReservationId: reservation.id });
+    arrivalAt: reservation.arrivalAt, departureAt: input.departureAt, excludeReservationId: reservation.id, allowUnreadyRoom: true });
   const allocations = await tx.select().from(s.reservationUnits).where(and(eq(s.reservationUnits.reservationId, reservation.id),
     inArray(s.reservationUnits.status, ["active", "assigned"])));
   const allocation = allocations.find((item) => item.roomId === roomId);
@@ -174,7 +174,7 @@ export const changeDepartureTime = async (tx: Tx, reservationId: string, input: 
   const roomId = stay.roomId;
   if (!roomId) throw new StayConflict("У проживания не назначен домик");
   const room = await assertRoomAvailable(tx, { roomId, propertyId: reservation.propertyId,
-    arrivalAt: reservation.arrivalAt, departureAt: input.departureAt, excludeReservationId: reservation.id });
+    arrivalAt: reservation.arrivalAt, departureAt: input.departureAt, excludeReservationId: reservation.id, allowUnreadyRoom: true });
   const allocation = (await tx.select().from(s.reservationUnits).where(and(eq(s.reservationUnits.reservationId, reservation.id),
     inArray(s.reservationUnits.status, ["active", "assigned"])))).find((item) => item.roomId === roomId);
   if (!allocation) throw new StayConflict("Активное назначение домика не найдено");

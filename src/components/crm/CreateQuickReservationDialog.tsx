@@ -79,11 +79,12 @@ export const CreateQuickReservationDialog = ({ open, onOpenChange, initialRoomId
   const availableRoom = (candidateId: string) => {
     const room = data.rooms.find((item) => item.id === candidateId);
     const blockedByMaintenance = data.maintenanceTickets.some((ticket) => ticket.roomId === candidateId && ticket.blocksRoom && !["verified", "cancelled"].includes(ticket.status));
+    const cleaning = data.housekeepingTasks.some((task) => task.roomId === candidateId && !["inspected", "skipped"].includes(task.status));
     const occupied = arrival && departure && departure > arrival && data.reservationUnits.some((allocation) => allocation.roomId === candidateId &&
       ["active", "assigned"].includes(allocation.status) && data.reservations.some((reservation) => reservation.id === allocation.reservationId &&
       !["cancelled", "no_show", "completed"].includes(reservation.status)) &&
       new Date(allocation.arrivalAt) < new Date(dateTime(departure, "12:00")) && new Date(dateTime(arrival, "15:00")) < new Date(allocation.departureAt));
-    return !!room && !["out_of_order", "out_of_service"].includes(room.status) && !blockedByMaintenance && !occupied;
+    return !!room && ["vacant_clean", "inspected"].includes(room.status) && !cleaning && !blockedByMaintenance && !occupied;
   };
   const submit = async () => {
     if (!guestId || !propertyId || !arrival || !departure || departure <= arrival || !roomType || amount === "" || amount < 0 || deposit < 0 || deposit > amount) {

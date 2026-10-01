@@ -20,13 +20,14 @@ export const hashAgentPayload = (payload: unknown) => createHash("sha256")
 export const executeConfirmedAgentAction = async <T extends Record<string, unknown>>(db: Database, input: {
   propertyId: string; customerId: string; conversationId: string; proposalMessageId: string;
   confirmationMessageId: string; actionType: AgentConfirmationAction; payload: Record<string, unknown>;
+  channel?: string;
 }, operation: (tx: AgentTx) => Promise<T>) => db.transaction(async (tx) => {
   await tx.execute(sql`SELECT id FROM conversations WHERE id = ${input.conversationId} FOR UPDATE`);
   const [conversation] = await tx.select().from(s.conversations).where(and(
     eq(s.conversations.id, input.conversationId), eq(s.conversations.guestId, input.customerId),
-    eq(s.conversations.propertyId, input.propertyId), eq(s.conversations.channel, "telegram"),
+    eq(s.conversations.propertyId, input.propertyId), eq(s.conversations.channel, input.channel ?? "telegram"),
   )).limit(1);
-  if (!conversation) throw new AgentActionError("CONVERSATION_NOT_FOUND", "Conversation not found for this Telegram identity", 404);
+  if (!conversation) throw new AgentActionError("CONVERSATION_NOT_FOUND", "Conversation not found for this channel identity", 404);
   await tx.execute(sql`SELECT id FROM messages WHERE id = ${input.proposalMessageId} FOR UPDATE`);
   await tx.execute(sql`SELECT id FROM messages WHERE id = ${input.confirmationMessageId} FOR UPDATE`);
   const [proposal] = await tx.select().from(s.messages).where(and(

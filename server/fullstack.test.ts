@@ -50,7 +50,7 @@ beforeAll(async () => {
   for (const statement of migration2.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) {
     await client.exec(statement);
   }
-  for (const name of ["0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey", "0006_task_context_and_followup_queue", "0007_service_resource_availability", "0008_stay_activity_context", "0009_agent_gateway", "0010_agent_contract_hardening", "0011_les_borovoe_timezone", "0012_hospitality_lifecycle_alerts_and_folio_documents", "0013_commercial_payment_and_communications"]) {
+  for (const name of ["0003_hospitality_domain", "0004_hospitality_backfill", "0005_operational_journey", "0006_task_context_and_followup_queue", "0007_service_resource_availability", "0008_stay_activity_context", "0009_agent_gateway", "0010_agent_contract_hardening", "0011_les_borovoe_timezone", "0012_hospitality_lifecycle_alerts_and_folio_documents", "0013_commercial_payment_and_communications", "0014_channel_neutral_agent_hub"]) {
     const migration = await readFile(new URL(`../drizzle/${name}.sql`, import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean)) await client.exec(statement);
   }
@@ -62,7 +62,7 @@ beforeAll(async () => {
 describe("database migrations", () => {
   it("orders and applies the resort journey migration after the initial schema", async () => {
     const migrations = readMigrationFiles({ migrationsFolder: "drizzle" });
-    expect(migrations).toHaveLength(14);
+    expect(migrations).toHaveLength(15);
     expect(migrations[1].folderMillis).toBeGreaterThan(migrations[0].folderMillis);
     expect(migrations[2].folderMillis).toBeGreaterThan(migrations[1].folderMillis);
     expect(migrations[3].folderMillis).toBeGreaterThan(migrations[2].folderMillis);

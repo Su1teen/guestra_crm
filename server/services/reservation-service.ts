@@ -33,7 +33,7 @@ export class ReservationConflict extends Error {
 export type AgentReservationTx = Pick<Database, "select" | "insert" | "update" | "delete" | "execute">;
 
 export const bookAcceptedOfferByCategoryInTransaction = async (tx: AgentReservationTx, input: {
-  customerId: string; propertyId: string; offerId: string; idempotencyKey: string;
+  customerId: string; propertyId: string; offerId: string; idempotencyKey: string; channel?: string;
 }) => {
   const [existing] = await tx.select().from(s.reservations)
     .where(eq(s.reservations.idempotencyKey, input.idempotencyKey)).limit(1);
@@ -48,7 +48,7 @@ export const bookAcceptedOfferByCategoryInTransaction = async (tx: AgentReservat
     eq(s.offers.id, input.offerId), eq(s.offers.guestId, input.customerId),
     eq(s.offers.propertyId, input.propertyId),
   )).limit(1);
-  if (!offer) throw new ReservationConflict("Предложение не найдено для этого Telegram-контакта");
+  if (!offer) throw new ReservationConflict("Предложение не найдено для этого контакта канала");
   if (["cancelled", "expired", "accepted"].includes(offer.status) || new Date(offer.expiresAt) <= new Date()) {
     throw new ReservationConflict("Срок или состояние предложения не позволяют подтвердить бронь");
   }
@@ -73,7 +73,7 @@ export const bookAcceptedOfferByCategoryInTransaction = async (tx: AgentReservat
     id: reservationId, code: `R-${randomUUID().slice(0, 10).toUpperCase()}`,
     idempotencyKey: input.idempotencyKey, propertyId: input.propertyId,
     bookerCustomerId: input.customerId, requestId: lead.id, unitTypeId: unitType.id,
-    roomTypeSnapshot: unitType.name, source: "telegram", status: requiresPayment ? "pending_payment" : "confirmed",
+    roomTypeSnapshot: unitType.name, source: input.channel ?? "telegram", status: requiresPayment ? "pending_payment" : "confirmed",
     arrivalAt: offer.checkIn, departureAt: offer.checkOut, adults: offer.adults, children: offer.children,
     currency: offer.currency, externalConfirmationNumber: confirmationNumber,
     confirmedAt: requiresPayment ? null : timestamp,
@@ -152,7 +152,7 @@ export const bookAcceptedOfferByCategoryInTransaction = async (tx: AgentReservat
 };
 
 export const bookAcceptedOfferByCategory = async (db: Database, input: {
-  customerId: string; propertyId: string; offerId: string; idempotencyKey: string;
+  customerId: string; propertyId: string; offerId: string; idempotencyKey: string; channel?: string;
 }) => {
   const [existing] = await db.select().from(s.reservations)
     .where(eq(s.reservations.idempotencyKey, input.idempotencyKey)).limit(1);
