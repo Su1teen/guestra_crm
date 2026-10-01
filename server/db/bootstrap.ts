@@ -433,6 +433,7 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
     { id: "guest_demo_agent_new", firstName: "Айбек", lastName: "Демо", fullName: "Айбек Демо" },
     { id: "guest_demo_agent_family", firstName: "Дана", lastName: "Демо", fullName: "Дана Демо" },
     { id: "guest_demo_agent_aframe", firstName: "Арман", lastName: "Демо", fullName: "Арман Демо" },
+    { id: "guest_demo_agent_sultan", firstName: "Султан", lastName: "Демо", fullName: "Султан Демо" },
     { id: "guest_demo_agent_spa", firstName: "Жанна", lastName: "Демо", fullName: "Жанна Демо" },
     { id: "guest_demo_agent_supplier", firstName: "Поставщик", lastName: "Демо", fullName: "Поставщик Демо" },
     { id: "guest_demo_agent_vacancy", firstName: "Кандидат", lastName: "Демо", fullName: "Кандидат Демо" },
@@ -452,8 +453,37 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   }
   await db.insert(s.guestProperties).values(stayDemoGuests.map((guest) => ({ guestId: guest.id, propertyId: "les_borovoe" }))).onConflictDoNothing();
   await db.insert(s.guests).values(agentDemoGuests.map((guest) => ({ ...guest, organizationId: "org_les_live",
-    preferredPropertyId: "les_borovoe", language: "Русский", preferences: {}, identityMetadata: {} }))).onConflictDoNothing();
+    preferredPropertyId: "les_borovoe", language: "Русский",
+    company: guest.id === "guest_demo_agent_sultan" ? "Индивидуальный гость · постоянный клиент" : undefined,
+    phone: guest.id === "guest_demo_agent_sultan" ? "+7 777 123 45 67" : undefined,
+    email: guest.id === "guest_demo_agent_sultan" ? "sultan.demo@example.com" : undefined,
+    preferredChannel: guest.id === "guest_demo_agent_sultan" ? "telegram" : undefined,
+    lifetimeValue: guest.id === "guest_demo_agent_sultan" ? 420000 : 0,
+    lastStayDate: guest.id === "guest_demo_agent_sultan" ? demoAt(-42, "12:00") : undefined,
+    preferences: guest.id === "guest_demo_agent_sultan" ? { previousCategory: "A-Frame", preferredRoom: "Тихий домик у леса",
+      bed: "King size", arrivalPreference: "После 20:00", food: "Без особых ограничений",
+      interests: ["Прогулки у озера", "SPA"], profileSummary: "Повторный гость; ценит спокойное размещение и заранее согласованные детали заезда." } : {},
+    identityMetadata: {} }))).onConflictDoNothing();
   await db.insert(s.guestProperties).values(agentDemoGuests.map((guest) => ({ guestId: guest.id, propertyId: "les_borovoe" }))).onConflictDoNothing();
+  await db.insert(s.guestContactIdentities).values({ id: "identity_conversation_demo_agent_sultan", guestId: "guest_demo_agent_sultan",
+    channel: "telegram", externalUserId: "agent-demo-user-sultan", externalChatId: "agent-demo-chat-sultan", username: "sultan_demo" }).onConflictDoNothing();
+  await db.insert(s.guestStays).values({ id: "stay_demo_agent_sultan_past", guestId: "guest_demo_agent_sultan", propertyId: "les_borovoe",
+    roomType: "A-Frame", checkIn: demoAt(-44, "15:00"), checkOut: demoAt(-42, "12:00"), nights: 2, adults: 2, children: 0,
+    amount: 420000, bookingReference: "DB-DEMO-SULTAN-PAST", status: "completed", operationalStatus: "checked_out",
+    serviceNames: ["Завтрак", "SPA визит"] }).onConflictDoNothing();
+  await db.insert(s.guestPayments).values({ id: "payment_demo_agent_sultan_past", guestId: "guest_demo_agent_sultan",
+    stayId: "stay_demo_agent_sultan_past", date: demoAt(-42, "12:00"), amount: 420000, method: "card", status: "paid",
+    reference: "DB-DEMO-SULTAN-PAST-PAID" }).onConflictDoNothing();
+  await db.insert(s.guestNotes).values([
+    { id: "note_demo_agent_sultan_preference", guestId: "guest_demo_agent_sultan", authorId: "emp_live_aigerim",
+      text: "Повторный гость. Предпочитает тихий домик у леса и кровать King size. При позднем прибытии после 20:00 заранее подготовить бесконтактное заселение и отправить инструкцию.",
+      propertyId: "les_borovoe", priority: "important", pinned: true, alert: true,
+      validUntil: demoAt(90, "23:59"), displayAreas: ["desk", "reservation", "profile"] },
+    { id: "note_demo_agent_sultan_dining", guestId: "guest_demo_agent_sultan", authorId: "emp_live_aigerim",
+      text: "Пищевых ограничений нет. Интересовался прогулками у озера и SPA; предлагать дополнительные услуги после подтверждения размещения.",
+      propertyId: "les_borovoe", priority: "normal", pinned: false, alert: false,
+      displayAreas: ["profile", "reservation"] },
+  ]).onConflictDoNothing();
   const demoRooms = await db.select().from(s.rooms).where(eq(s.rooms.propertyId, "les_borovoe"));
   const roomId = (number: string) => demoRooms.find((room) => room.number === number)?.id;
   const stayDemos = [
@@ -472,21 +502,73 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
       checkIn: demoAt(10, "15:00"), checkOut: demoAt(12, "12:00"), adults: 2, children: 2, specialRequest: "Семейная поездка; выбирают категорию." },
     { id: "lead_demo_agent_aframe", code: "G-DEMO-AGENT-AFRAME", guestId: "guest_demo_agent_aframe", roomType: "A-Frame",
       checkIn: demoAt(7, "15:00"), checkOut: demoAt(9, "12:00"), adults: 2, children: 0, specialRequest: "Выбрали категорию A-Frame; требуется подтвердить наличие." },
+    { id: "lead_demo_agent_sultan", code: "G-DEMO-SULTAN-BOOKING", guestId: "guest_demo_agent_sultan", roomType: "A-Frame",
+      checkIn: demoAt(21, "15:00"), checkOut: demoAt(23, "12:00"), adults: 2, children: 0,
+      specialRequest: "Тихий домик у леса, King size, бесконтактное заселение после 20:00. Гость готов бронировать; подтвердить наличие." },
     { id: "lead_demo_agent_spa", code: "G-DEMO-AGENT-SPA", guestId: "guest_demo_agent_spa", roomType: null,
       checkIn: null, checkOut: null, adults: 0, children: 0, specialRequest: "Отдельное посещение SPA без проживания." },
     { id: "lead_demo_agent_discount", code: "G-DEMO-AGENT-DISCOUNT", guestId: "guest_demo_agent_discount", roomType: "Nest House",
       checkIn: demoAt(15, "15:00"), checkOut: demoAt(17, "12:00"), adults: 2, children: 1, specialRequest: "Запрос нестандартной скидки; требуется сотрудник." },
   ];
   await db.insert(s.leads).values(agentRequestRows.map((lead) => ({ ...lead, propertyId: "les_borovoe", source: "telegram",
-    stage: "planning", requestStatus: "active", intent: "warm", ownerId: "emp_live_aigerim", totalAmount: 0,
-    lastActivityAt: demoAt(0, "12:00"), probability: 45 }))).onConflictDoNothing();
+    stage: lead.id === "lead_demo_agent_sultan" ? "offer" : "planning",
+    requestStatus: lead.id === "lead_demo_agent_sultan" ? "definite" : "active",
+    requestLifecycle: lead.id === "lead_demo_agent_sultan" ? "definite" : "enquire",
+    intent: lead.id === "lead_demo_agent_sultan" ? "hot" : "warm", ownerId: "emp_live_aigerim",
+    roomAmount: lead.id === "lead_demo_agent_sultan" ? 260000 : 0,
+    totalAmount: lead.id === "lead_demo_agent_sultan" ? 260000 : 0,
+    deposit: lead.id === "lead_demo_agent_sultan" ? 130000 : 0,
+    paymentStatus: "not_required",
+    nextActionLabel: lead.id === "lead_demo_agent_sultan" ? "Подтвердить наличие и создать бронь" : null,
+    nextActionDueAt: lead.id === "lead_demo_agent_sultan" ? demoAt(0, "17:00") : null,
+    lastActivityAt: demoAt(0, "14:00"), probability: lead.id === "lead_demo_agent_sultan" ? 90 : 45 }))).onConflictDoNothing();
   await db.insert(s.leadClassifications).values(agentRequestRows.map((lead) => ({ leadId: lead.id,
-    direction: lead.id === "lead_demo_agent_spa" ? "spa" : "accommodation", quality: "target", temperature: "warm",
-    probability: 45, missingData: lead.id === "lead_demo_agent_family" ? ["category"] : [],
-    recommendedAction: lead.id === "lead_demo_agent_discount" ? "Передать запрос сотруднику" : "Продолжить подбор" }))).onConflictDoNothing();
+    direction: lead.id === "lead_demo_agent_spa" ? "spa" : "accommodation", quality: "target",
+    temperature: lead.id === "lead_demo_agent_sultan" ? "hot" : "warm",
+    probability: lead.id === "lead_demo_agent_sultan" ? 90 : 45,
+    missingData: lead.id === "lead_demo_agent_family" ? ["category"] : [],
+    recommendedAction: lead.id === "lead_demo_agent_sultan" ? "Подтвердить наличие и создать бронь"
+      : lead.id === "lead_demo_agent_discount" ? "Передать запрос сотруднику" : "Продолжить подбор" }))).onConflictDoNothing();
   await db.insert(s.leadInterests).values(agentRequestRows.map((lead) => ({ id: `interest_${lead.id}`,
     leadId: lead.id, direction: lead.id === "lead_demo_agent_spa" ? "spa" : "accommodation", isPrimary: true,
     status: "active", notes: lead.specialRequest }))).onConflictDoNothing();
+  const sultanInterestId = await interestIdFor(db, { id: "interest_lead_demo_agent_sultan", leadId: "lead_demo_agent_sultan",
+    direction: "accommodation", isPrimary: true, status: "active" });
+  if (!sultanInterestId) throw new Error("Could not seed Sultan Demo accommodation interest");
+  const sultanLeadCheckIn = demoAt(21, "15:00");
+  const sultanLeadCheckOut = demoAt(23, "12:00");
+  await db.insert(s.leadItems).values({ id: "item_demo_agent_sultan_aframe", leadId: "lead_demo_agent_sultan",
+    interestId: sultanInterestId, type: "accommodation", category: "accommodation", name: "A-Frame · 2 ночи",
+    status: "quoted", quantity: 1, startAt: sultanLeadCheckIn, endAt: sultanLeadCheckOut, adults: 2, children: 0,
+    roomType: "A-Frame", nights: 2, unitAmount: 130000, totalAmount: 260000, currency: "KZT",
+    pricingModeSnapshot: "per_night_per_unit", metadata: { demoScenario: "ready_to_book", availability: "to_confirm" } }).onConflictDoNothing();
+  await db.insert(s.folios).values({ id: "folio_lead_demo_agent_sultan", code: "F-G-DEMO-SULTAN-BOOKING",
+    leadId: "lead_demo_agent_sultan", guestId: "guest_demo_agent_sultan", propertyId: "les_borovoe", status: "quoted",
+    subtotal: 260000, discountAmount: 0, totalAmount: 260000, depositRequired: 130000, paidAmount: 0, balance: 260000 }).onConflictDoNothing();
+  await db.insert(s.folioLines).values({ id: "fline_demo_agent_sultan_aframe", folioId: "folio_lead_demo_agent_sultan",
+    leadItemId: "item_demo_agent_sultan_aframe", catalogItemId: catId("les_borovoe", "acc_aframe"), category: "accommodation",
+    description: "A-Frame · 2 ночи × 130 000 ₸", quantity: 2, unit: "night", unitPrice: 130000, lineTotal: 260000,
+    status: "active", metadata: { demoScenario: "ready_to_book", availability: "to_confirm" } }).onConflictDoNothing();
+  await db.insert(s.offers).values({ id: "offer_demo_agent_sultan", code: "КП-DEMO-SULTAN-001",
+    leadId: "lead_demo_agent_sultan", guestId: "guest_demo_agent_sultan", propertyId: "les_borovoe", roomType: "A-Frame",
+    checkIn: sultanLeadCheckIn, checkOut: sultanLeadCheckOut, nights: 2, adults: 2, children: 0, status: "draft",
+    ownerId: "emp_live_aigerim", folioId: "folio_lead_demo_agent_sultan", expiresAt: demoAt(3, "23:59"),
+    total: 260000, deposit: 130000, currency: "KZT",
+    comment: "Тихое расположение, King size; ожидается поздний заезд после 20:00.",
+    terms: "Бронь подтверждается после проверки наличия и внесения предоплаты 50%." }).onConflictDoNothing();
+  await db.insert(s.offerLines).values({ id: "offerline_demo_agent_sultan_aframe", offerId: "offer_demo_agent_sultan",
+    label: "A-Frame · 2 ночи × 130 000 ₸", quantity: "2 ночи", amount: 260000,
+    leadItemId: "item_demo_agent_sultan_aframe", position: 0 }).onConflictDoNothing();
+  await db.insert(s.leadActivities).values([
+    { id: "activity_demo_agent_sultan_created", leadId: "lead_demo_agent_sultan", employeeId: "emp_live_aigerim",
+      type: "lead_created", title: "Обращение создано", occurredAt: demoAt(0, "13:32") },
+    { id: "activity_demo_agent_sultan_priced", leadId: "lead_demo_agent_sultan", employeeId: "emp_live_aigerim",
+      type: "offer_created", title: "Подготовлено предложение на 260 000 ₸", amount: 260000, occurredAt: demoAt(0, "13:56") },
+  ]).onConflictDoNothing();
+  await db.insert(s.guestActivity).values({ id: "activity_guest_demo_agent_sultan_request", guestId: "guest_demo_agent_sultan",
+    propertyId: "les_borovoe", type: "lead_created", title: "Запрос на A-Frame · 2 ночи",
+    description: "Повторный гость; 2 взрослых; готов к бронированию после проверки наличия.", amount: 260000,
+    occurredAt: demoAt(0, "13:56") }).onConflictDoNothing();
   await db.insert(s.folios).values({ id: "folio_lead_demo_agent_spa", code: "F-G-DEMO-AGENT-SPA",
     leadId: "lead_demo_agent_spa", guestId: "guest_demo_agent_spa", propertyId: "les_borovoe",
     status: "open", subtotal: 24000, totalAmount: 24000, depositRequired: 0, paidAmount: 0, balance: 24000 }).onConflictDoNothing();
@@ -716,6 +798,12 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
     { id: "conversation_demo_agent_new", guestId: "guest_demo_agent_new", summaryText: "Новый Telegram-контакт; запрос ещё не квалифицирован.", text: "Здравствуйте! Подскажите, пожалуйста, чем у вас можно заняться?", automationMode: "ai", status: "open", classification: null },
     { id: "conversation_demo_agent_family", guestId: "guest_demo_agent_family", leadId: "lead_demo_agent_family", summaryText: "Семья: 2 взрослых и 2 ребёнка, даты известны; выбирают формат размещения.", text: "Планируем поездку семьёй на указанные даты. Что подойдёт для нас?", automationMode: "ai", status: "open", classification: { direction: "accommodation", quality: "target", temperature: "warm" } },
     { id: "conversation_demo_agent_aframe", guestId: "guest_demo_agent_aframe", leadId: "lead_demo_agent_aframe", summaryText: "Гость выбрал категорию A-Frame; проверяется наличие на даты.", text: "Нам понравился A-Frame. Есть ли свободный на эти даты?", automationMode: "ai", status: "open", classification: { direction: "accommodation", quality: "target", temperature: "warm" } },
+    { id: "conversation_demo_agent_sultan", guestId: "guest_demo_agent_sultan", leadId: "lead_demo_agent_sultan", offerId: "offer_demo_agent_sultan",
+      summaryText: "Повторный гость; A-Frame на двоих, 2 ночи, 260 000 ₸. Гость готов бронировать, ожидает подтверждения наличия.",
+      text: "Здравствуйте! Это Султан, мы останавливались у вас около полутора месяцев назад. Хотим вернуться: двое взрослых, A-Frame на две ночи. Предпочитаем тихий домик у леса с большой кроватью; приедем после 20:00. Если наличие подтвердится, готовы бронировать.",
+      automationMode: "needs_human", status: "pending", handoffReasonCode: "booking_confirmation", handoffPriority: "high",
+      handoffNote: "Повторный гость готов подтвердить бронь A-Frame за 260 000 ₸. Проверить наличие на даты и создать бронь.",
+      requestedAction: "Подтвердить наличие и создать бронь", classification: { direction: "accommodation", quality: "target", temperature: "hot" } },
     { id: "conversation_demo_agent_spa", guestId: "guest_demo_agent_spa", leadId: "lead_demo_agent_spa", summaryText: "SPA без проживания; отдельный счёт, запись ещё требует подтверждения.", text: "Можно записаться в SPA на двоих без проживания?", automationMode: "ai", status: "open", classification: { direction: "spa", quality: "target", temperature: "warm" } },
     { id: "conversation_demo_agent_inhouse", guestId: "guest_demo_nurlan", reservationId: "reservation_demo_balance_request", stayId: "stay_demo_balance_request", summaryText: "Гость проживает в A-Frame, есть задолженность и открытый запрос на полотенца.", text: "Здравствуйте, можно принести ещё два полотенца?", automationMode: "ai", status: "open", classification: { direction: "in_stay", quality: "target", temperature: "hot" } },
     { id: "conversation_demo_agent_dueout", guestId: "guest_demo_dueout", reservationId: "reservation_demo_due_out", stayId: "stay_demo_due_out", summaryText: "День выезда; запрос на поздний выезд требует проверки правил и доступности.", text: "Можно сегодня выехать попозже?", automationMode: "ai", status: "open", classification: { direction: "in_stay", quality: "target", temperature: "warm" } },
@@ -736,6 +824,7 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
   const conversationsToSeed = agentConversationFixtures.map((fixture) => {
     const timestamp = demoAt(0, "14:00");
     return { id: fixture.id, guestId: fixture.guestId, leadId: fixture.leadId ?? null,
+      offerId: "offerId" in fixture ? fixture.offerId ?? null : null,
       reservationId: fixture.reservationId ?? null, stayId: fixture.stayId ?? null,
       channel: "telegram", propertyId: "les_borovoe", externalChatId: chatIdForFixture(fixture.id),
       assigneeId: fixture.automationMode === "human" ? "emp_live_aigerim" : null,
@@ -768,6 +857,18 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
     return [inbound];
   });
   await db.insert(s.messages).values(messageRows).onConflictDoNothing();
+  const sultanConversationId = "conversation_demo_agent_sultan";
+  await db.insert(s.messages).values([
+    { id: `${sultanConversationId}_message_details`, conversationId: sultanConversationId, direction: "out", senderType: "human",
+      employeeId: "emp_live_aigerim", text: "Султан, здравствуйте! Рады видеть вас снова. На ваши даты предварительно подходит A-Frame на двоих: 2 ночи, 260 000 ₸. Предоплата 130 000 ₸ после подтверждения наличия. Учли тихое расположение, King size и поздний заезд.",
+      sentAt: demoAt(0, "14:03"), deliveryStatus: "sent", metadata: { demoScenario: "ready_to_book_quote" } },
+    { id: `${sultanConversationId}_message_confirmation`, conversationId: sultanConversationId, direction: "in", senderType: "contact",
+      text: "Спасибо, стоимость и условия подходят. Готовы бронировать — ждём подтверждение наличия и дальнейшие шаги.",
+      sentAt: demoAt(0, "14:05"), externalMessageId: `${sultanConversationId}_message_confirmation_external`,
+      deliveryStatus: "received", metadata: { demoScenario: "guest_ready_to_book" } },
+  ]).onConflictDoNothing();
+  await db.update(s.conversations).set({ lastMessageAt: demoAt(0, "14:05"), unreadCount: 1, status: "pending" })
+    .where(eq(s.conversations.id, sultanConversationId));
   const duplicateFixture = agentConversationFixtures.find((fixture) => fixture.duplicateFixture)!;
   const duplicatePayload = { channel: "telegram", externalUserId: userIdForFixture(duplicateFixture.id),
     externalChatId: chatIdForFixture(duplicateFixture.id), externalMessageId: `tg-${duplicateFixture.id}_message_in`,

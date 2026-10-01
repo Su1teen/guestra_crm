@@ -1980,10 +1980,10 @@ const sultanGuest: Guest = {
   ...sultanSeedGuest,
   id: "guest_sultan_sovetov",
   firstName: "Султан",
-  lastName: "Советов",
-  fullName: "Султан Советов",
+  lastName: "Демо",
+  fullName: "Султан Демо",
   phone: "+7 777 123 45 67",
-  email: "sultan@example.com",
+  email: "sultan.demo@example.com",
   normalizedPhone: null,
   normalizedEmail: null,
   profileStatus: "active",
@@ -1993,6 +1993,16 @@ const sultanGuest: Guest = {
   lifetimeValue: 420000,
   lastStayDate: demoAt(-42, "12:00"),
   createdAt: minutesAgo(14),
+  company: "Индивидуальный гость · постоянный клиент",
+  preferredChannel: "telegram",
+  segments: ["repeat", "vip"],
+  preferences: {
+    ...sultanSeedGuest.preferences,
+    roomPreference: "Тихий A-Frame у леса, подальше от общей зоны",
+    bedPreference: "King size",
+    foodPreference: "Без особых ограничений",
+    specialRequests: ["Тихое расположение", "Подготовить поздний заезд после 20:00"],
+  },
 };
 guests.push(sultanGuest);
 stays.push({ id: "stay_sultan_previous", guestId: sultanGuest.id, propertyId: "les_borovoe",
@@ -2000,23 +2010,110 @@ stays.push({ id: "stay_sultan_previous", guestId: sultanGuest.id, propertyId: "l
   nights: 2, adults: 2, children: 0, amount: 420000, bookingReference: "GUE-SULTAN-PAST",
   status: "completed", operationalStatus: "checked_out", serviceNames: [] });
 notes.push({ id: "note_sultan_alert", guestId: sultanGuest.id, authorId: employees[0].id,
-  createdAt: demoAt(-5, "10:00"), text: "Предпочитает тихий домик у леса. Согласована персональная скидка 15% при повторном визите.",
+  createdAt: demoAt(-5, "10:00"), text: "Повторный гость. Предпочитает тихий домик у леса, King size и поздний заезд после 20:00. Перед подтверждением проверить время прибытия и подготовить бесконтактное заселение.",
   propertyId: "les_borovoe", priority: "important", pinned: true, alert: true,
   validUntil: demoAt(60, "23:00"), displayAreas: ["desk", "reservation", "profile"] });
-demoReservations.push({ id: "reservation_sultan_future", code: "GUE-SULTAN-FUTURE", propertyId: "les_borovoe",
-  bookerCustomerId: sultanGuest.id, roomTypeSnapshot: "A-Frame", source: "demo", status: "confirmed",
-  arrivalAt: demoAt(12, "15:00"), departureAt: demoAt(15, "12:00"), adults: 2, children: 0,
-  currency: "KZT", externalConfirmationNumber: "GUE-SULTAN-FUTURE", confirmedAt: demoAt(-1, "12:00"),
-  createdAt: demoAt(-1, "12:00"), updatedAt: demoAt(-1, "12:00") });
 const sultanConversationId = "conv_sultan_sovetov";
 const sultanConversationTime = minutesAgo(2);
 const sultanConversationBase = conversations[0];
+const sultanLeadBase = leads.find((lead) => lead.propertyId === "les_borovoe") ?? leads[0];
+const sultanCheckIn = demoAt(21, "15:00");
+const sultanCheckOut = demoAt(23, "12:00");
+const sultanLeadId = "lead_sultan_demo_booking";
+const sultanInterestId = "interest_sultan_demo_accommodation";
+const sultanLead: Lead = {
+  ...sultanLeadBase,
+  id: sultanLeadId,
+  code: "G-DEMO-SULTAN-BOOKING",
+  guestId: sultanGuest.id,
+  propertyId: "les_borovoe",
+  source: "telegram",
+  stage: "offer",
+  requestStatus: "definite",
+  requestLifecycle: "definite",
+  intent: "hot",
+  roomType: "A-Frame",
+  checkIn: sultanCheckIn,
+  checkOut: sultanCheckOut,
+  nights: 2,
+  adults: 2,
+  children: 0,
+  roomAmount: 260000,
+  services: [],
+  discount: 0,
+  totalAmount: 260000,
+  deposit: 130000,
+  paidAmount: 0,
+  paymentStatus: "not_required",
+  ownerId: employees[0].id,
+  createdAt: minutesAgo(28),
+  lastActivityAt: sultanConversationTime,
+  nextAction: { label: "Подтвердить наличие и создать бронь", dueAt: demoAt(0, "17:00") },
+  nextActionLabel: "Подтвердить наличие и создать бронь",
+  nextActionDueAt: demoAt(0, "17:00"),
+  probability: 90,
+  specialRequest: "Тихий домик у леса, King size, бесконтактное заселение после 20:00. Предоплата 50% после подтверждения наличия.",
+  stageHistory: [
+    { stage: "new", at: minutesAgo(28), employeeId: employees[0].id },
+    { stage: "qualified", at: minutesAgo(20), employeeId: employees[0].id },
+    { stage: "planning", at: minutesAgo(12), employeeId: employees[0].id },
+    { stage: "offer", at: minutesAgo(4), employeeId: employees[0].id },
+  ],
+  activity: [
+    { id: "activity_sultan_demo_created", at: minutesAgo(28), type: "lead_created", title: "Обращение создано", employeeId: employees[0].id },
+    { id: "activity_sultan_demo_qualified", at: minutesAgo(20), type: "stage_change", title: "Параметры проживания подтверждены", employeeId: employees[0].id },
+    { id: "activity_sultan_demo_priced", at: minutesAgo(4), type: "offer_created", title: "Подготовлено предложение на 260 000 ₸", amount: 260000, employeeId: employees[0].id },
+  ],
+  classification: {
+    ...sultanLeadBase.classification,
+    direction: "accommodation",
+    primaryDirection: "accommodation",
+    directions: ["accommodation"],
+    quality: "target",
+    temperature: "hot",
+    recommendedAction: "Подтвердить наличие и создать бронь",
+  },
+  specialRequests: [],
+  interests: [{ id: sultanInterestId, leadId: sultanLeadId, direction: "accommodation", isPrimary: true, status: "active",
+    notes: "Подтверждён A-Frame на двоих; гость готов переходить к бронированию.", details: { checkIn: sultanCheckIn, checkOut: sultanCheckOut, guests: 2 },
+    createdAt: minutesAgo(20), updatedAt: sultanConversationTime }],
+  items: [{ id: "item_sultan_demo_aframe", leadId: sultanLeadId, interestId: sultanInterestId, type: "accommodation",
+    category: "accommodation", name: "A-Frame · 2 ночи", status: "quoted", quantity: 1, roomType: "A-Frame", nights: 2,
+    adults: 2, children: 0, startAt: sultanCheckIn, endAt: sultanCheckOut, unitAmount: 130000, totalAmount: 260000,
+    currency: "KZT", pricingModeSnapshot: "per_night_per_unit", createdAt: minutesAgo(4), updatedAt: sultanConversationTime }],
+};
+leads.push(sultanLead);
+offers.push({
+  id: "offer_sultan_demo_booking",
+  code: "КП-DEMO-SULTAN-001",
+  leadId: sultanLeadId,
+  guestId: sultanGuest.id,
+  propertyId: "les_borovoe",
+  roomType: "A-Frame",
+  checkIn: sultanCheckIn,
+  checkOut: sultanCheckOut,
+  nights: 2,
+  adults: 2,
+  children: 0,
+  status: "draft",
+  ownerId: employees[0].id,
+  createdAt: minutesAgo(4),
+  expiresAt: demoAt(3, "23:59"),
+  lines: [{ label: "A-Frame · 2 ночи", quantity: "2 ночи × 130 000 ₸", amount: 260000, leadItemId: "item_sultan_demo_aframe" }],
+  total: 260000,
+  deposit: 130000,
+  comment: "Тихое расположение, King size; ожидается поздний заезд после 20:00.",
+  terms: "Бронь подтверждается после проверки наличия и внесения предоплаты 50%.",
+});
+guestActivity.push({ id: "ga_sultan_demo_request", guestId: sultanGuest.id, propertyId: "les_borovoe",
+  at: sultanConversationTime, type: "lead_created", title: "Запрос на A-Frame · 2 ночи", description: "2 взрослых, готов к бронированию",
+  amount: 260000 });
 conversations.push({
   ...sultanConversationBase,
   id: sultanConversationId,
   guestId: sultanGuest.id,
-  leadId: undefined,
-  offerId: undefined,
+  leadId: sultanLeadId,
+  offerId: "offer_sultan_demo_booking",
   reservationId: undefined,
   stayId: undefined,
   channel: "telegram",
@@ -2025,13 +2122,19 @@ conversations.push({
   status: "open",
   unreadCount: 1,
   lastMessageAt: sultanConversationTime,
-  automationMode: "ai",
+  automationMode: "needs_human",
+  handoffReasonCode: "booking_confirmation",
+  handoffPriority: "high",
+  handoffNote: "Гость готов бронировать A-Frame за 260 000 ₸. Подтвердить наличие и перейти к оформлению.",
+  requestedAction: "Подтвердить наличие и создать бронь",
   messages: [
-    { id: sultanConversationId + "_m1", conversationId: sultanConversationId, direction: "in", senderType: "contact", text: "Здравствуйте! Хочу забронировать проживание на 29–30 сентября.", at: minutesAgo(12), deliveryStatus: "received" },
-    { id: sultanConversationId + "_m2", conversationId: sultanConversationId, direction: "out", senderType: "ai", text: "Добрый день, Султан! Подскажите, пожалуйста, сколько будет гостей?", at: minutesAgo(7), deliveryStatus: "sent" },
-    { id: sultanConversationId + "_m3", conversationId: sultanConversationId, direction: "in", senderType: "contact", text: "Нас двое взрослых.", at: sultanConversationTime, deliveryStatus: "received" },
+    { id: sultanConversationId + "_m1", conversationId: sultanConversationId, direction: "in", senderType: "contact", text: "Здравствуйте! Хотим вернуться в LES Borovoe на две ночи, нас будет двое взрослых. Есть ли A-Frame?", at: minutesAgo(28), deliveryStatus: "received" },
+    { id: sultanConversationId + "_m2", conversationId: sultanConversationId, direction: "out", senderType: "ai", text: "Султан, здравствуйте! Вижу, что вы уже останавливались у нас. Проверю A-Frame на нужные даты. Подскажите, сохранить пожелание по тихому домику у леса?", at: minutesAgo(22), deliveryStatus: "sent" },
+    { id: sultanConversationId + "_m3", conversationId: sultanConversationId, direction: "in", senderType: "contact", text: "Да, пожалуйста. Тихое место, большая кровать. Заедем поздно, примерно после 20:00.", at: minutesAgo(18), deliveryStatus: "received" },
+    { id: sultanConversationId + "_m4", conversationId: sultanConversationId, direction: "out", senderType: "ai", text: "Записал пожелания: тихое расположение, King size и позднее прибытие. Предварительная стоимость A-Frame за две ночи — 260 000 ₸; предоплата 130 000 ₸ после подтверждения наличия. Вы готовы бронировать?", at: minutesAgo(10), deliveryStatus: "sent" },
+    { id: sultanConversationId + "_m5", conversationId: sultanConversationId, direction: "in", senderType: "contact", text: "Да, всё подходит. Готовы бронировать, ждём подтверждение.", at: sultanConversationTime, deliveryStatus: "received" },
   ],
-  summary: { text: "Подбор формата размещения на 29–30 сентября", dates: "29–30 сентября", guests: 2, wishes: [], nextAction: "Уточнить предпочтения и проверить категорию" },
+  summary: { text: "Повторный гость готов бронировать A-Frame; необходимо подтвердить наличие", dates: `${propertyDate(sultanCheckIn, propertyById("les_borovoe").timezone)}–${propertyDate(sultanCheckOut, propertyById("les_borovoe").timezone)}`, guests: 2, category: "A-Frame", budget: 260000, wishes: ["Тихое расположение", "King size", "Поздний заезд после 20:00"], nextAction: "Подтвердить наличие и создать бронь" },
   firstResponseAt: minutesAgo(7),
   closeResult: undefined,
 });
@@ -2056,6 +2159,7 @@ const demoConversations = conversations.map((conversation) => {
 const demoCommercialCandidates = demoConversations.map((conversation): { conversation: Conversation; lead: Lead | undefined } => ({ conversation,
   lead: leads.find((item) => item.id === conversation.leadId) }))
   .filter((item): item is { conversation: Conversation; lead: Lead } => Boolean(item.lead &&
+    item.lead.id !== sultanLeadId &&
     !["confirmed", "completed", "lost", "cancelled"].includes(item.lead.stage)));
 const demoEnquire = demoCommercialCandidates.find((item) => ["new", "qualified"].includes(item.lead.stage));
 const demoTentative = demoCommercialCandidates.find((item) => item.lead.id !== demoEnquire?.lead.id &&
@@ -2197,10 +2301,7 @@ export const crmDataset: CrmDataset = {
   // Mock-режим синтезирует folio из lead.items/payments на лету (src/lib/journey.ts)
   folios: [],
   paymentRequests: demoPaymentRequests,
-  scheduledOutboundMessages: [
-    { id: "demo_sultan_t3", reservationId: "reservation_sultan_future", triggerType: "pre_arrival_3d", scheduledAt: demoAt(9, "15:00"), status: "pending" },
-    { id: "demo_sultan_t1", reservationId: "reservation_sultan_future", triggerType: "pre_arrival_1d", scheduledAt: demoAt(11, "15:00"), status: "pending" },
-  ],
+  scheduledOutboundMessages: [],
 };
 
 export const findGuest = guestById;
