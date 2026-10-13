@@ -52,8 +52,9 @@ export const receivePaymentRequest = async (tx: Tx, paymentRequestId: string, in
     await tx.insert(s.requestLifecycleHistory).values({ id: id("request_lifecycle"), leadId: paymentRequest.leadId,
       fromStatus: "definite", toStatus: "won", source: "payment", employeeId: input.employeeId ?? null,
       reason: "Предоплата получена", changedAt: timestamp });
+    // Financial facts cannot release sticky human takeover. Resume is explicit.
     await tx.update(s.conversations).set({ reservationId: reservation.id, stayId: stay?.id ?? null,
-      automationMode: "ai", handoffResolvedAt: timestamp, updatedAt: timestamp })
+      updatedAt: timestamp })
       .where(eq(s.conversations.leadId, paymentRequest.leadId));
     await planPreArrivalMessages(tx, reservation, paymentRequest.conversationId, timestamp);
     const [conversation] = paymentRequest.conversationId

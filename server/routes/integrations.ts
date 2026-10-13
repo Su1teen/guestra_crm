@@ -7,7 +7,7 @@ import * as s from "../db/schema.js";
 import { ensureFolio, recalcFolio, resolveItemPricing, syncFolioLineForItem, setFolioStatus } from "../services/folio.js";
 import { AvailabilityConflict } from "../services/availability-service.js";
 import { confirmBooking, ReservationConflict } from "../services/reservation-service.js";
-import { resolveOrCreateExternalCustomer } from "../services/customer-service.js";
+import { resolveOrCreateExternalCustomer, findExternalIdentity } from "../services/customer-service.js";
 import { AGENT_CHANNELS } from "../contracts/agent-contract.js";
 
 const now = () => new Date().toISOString();
@@ -91,8 +91,8 @@ const ownerForProperty = async (db: Database, propertyId: string) => {
   return mapping.employeeId;
 };
 
-const resolveIdentity = async (db: Database, channel: string, externalUserId: string) => {
-  const [identity] = await db.select().from(s.guestContactIdentities).where(and(eq(s.guestContactIdentities.channel, channel), eq(s.guestContactIdentities.externalUserId, externalUserId))).limit(1);
+const resolveIdentity = async (db: Database, channel: string, externalUserId: string, propertyId: string) => {
+  const identity = await findExternalIdentity(db,channel,propertyId,externalUserId);
   return identity;
 };
 
@@ -201,7 +201,7 @@ export const createIntegrationRouter = (db: Database, apiKey: string) => {
 
   router.post("/offers/upsert", async (request, response) => {
     const input = offerUpsertSchema.parse(request.body);
-    const identity = await resolveIdentity(db, input.channel, input.externalUserId);
+    const identity = await resolveIdentity(db, input.channel, input.externalUserId, input.propertyId);
     if (!identity) return response.status(404).json({ error: "Guest identity not found" });
     const lead = await activeLead(db, identity.guestId, input.propertyId);
     if (!lead) return response.status(404).json({ error: "Active lead not found" });

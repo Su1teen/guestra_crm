@@ -49,7 +49,7 @@ describe("stay workspace demo flows", () => {
   it("exposes the completed stay in the customer's visit history", async () => {
     await renderMockRoute("/guests/guest_002");
     expect(await screen.findByRole("heading", { name: "Айдос Тлеубаев" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Бронирования/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Проживания/ }));
     expect(await screen.findByText(/Итого 609\u00a0000 ₸|Итого 609 000 ₸/)).toBeInTheDocument();
     expect(screen.getByText(/Проживание 540\u00a0000 ₸|Проживание 540 000 ₸/)).toBeInTheDocument();
     expect(screen.getByText(/Доп\. услуги 69\u00a0000 ₸|Доп\. услуги 69 000 ₸/)).toBeInTheDocument();

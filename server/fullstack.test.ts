@@ -16,6 +16,7 @@ import { assignReservationUnit, AvailabilityConflict } from "./services/availabi
 import { advanceLead } from "./services/lead-journey.js";
 import { recalcFolio } from "./services/folio.js";
 import { dispatchTelegramMessage } from "./services/outbound-messaging.js";
+import {scopedExternalIdentityKey} from "./services/customer-service.js";
 
 const config: AppConfig = {
   DATABASE_URL: "postgresql://unused/test",
@@ -515,13 +516,14 @@ describe("manual resort leads", () => {
 
   it("creates a booking directly from a new request without the legacy stage checklist", async () => {
     const agent = await admin();
+    await db.insert(s.rooms).values({id:"room_quick_booking_test",number:"QBT",propertyId:"les_borovoe",category:"Sky House",floor:1,zone:"Test",status:"vacant_clean"});
     await db.insert(s.leads).values({ id: "lead_quick_booking_test", code: "G-QUICK-BOOKING",
       guestId: "guest_live_1", propertyId: "les_borovoe", source: "phone", stage: "new",
       requestStatus: "new", ownerId: "emp_admin", lastActivityAt: "2026-09-25T10:00:00.000Z" });
     const moved = await agent.patch("/api/crm/requests/lead_quick_booking_test/status").send({ status: "tentative" }).expect(200);
     expect(moved.body).toMatchObject({ stage: "new", requestLifecycle: "tentative" });
     const input = { arrivalAt: "2027-05-10T10:00:00.000Z", departureAt: "2027-05-12T07:00:00.000Z",
-      roomType: "Sky House", roomId: "room_live_b01", adults: 2, children: 1,
+      roomType: "Sky House", roomId: "room_quick_booking_test", adults: 2, children: 1,
       totalAmount: 180000, depositRequired: 90000 };
     const first = await agent.post("/api/crm/requests/lead_quick_booking_test/reservation").send(input).expect(201);
     const retry = await agent.post("/api/crm/requests/lead_quick_booking_test/reservation").send(input).expect(200);
@@ -554,7 +556,7 @@ describe("manual resort leads", () => {
     expect(handoff).toMatchObject({ automationMode: "needs_human", handoffReasonCode: "payment_ready" });
     const booked = await agent.post("/api/crm/requests/lead_payment_journey_test/reservation").send({
       arrivalAt: "2028-06-10T10:00:00.000Z", departureAt: "2028-06-12T07:00:00.000Z",
-      roomType: "Sky House", roomId: "room_live_b01", adults: 2, children: 0,
+      roomType: "Sky House", roomId: "room_quick_booking_test", adults: 2, children: 0,
       totalAmount: 200000, depositRequired: 100000,
     }).expect(201);
     const [paymentRequest] = await db.select().from(s.paymentRequests).where(eq(s.paymentRequests.leadId, "lead_payment_journey_test"));
@@ -729,7 +731,7 @@ describe("AI integration", () => {
     expect(history.map((item) => item.stage)).toEqual(["new", "qualified"]);
     const [classification] = await db.select().from(s.leadClassifications).where(eq(s.leadClassifications.leadId, leadId));
     expect(classification).toMatchObject({ direction: "accommodation", quality: "target", temperature: "hot", probability: 70 });
-    expect((await db.select().from(s.guestContactIdentities).where(and(eq(s.guestContactIdentities.channel, "telegram"), eq(s.guestContactIdentities.externalUserId, "tg-test-42"))))).toHaveLength(1);
+    expect((await db.select().from(s.guestContactIdentities).where(and(eq(s.guestContactIdentities.channel, "telegram"), eq(s.guestContactIdentities.externalUserId, scopedExternalIdentityKey("les_borovoe","tg-test-42")))))).toHaveLength(1);
   });
 
   it("keeps quote and booking retries idempotent and never stores raw messages", async () => {
@@ -743,7 +745,7 @@ describe("AI integration", () => {
     await request(app).post("/api/integrations/ai/offers/upsert").set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).send(quote).expect(200);
     expect(await db.select().from(s.offers).where(eq(s.offers.externalQuoteId, quote.externalQuoteId))).toHaveLength(1);
 
-    const [identity] = await db.select().from(s.guestContactIdentities).where(eq(s.guestContactIdentities.externalUserId, "tg-test-42"));
+    const [identity] = await db.select().from(s.guestContactIdentities).where(eq(s.guestContactIdentities.externalUserId, scopedExternalIdentityKey("les_borovoe","tg-test-42")));
     const [leadBefore] = await db.select().from(s.leads).where(and(eq(s.leads.guestId, identity.guestId), eq(s.leads.propertyId, "les_borovoe")));
     const booking = { channel: "telegram", externalUserId: "tg-test-42", propertyId: "les_borovoe", confirmationNumber: "HAIP-TEST-42", reservationId: "PMS-42", roomType: "Sky House", checkIn: "2026-12-10", checkOut: "2026-12-12", adults: 2, children: 0, grandTotal: 180000, currency: "KZT" };
     const first = await request(app).post("/api/integrations/ai/bookings/confirm").set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).send(booking).expect(200);
@@ -778,7 +780,7 @@ describe("AI integration", () => {
     const second = await api().expect(200);
     expect(second.body).toMatchObject({ guestId: first.body.guestId, leadId: first.body.leadId,
       reservationId: first.body.reservationId, stayId: first.body.stayId, duplicate: true });
-    expect(await db.select().from(s.guestContactIdentities).where(eq(s.guestContactIdentities.externalUserId, booking.externalUserId))).toHaveLength(1);
+    expect(await db.select().from(s.guestContactIdentities).where(eq(s.guestContactIdentities.externalUserId, scopedExternalIdentityKey("les_borovoe",booking.externalUserId)))).toHaveLength(1);
     expect(await db.select().from(s.guests).where(eq(s.guests.id, first.body.guestId))).toMatchObject([{ profileStatus: "stub" }]);
     expect(await db.select().from(s.reservationGuests).where(eq(s.reservationGuests.reservationId, first.body.reservationId))).toHaveLength(1);
   });
@@ -816,6 +818,12 @@ describe("reservation availability", () => {
       blocksRoom: true, propertyId: "les_borovoe" }).expect(201);
     await agent.post("/api/crm/reservations/reservation_availability_d/units").send({ roomId: "room_availability_2" }).expect(409);
     await agent.patch(`/api/crm/maintenance/${ticket.body.id}`).send({ verify: true }).expect(200);
+    await agent.post("/api/crm/reservations/reservation_availability_d/units").send({roomId:"room_availability_2"}).expect(409);
+    const clean=await agent.post("/api/crm/housekeeping").send({roomId:"room_availability_2",type:"checkout",dueAt:new Date().toISOString()}).expect(201);
+    await agent.patch(`/api/crm/housekeeping/${clean.body.id}`).send({action:"complete"}).expect(200);
+    const checks=await db.select().from(s.housekeepingChecklistItems).where(eq(s.housekeepingChecklistItems.taskId,clean.body.id));
+    for(const check of checks)await agent.patch(`/api/crm/housekeeping/${clean.body.id}/checklist/${check.position}`).expect(200);
+    await agent.patch(`/api/crm/housekeeping/${clean.body.id}`).send({action:"inspect"}).expect(200);
     await agent.post("/api/crm/reservations/reservation_availability_d/units").send({ roomId: "room_availability_2" }).expect(201);
   });
 });
@@ -936,7 +944,7 @@ describe("operational guest journey", () => {
       propertyId: "les_borovoe", bookerCustomerId: "guest_live_1", source: "phone", status: "confirmed",
       arrivalAt, departureAt, adults: 2, children: 0 });
     const [nextReservation] = await db.select().from(s.reservations).where(eq(s.reservations.id, "reservation_after_checkout_test"));
-    expect((await db.transaction((tx) => assignReservationUnit(tx, nextReservation, "room_operations_test"))).status).toBe("assigned");
+    await expect(db.transaction((tx) => assignReservationUnit(tx, nextReservation, "room_operations_test"))).rejects.toBeInstanceOf(AvailabilityConflict);
     expect((await db.select().from(s.rooms).where(eq(s.rooms.id, "room_operations_test")))[0]).toMatchObject({ status: "vacant_dirty", occupiedByGuestId: null });
     expect(await db.select().from(s.housekeepingTasks).where(and(eq(s.housekeepingTasks.stayId, stay.id), eq(s.housekeepingTasks.type, "checkout")))).toHaveLength(1);
     expect(await db.select().from(s.guestActivity).where(and(eq(s.guestActivity.stayId, stay.id), eq(s.guestActivity.type, "check_out")))).toHaveLength(1);
@@ -947,7 +955,10 @@ describe("operational guest journey", () => {
     const checklist = await db.select().from(s.housekeepingChecklistItems).where(eq(s.housekeepingChecklistItems.taskId, cleaning.id));
     for (const item of checklist) await agent.patch(`/api/crm/housekeeping/${cleaning.id}/checklist/${item.position}`).expect(200);
     await agent.patch(`/api/crm/housekeeping/${cleaning.id}`).send({ action: "inspect" }).expect(200);
+    const otherCleaning=await db.select().from(s.housekeepingTasks).where(and(eq(s.housekeepingTasks.roomId,"room_operations_test"),eq(s.housekeepingTasks.status,"pending")));
+    for(const task of otherCleaning)await agent.patch(`/api/crm/housekeeping/${task.id}`).send({action:"skip",reason:"Test guest departed; checkout cleaning completed"}).expect(200);
     expect((await db.select().from(s.rooms).where(eq(s.rooms.id, "room_operations_test")))[0].status).toBe("inspected");
+    expect((await db.transaction((tx) => assignReservationUnit(tx, nextReservation, "room_operations_test"))).status).toBe("assigned");
     const review = await agent.post("/api/crm/reviews").send({ propertyId: "les_borovoe", guestId: "guest_live_1",
       stayId: stay.id, guestName: "Гость", channel: "direct", rating: 4, maxRating: 5,
       reviewAt: new Date().toISOString(), text: "Отдых понравился", topic: "Проживание" }).expect(201);
@@ -992,7 +1003,7 @@ describe("AI Guest Agent gateway", () => {
       text: "Другой текст с тем же Telegram message id" }).expect(409);
     expect(messageConflict.body.code).toBe("IDEMPOTENCY_CONFLICT");
     expect(await db.select().from(s.messages).where(eq(s.messages.idempotencyKey,
-      "telegram:tg_agent_chat_001:tg_agent_guest_001:tg_agent_message_001"))).toHaveLength(1);
+      "property:les_borovoe:telegram:tg_agent_chat_001:tg_agent_guest_001:tg_agent_message_001"))).toHaveLength(1);
     expect(await db.select().from(s.leads).where(eq(s.leads.guestId, first.body.context.customer.id))).toHaveLength(0);
     await api("/context").send({ propertyId: "les_borovoe", externalUserId: "some_other_telegram_user",
       conversationId: first.body.context.conversation.id }).expect(404);
