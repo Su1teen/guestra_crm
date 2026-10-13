@@ -82,18 +82,23 @@ export function createIntegrationV2Router(db:Database,config:AppConfig) {
       if(mapping?.evidence.inputHash!==hashAgentPayload(input))throw new IntegrationError("IDEMPOTENCY_CONFLICT");
       return response.json({offer:existing,pricing:mapping.evidence.pricing,duplicate:true});
     }
+    const [booked]=await db.select().from(i.integrationMappings).where(and(eq(i.integrationMappings.propertyId,input.propertyId),
+      eq(i.integrationMappings.localType,"request"),eq(i.integrationMappings.localId,lead.id),eq(i.integrationMappings.remoteType,"reservation"))).limit(1);
+    if(booked)throw new IntegrationError("REQUEST_ALREADY_BOOKED");
     const mapping=await pms.attest(input.propertyId,scope.property.organizationId);
     const pricing=await pms.call(input.propertyId,"v2/quote","POST",{propertyId:mapping.pmsPropertyId,roomTypeId:input.roomTypeId,ratePlanId:input.ratePlanId,
       checkIn:lead.checkIn.slice(0,10),checkOut:lead.checkOut.slice(0,10),adults:lead.adults,children:lead.children,customerId:scope.customer.id});
     // Legacy CRM UI money columns are integral KZT. Never round accepted money silently.
     const total=Number(pricing.totalAmount);
-    if(pricing.currency!=="KZT" || !Number.isSafeInteger(total))throw new IntegrationError("CRM_MONEY_PRECISION_UNSUPPORTED");
+    if(pricing.currency!=="KZT" || !Number.isSafeInteger(total)||total<0||total>2147483647)throw new IntegrationError("CRM_MONEY_PRECISION_UNSUPPORTED");
     const offer=await db.transaction(async tx=>{
       const id="offer_"+randomUUID(),timestamp=new Date().toISOString();
       const [created]=await tx.insert(s.offers).values({id,code:"PMS-"+id.slice(-8),leadId:lead.id,guestId:scope.customer.id,propertyId:input.propertyId,
         externalQuoteId,roomType:String(pricing.roomTypeName),checkIn:lead.checkIn,checkOut:lead.checkOut,adults:lead.adults,children:lead.children,
         nights:Number(pricing.nights),total,deposit:0,ownerId:lead.ownerId,status:"draft",expiresAt:String(pricing.expiresAt),createdAt:timestamp,updatedAt:timestamp}).onConflictDoNothing().returning();
       if(!created)throw new IntegrationError("QUOTE_RETRY_REQUIRED",503,true);
+      await tx.update(s.leads).set({totalAmount:total,roomAmount:total,updatedAt:timestamp})
+        .where(and(eq(s.leads.id,lead.id),eq(s.leads.propertyId,input.propertyId),eq(s.leads.guestId,scope.customer.id)));
       await tx.insert(i.integrationMappings).values({id:"mapping_"+randomUUID(),propertyId:input.propertyId,tenantId:scope.property.organizationId,sourceSystem:"guestra_pms",
         localType:"offer",localId:created.id,remotePropertyId:mapping.pmsPropertyId,remoteType:"quote",remoteId:hashAgentPayload(pricing.acceptedQuote),
         verifiedAt:timestamp,evidence:{inputHash:hashAgentPayload(input),pricing}});
@@ -115,6 +120,13 @@ export function createIntegrationV2Router(db:Database,config:AppConfig) {
       const [latest]=await tx.select().from(s.offers).where(and(eq(s.offers.id,offer.id),eq(s.offers.propertyId,input.propertyId))).for("update");
       if(!latest || Date.parse(latest.expiresAt)<=Date.now() || ["cancelled","expired"].includes(latest.status))throw new IntegrationError("QUOTE_EXPIRED");
       const key="crm:"+hashAgentPayload({propertyId:input.propertyId,proposal:input.proposalMessageId,confirmation:input.confirmationMessageId});
+      const [booked]=await tx.select().from(i.integrationMappings).where(and(eq(i.integrationMappings.propertyId,input.propertyId),
+        eq(i.integrationMappings.localType,"request"),eq(i.integrationMappings.localId,offer.leadId),eq(i.integrationMappings.remoteType,"reservation"))).limit(1);
+      if(booked)throw new IntegrationError("REQUEST_ALREADY_BOOKED");
+      const pending=await tx.select().from(i.integrationOperations).where(and(eq(i.integrationOperations.propertyId,input.propertyId),
+        eq(i.integrationOperations.customerId,scope.customer.id),eq(i.integrationOperations.kind,"book_accommodation"),eq(i.integrationOperations.status,"pending")));
+      if(pending.some(row=>(row.payload.integrationContext as Record<string,unknown>|undefined)?.requestId===offer.leadId))
+        throw new IntegrationError("REQUEST_BOOKING_IN_PROGRESS",503,true);
       const operation=await enqueueOperation(tx,{propertyId:input.propertyId,customerId:scope.customer.id,conversationId:input.conversationId,kind:"book_accommodation",key,
         payload:{propertyId:remote.pmsPropertyId,roomTypeId:price.roomTypeId,ratePlanId:price.ratePlanId,checkIn:offer.checkIn!.slice(0,10),
           checkOut:offer.checkOut!.slice(0,10),adults:offer.adults,children:offer.children,guestFirstName:scope.customer.firstName??scope.customer.fullName,

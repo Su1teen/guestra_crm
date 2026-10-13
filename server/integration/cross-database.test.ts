@@ -153,6 +153,7 @@ describe("Cross database integration invariants",()=>{
   const history=await db.select().from(s.requestLifecycleHistory).where(eq(s.requestLifecycleHistory.leadId,leadId));
   expect(history.map(row=>row.toStatus)).toEqual(["won","lost"]);
   expect(history.every(row=>row.source==="pms_projection")).toBe(true);
+  expect((await db.select().from(s.leads).where(eq(s.leads.id,leadId)))[0].totalAmount).toBe(50000);
  });
  it("deduplicates durable events, rejects changed replay and retains events during outages",async()=>{
   const event={schemaVersion:"guestra-domain-event-v1",eventId:randomUUID(),sourceSystem:"guestra_pms",propertyId:remoteProperty,tenantId:remoteTenant,

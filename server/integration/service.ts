@@ -65,7 +65,9 @@ export async function projectSnapshot(tx:Tx,pms:PmsClient,propertyId:string,cust
       const active=!["cancelled","no_show","checked_out"].includes(String(snapshot.status)),pending=snapshot.status==="pending";
       const stage=pending?"payment_pending":active?"confirmed":snapshot.status==="cancelled"?"cancelled":"completed";
       const lifecycle=pending?"definite":active?"won":snapshot.status==="cancelled"?"lost":"closed";
+      const amount=Number(snapshot.totalAmount),supportedMoney=snapshot.currencyCode==="KZT"&&Number.isSafeInteger(amount)&&amount>=0&&amount<=2147483647;
       await tx.update(s.leads).set({stage,requestLifecycle:lifecycle,bookingReference:String(snapshot.confirmationNumber??""),
+        ...(supportedMoney?{totalAmount:amount,roomAmount:amount}:{}),
         updatedAt:timestamp}).where(and(eq(s.leads.id,lead.id),eq(s.leads.propertyId,propertyId),eq(s.leads.guestId,customerId)));
       if(lead.stage!==stage)await tx.insert(s.leadStageHistory).values({id:"pms_stage_"+randomUUID(),leadId:lead.id,stage,changedAt:timestamp});
       if(lead.requestLifecycle!==lifecycle)await tx.insert(s.requestLifecycleHistory).values({id:"pms_lifecycle_"+randomUUID(),leadId:lead.id,
