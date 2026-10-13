@@ -26,7 +26,7 @@ export const AGENT_TOOLS = AgentToolSchema.options;
 export type AgentTool = z.infer<typeof AgentToolSchema>;
 
 export const AgentConfirmationActionSchema = z.enum([
-  "book_accommodation", "book_service", "reschedule_service", "cancel_service", "extend_stay",
+  "book_accommodation", "book_service", "reschedule_service", "cancel_service", "extend_stay", "amend_accommodation", "cancel_accommodation",
 ]);
 export type AgentConfirmationAction = z.infer<typeof AgentConfirmationActionSchema>;
 
@@ -275,6 +275,8 @@ export const isExplicitConfirmation = (text: string, actionType?: AgentConfirmat
     reschedule_service: ["да перенесите", "подтверждаю перенос", "перенесите"],
     cancel_service: ["да отмените", "подтверждаю отмену", "отмените"],
     extend_stay: ["да продлите", "подтверждаю продление", "продлите"],
+    amend_accommodation: ["да измените", "подтверждаю изменение"],
+    cancel_accommodation: ["да отмените", "подтверждаю отмену", "отмените"],
   };
   return general.has(normalized) || (actionType ? actionPhrases[actionType].includes(normalized) :
     Object.values(actionPhrases).some((phrases) => phrases.includes(normalized)));

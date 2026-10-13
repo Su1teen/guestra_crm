@@ -1,4 +1,5 @@
 import type { Database } from "../db/client.js";
+import { displayExternalIdentityId } from "./customer-service.js";
 import * as s from "../db/schema.js";
 import { evaluateJourney, type JourneyInput, type JourneyStage } from "../../shared/journey.js";
 
@@ -80,7 +81,7 @@ export const loadCrmDataset = async (db: Database) => {
       lifetimeValue: row.lifetimeValue, lastStayDate: row.lastStayDate ?? undefined, createdAt: row.createdAt,
       identity: { primaryPhone: (identity.primaryPhone as string | undefined) ?? row.phone, emails: (identity.emails as string[] | undefined) ?? (row.email ? [row.email] : []), documentType: identity.documentType ?? null, documentNumber: identity.documentNumber ?? null, citizenship: identity.citizenship ?? null, birthDate: identity.birthDate ?? null },
       preferences: { language: (preferences.language as string | undefined) ?? row.language, roomPreference: (preferences.roomPreference as string | undefined) ?? "", bedPreference: (preferences.bedPreference as string | undefined) ?? "", foodPreference: (preferences.foodPreference as string | undefined) ?? "", specialRequests: (preferences.specialRequests as string[] | undefined) ?? [] },
-      contactIdentities: (identitiesByGuest.get(row.id) ?? []).map((item) => ({ id: item.id, channel: item.channel, externalUserId: item.externalUserId, externalChatId: item.externalChatId, username: item.username })),
+      contactIdentities: (identitiesByGuest.get(row.id) ?? []).map((item) => ({ id: item.id, channel: item.channel, externalUserId: displayExternalIdentityId(item.externalUserId), externalChatId: item.externalChatId, username: item.username })),
     };
   });
   const stays = stayRows.map((row) => ({ id: row.id, guestId: row.guestId, propertyId: row.propertyId, reservationId: row.reservationId ?? undefined, reservationUnitId: row.reservationUnitId ?? undefined, roomId: row.roomId ?? undefined, actualCheckIn: row.actualCheckIn ?? undefined, actualCheckOut: row.actualCheckOut ?? undefined, operationalStatus: row.operationalStatus, roomType: row.roomType, checkIn: row.checkIn, checkOut: row.checkOut, nights: row.nights, adults: row.adults, children: row.children, amount: row.amount, bookingReference: row.bookingReference, status: row.status, serviceNames: row.serviceNames ?? [] }));

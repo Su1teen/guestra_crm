@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, useRef, type ReactNode } from "react";
 import { crmDataset } from "@/data/dataset";
 import { useAuth } from "@/contexts/AuthContext";
 import { ApiError, apiRequest } from "@/lib/api";
@@ -348,16 +348,22 @@ const emptyDatabaseDataset: CrmDataset = {
 export const CrmProvider = ({ children }: { children: ReactNode }) => {
   const { user } = useAuth();
   const dataMode = user?.dataMode ?? "mock";
+  const sessionKey=(user?.id??"anonymous")+":"+dataMode;
+  const activeSession=useRef(sessionKey);
+  activeSession.current=sessionKey;
   const [data, setData] = useState<CrmDataset>(() => dataMode === "database" ? emptyDatabaseDataset : ({
     ...crmDataset, tasks: crmDataset.tasks.map(overdueAdjusted),
   }));
   const [status, setStatus] = useState<DataStatus>("loading");
   const [property, setPropertyState] = useState<PropertyFilter>(readStoredProperty);
 
-  const loadDatabase = useCallback(async () => {
-    setStatus("loading");
+  const loadDatabase = useCallback(async (quiet = false) => {
+    const session=activeSession.current;
+    if(!session.endsWith(":database"))return;
+    if (!quiet) setStatus("loading");
     try {
       const next = await apiRequest<CrmDataset>("/api/crm/bootstrap");
+      if(activeSession.current!==session)return;
       setData(next);
       setPropertyState((current) => {
         const valid = current === "all" || next.properties.some((item) => item.id === current);
@@ -366,6 +372,7 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
       });
       setStatus("ready");
     } catch (error) {
+      if(activeSession.current!==session)return;
       console.error(error);
       setStatus("error");
     }
@@ -379,6 +386,19 @@ export const CrmProvider = ({ children }: { children: ReactNode }) => {
     setData({ ...crmDataset, tasks: crmDataset.tasks.map(overdueAdjusted) });
     const timer = window.setTimeout(() => setStatus("ready"), 250);
     return () => window.clearTimeout(timer);
+  }, [dataMode, loadDatabase]);
+
+  useEffect(() => {
+    if (dataMode !== "database") return;
+    let active = false;
+    const refresh = async () => {
+      if (active || document.visibilityState === "hidden") return;
+      active = true;
+      try { await loadDatabase(true); } finally { active = false; }
+    };
+    const timer = window.setInterval(() => { void refresh(); }, 15000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
   }, [dataMode, loadDatabase]);
 
   const setProperty = useCallback((next: PropertyFilter) => {

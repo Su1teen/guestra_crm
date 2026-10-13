@@ -3,14 +3,15 @@ import { crmDataset } from "@/data/dataset";
 import { properties, employees } from "@/data/reference";
 
 describe("Dataset consistency", () => {
-  it("contains only the two active properties and a short standalone demo conversation", () => {
+  it("contains the two active properties and the returning guest's complete booking conversation", () => {
     expect(crmDataset.properties.map((property) => property.id)).toEqual(["les_borovoe", "les_astana"]);
-    const guest = crmDataset.guests.find((item) => item.fullName === "Султан Советов");
+    const guest = crmDataset.guests.find((item) => item.fullName === "Султан Демо");
     const conversation = crmDataset.conversations.find((item) => item.id === "conv_sultan_sovetov");
     expect(guest).toBeTruthy();
     expect(conversation).toMatchObject({ guestId: guest?.id, propertyId: "les_borovoe", status: "open" });
-    expect(conversation?.messages).toHaveLength(3);
-    expect(conversation?.summary?.dates).toBe("29–30 сентября");
+    expect(conversation?.messages).toHaveLength(5);
+    expect(conversation?.automationMode).toBe("ai");
+    expect(conversation?.summary?.budget).toBe(260000);
     expect(conversation?.reservationId).toBeUndefined();
   });
 

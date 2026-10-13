@@ -4,6 +4,7 @@ import type { NextFunction, Request, RequestHandler, Response } from "express";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 import { AGENT_TOOL_DESCRIPTORS } from "../contracts/agent-contract.js";
+import { findExternalIdentity } from "./customer-service.js";
 
 type JsonValue = Record<string, unknown> | undefined;
 
@@ -45,16 +46,14 @@ const resolveToolEventScope = async (db: Database, request: Request) => {
   // The FK can only point at a real conversation; unresolved ids stay in metadata.
   const [existingConversation] = requestedConversationId
     ? await db.select({ id: s.conversations.id }).from(s.conversations)
-      .where(eq(s.conversations.id, requestedConversationId)).limit(1)
+      .where(and(eq(s.conversations.id, requestedConversationId),
+        ...(field(request,"propertyId") ? [eq(s.conversations.propertyId,field(request,"propertyId")!)] : []))).limit(1)
     : [];
   const conversationId = existingConversation?.id;
   let guestId: string | undefined;
   if (externalUserId) {
-    const [identity] = await db.select({ guestId: s.guestContactIdentities.guestId })
-      .from(s.guestContactIdentities).where(and(
-        ...(channel ? [eq(s.guestContactIdentities.channel, channel)] : []),
-        eq(s.guestContactIdentities.externalUserId, externalUserId),
-      )).limit(1);
+    const propertyId=field(request,"propertyId");
+    const identity=propertyId ? await findExternalIdentity(db,channel??"telegram",propertyId,externalUserId) : undefined;
     guestId = identity?.guestId;
   }
   const messageIdParam = param(request, "messageId");
@@ -115,7 +114,16 @@ export const agentToolTraceMiddleware = (db: Database): RequestHandler =>
           await recordAgentToolEvent(db, { tool: toolForRequest(request), request,
             statusCode: response.statusCode, errorCode, durationMs: performance.now() - startedAt,
             metadata: { method: request.method, path: (request.route?.path ?? request.path) as string,
-              duplicate: record?.duplicate === true } });
+              duplicate: record?.duplicate === true,
+              httpAccepted: response.statusCode < 400,
+              ...(typeof record?.deliveryStatus === "string" ? { deliveryStatus: record.deliveryStatus } : {}),
+              ...(typeof record?.status === "string" && ["pending","completed","rejected"].includes(record.status)
+                ? { operationStatus: record.status } : {}),
+              ...Object.fromEntries(["correlationId","executionReference","promptVersion","deploymentReference"]
+                .map(key=>[key,field(request,key)])
+                .filter(([,value])=>typeof value==="string"&&value.length<=160&&/^[A-Za-z0-9._:/-]+$/.test(value))),
+              ...Object.fromEntries(["messageId","requestId","offerId","operationId","reservationId","serviceBookingId"]
+                .filter(key=>typeof record?.[key]==="string").map(key=>[key,record![key]])) } });
         } catch {
           // Tracing must never break the tool response.
         }

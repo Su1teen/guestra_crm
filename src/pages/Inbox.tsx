@@ -148,7 +148,7 @@ const Inbox = () => {
 
   const selected: Conversation | undefined = visibleConversations.find((item) => item.id === selectedId) ?? visibleConversations[0];
   const automationMode = selected?.automationMode ?? "human";
-  const replyDisabled = Boolean(selected?.channel === "telegram" && automationMode !== "human");
+  const replyDisabled = Boolean(selected && ["telegram", "whatsapp", "instagram", "simulator"].includes(selected.channel) && automationMode !== "human");
   const selectedConversationId = selected?.id;
   const selectedUnreadCount = selected?.unreadCount ?? 0;
 

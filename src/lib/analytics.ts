@@ -503,11 +503,13 @@ export const missedRevenue = (leads: Lead[]): number =>
 export const avgCloseDays = (leads: Lead[]): number | null => {
   const confirmed = leads.filter((lead) => lead.stage === "confirmed" || lead.stage === "completed");
   if (confirmed.length === 0) return null;
-  const durations = confirmed.map((lead) => {
+  const durations = confirmed.flatMap((lead) => {
     const lastStage = lead.stageHistory[lead.stageHistory.length - 1];
-    return daysBetween(lead.createdAt, lastStage.at);
+    if (!lastStage) return [];
+    const duration = daysBetween(lead.createdAt, lastStage.at);
+    return Number.isFinite(duration) ? [duration] : [];
   });
-  return average(durations);
+  return durations.length ? average(durations) : null;
 };
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,10 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
+import type { AppConfig } from "../config.js";
+import { resolvePrincipal,principalRateLimit } from "../integration/security.js";
+import { createIntegrationV2Router } from "../integration/router.js";
+import { IntegrationError } from "../integration/contract.js";
+import {getIntegratedContext} from "../integration/context.js";
 import { and, asc, desc, eq, gt, gte, inArray, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { AGENT_API_VERSION, AGENT_ATTACHMENT_KINDS, AGENT_ATTACHMENT_PROCESSING_STATES, AGENT_BOOKING_MODES,
@@ -18,7 +23,7 @@ import { AGENT_API_VERSION, AGENT_ATTACHMENT_KINDS, AGENT_ATTACHMENT_PROCESSING_
 } from "../contracts/agent-contract.js";
 import { AgentActionError, executeConfirmedAgentAction, hashAgentPayload } from "../services/agent-action-service.js";
 import { agentToolTraceMiddleware } from "../services/agent-tool-trace.js";
-import { normalizeEmail, normalizePhone } from "../services/customer-service.js";
+import { normalizeEmail, normalizePhone, findExternalIdentity } from "../services/customer-service.js";
 import { extendStay, StayConflict } from "../services/stay-service.js";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
@@ -69,9 +74,7 @@ const contextAllows = async (db: Database, conversationId: string, customerId: s
 const identityFor = async (db: Pick<Database, "select">, channel: string, propertyId: string, externalUserId: string) => {
   const [property] = await db.select().from(s.properties).where(eq(s.properties.id, propertyId)).limit(1);
   if (!property) return null;
-  const [identity] = await db.select().from(s.guestContactIdentities).where(and(
-    eq(s.guestContactIdentities.channel, channel), eq(s.guestContactIdentities.externalUserId, externalUserId),
-  )).limit(1);
+  const identity = await findExternalIdentity(db,channel,propertyId,externalUserId);
   if (!identity) return null;
   const [guest] = await db.select({ id: s.guests.id, organizationId: s.guests.organizationId })
     .from(s.guests).where(eq(s.guests.id, identity.guestId)).limit(1);
@@ -114,7 +117,7 @@ const previewAgentStayExtension = async (tx: ExtensionTx, input: {
   }
   if (!stay.roomId) throw new AgentActionError("ACTION_NOT_ALLOWED", "У проживания не назначен домик", 409, false, true);
   await assertRoomAvailable(tx, { roomId: stay.roomId, propertyId: input.propertyId,
-    arrivalAt: reservation.arrivalAt, departureAt, excludeReservationId: reservation.id });
+    arrivalAt: reservation.arrivalAt, departureAt, excludeReservationId: reservation.id, allowUnreadyRoom: true });
   const [folio] = await tx.select().from(s.folios).where(and(eq(s.folios.reservationId, reservation.id),
     eq(s.folios.guestId, input.customerId), eq(s.folios.propertyId, input.propertyId))).limit(1);
   if (!folio) throw new AgentActionError("PRICE_NOT_AUTHORITATIVE", "Для продления нет доступного счёта с тарифом", 409, false, true);
@@ -135,18 +138,35 @@ const previewAgentStayExtension = async (tx: ExtensionTx, input: {
     currentDepartureAt: reservation.departureAt, departureAt, nights: newNights,
     addedNights: newNights - oldNights, expectedAddedCharge: addedCharge, currency: folio.currency };
 };
-export const createAgentRouter = (db: Database, apiKey: string) => {
+export const createAgentRouter = (db: Database, apiKey: string, config?: AppConfig) => {
   const router = Router();
   router.use((request, response, next) => {
     const header = request.headers["x-crm-api-key"];
     const provided = Array.isArray(header) ? header[0] : header;
-    if (!safeEqual(provided, apiKey)) return sendError(response, 401, "UNAUTHORIZED", "Invalid integration API key");
+    const principal = config ? resolvePrincipal(provided, config) : undefined;
+    if (!principal && !safeEqual(provided, apiKey)) return sendError(response, 401, "UNAUTHORIZED", "Invalid integration API key");
+    if (principal) {
+      response.locals.integrationPrincipal = principal;
+      if (request.path !== "/capabilities" && !request.path.startsWith("/v2/")) {
+        const propertyId = request.body?.propertyId ?? request.query.propertyId;
+        const descriptor = Object.values(AGENT_TOOL_DESCRIPTORS).find(t => t.method === request.method && t.path === request.path);
+        const mutation = descriptor?.mutation ?? request.method !== "GET";
+        if (typeof propertyId !== "string" || !principal.propertyIds.includes(propertyId) ||
+            !principal.scopes.includes(mutation ? "agent.write" : "agent.read") ||
+            (descriptor && !principal.scopes.includes(`tool:${descriptor.name}`)))
+          return sendError(response, 403, "SCOPE_DENIED", "Integration scope denied");
+      }
+    }
     next();
   });
+  router.use(principalRateLimit());
   router.use(agentToolTraceMiddleware(db));
+  if (config) router.use(createIntegrationV2Router(db, config));
 
     router.get("/capabilities", (_request, response) => response.json({
     contractVersion: AGENT_API_VERSION,
+    environment: config?.INTEGRATION_ENVIRONMENT ?? "production",
+    operationalAuthority: config?.CRM_PMS_INTEGRATION_ENABLED === "true" ? "guestra_pms" : "legacy_crm",
     supportedChannels: [...AGENT_CHANNELS],
     supportedMessageTypes: [...AGENT_MESSAGE_TYPES],
     supportedAttachmentKinds: [...AGENT_ATTACHMENT_KINDS],
@@ -172,18 +192,30 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
   // separate tool calls.
   router.post("/messages/inbound", async (request, response) => {
     const input = AgentInboundMessageSchema.parse(request.body);
-    const messageKey = `${input.channel}:${input.externalChatId}:${input.externalUserId}:${input.externalMessageId}`;
-    const eventId = input.externalUpdateId ?? messageKey;
+    const messageKey = `property:${input.propertyId}:${input.channel}:${input.externalChatId}:${input.externalUserId}:${input.externalMessageId}`;
+    const eventId = `${input.propertyId}:${input.externalUpdateId ?? messageKey}`;
     const payloadHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
     const inboundMessageHash = hashAgentPayload({ channel: input.channel, externalUserId: input.externalUserId,
       externalChatId: input.externalChatId, externalMessageId: input.externalMessageId,
       propertyId: input.propertyId, text: input.text ?? "", attachments: input.attachments });
     const result = await db.transaction(async (tx) => {
-      const [priorEvent] = await tx.select().from(s.integrationEvents).where(and(
+      let [priorEvent] = await tx.select().from(s.integrationEvents).where(and(
         eq(s.integrationEvents.provider, input.channel), eq(s.integrationEvents.eventType, "agent_inbound_message"),
         eq(s.integrationEvents.externalEventId, eventId),
       )).limit(1);
-      const [priorMessage] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, messageKey)).limit(1);
+      const legacyKey = `${input.channel}:${input.externalChatId}:${input.externalUserId}:${input.externalMessageId}`;
+      const [priorRow] = await tx.select({message:s.messages}).from(s.messages)
+        .innerJoin(s.conversations,eq(s.conversations.id,s.messages.conversationId)).where(and(
+          eq(s.conversations.propertyId,input.propertyId),eq(s.conversations.channel,input.channel),
+          eq(s.conversations.externalChatId,input.externalChatId),
+          or(eq(s.messages.idempotencyKey,messageKey),eq(s.messages.idempotencyKey,legacyKey)))).limit(1);
+      const priorMessage=priorRow?.message;
+      if (!priorEvent && priorMessage?.idempotencyKey===legacyKey) {
+        [priorEvent]=await tx.select().from(s.integrationEvents).where(and(
+          eq(s.integrationEvents.provider,input.channel),eq(s.integrationEvents.eventType,"agent_inbound_message"),
+          eq(s.integrationEvents.externalEventId,input.externalUpdateId??legacyKey),
+          eq(s.integrationEvents.guestId, (await tx.select().from(s.conversations).where(eq(s.conversations.id,priorMessage.conversationId)).limit(1))[0].guestId))).limit(1);
+      }
       if (priorEvent || priorMessage) {
         if (priorEvent && priorEvent.payloadHash !== payloadHash) {
           return { duplicate: true, conflict: true, conversationId: null, guestId: null, messageId: null };
@@ -210,9 +242,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
           return { duplicate: true, conflict: true, conversationId: null, guestId: null, messageId: null };
         }
         const [message] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, messageKey)).limit(1);
-        const [identity] = await tx.select().from(s.guestContactIdentities).where(and(
-          eq(s.guestContactIdentities.channel, input.channel), eq(s.guestContactIdentities.externalUserId, input.externalUserId),
-        )).limit(1);
+        const identity = await findExternalIdentity(tx,input.channel,input.propertyId,input.externalUserId);
         return { duplicate: true, conversationId: message?.conversationId ?? null,
           guestId: existingEvent?.guestId ?? identity?.guestId ?? null,
           messageId: message?.id ?? null, conflict: false };
@@ -289,7 +319,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
     if (result.conflict) return writeError(response, 409, "Update idempotency key was reused for a different payload", { code: "IDEMPOTENCY_CONFLICT" });
     if (!result.conversationId || !result.guestId) return writeError(response, 409,
       "Duplicate update was received before its original transaction completed", { code: "IDEMPOTENCY_CONFLICT", retryable: true });
-    const context = await getAgentContext(db, result.conversationId, result.guestId);
+    const context = await (config?.CRM_PMS_INTEGRATION_ENABLED==="true"?getIntegratedContext:getAgentContext)(db, result.conversationId, result.guestId);
     response.status(result.duplicate ? 200 : 201).json({ duplicate: result.duplicate, context,
       messageId: result.messageId,
       aiReplyAllowed: context?.aiReplyAllowed ?? false, allowedActions: context?.allowedActions ?? [] });
@@ -302,7 +332,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
     const conversation = await findConversation(db, { channel: input.channel, guestId: identity.guestId, propertyId: input.propertyId,
       conversationId: input.conversationId, externalChatId: input.externalChatId });
     if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
-    response.json(await getAgentContext(db, conversation.id, identity.guestId));
+    response.json(await (config?.CRM_PMS_INTEGRATION_ENABLED==="true"?getIntegratedContext:getAgentContext)(db, conversation.id, identity.guestId));
   });
 
   router.get("/property-knowledge", async (request, response) => {
@@ -941,10 +971,9 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
     const verificationHash = hashAgentPayload({ bookingReference: input.bookingReference.toLocaleUpperCase("en-US"),
       phone: normalizePhone(input.phone) });
     const result = await db.transaction(async (tx) => {
-      await tx.execute(sql`SELECT id FROM guest_contact_identities WHERE channel = ${input.channel} AND external_user_id = ${input.externalUserId} FOR UPDATE`);
-      const [identity] = await tx.select().from(s.guestContactIdentities).where(and(
-        eq(s.guestContactIdentities.channel, input.channel), eq(s.guestContactIdentities.externalUserId, input.externalUserId),
-      )).limit(1);
+      const resolvedIdentity = await findExternalIdentity(tx,input.channel,input.propertyId,input.externalUserId);
+      if (!resolvedIdentity) return { linked: false, invalid: true };
+      const [identity] = await tx.select().from(s.guestContactIdentities).where(eq(s.guestContactIdentities.id,resolvedIdentity.id)).for("update");
       const [property] = await tx.select().from(s.properties).where(eq(s.properties.id, input.propertyId)).limit(1);
       if (!identity || !property) return { linked: false, invalid: true };
       await tx.execute(sql`SELECT id FROM guests WHERE id = ${identity.guestId} FOR UPDATE`);
@@ -1292,7 +1321,8 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
       eq(s.conversations.propertyId, query.propertyId), eq(s.conversations.channel, query.channel),
     )).limit(1);
     if (!conversation) return writeError(response, 404, "Conversation not found for this identity", { code: "CONVERSATION_NOT_FOUND" });
-    const conditions = [eq(s.messages.conversationId, conversation.id)];
+    const conditions = [eq(s.messages.conversationId, conversation.id),
+      inArray(s.messages.direction, ["in", "out"]), notInArray(s.messages.senderType, ["internal", "note"])];
     if (query.after) {
       const [cursor] = await db.select({ id: s.messages.id, sentAt: s.messages.sentAt }).from(s.messages)
         .where(and(eq(s.messages.id, query.after), eq(s.messages.conversationId, conversation.id))).limit(1);
@@ -1578,6 +1608,7 @@ export const createAgentRouter = (db: Database, apiKey: string) => {
     if (error instanceof z.ZodError) return sendError(response, 400, "VALIDATION_ERROR", "Invalid Agent API request", false, false);
     if (error instanceof AgentActionError) return sendError(response, error.status, error.code, error.message,
       error.retryable, error.handoffRecommended);
+    if (error instanceof IntegrationError) return sendError(response,error.status,error.code,error.code,error.retryable);
     if (error instanceof AvailabilityConflict || error instanceof ServiceAvailabilityConflict || error instanceof StayConflict) {
       return sendError(response, 409, "NO_AVAILABILITY", error.message, false, true);
     }

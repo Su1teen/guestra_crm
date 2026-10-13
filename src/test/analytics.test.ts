@@ -185,6 +185,13 @@ describe("avgCheck", () => {
 });
 
 describe("avgCloseDays", () => {
+  it("excludes integrated requests without an observed stage timestamp", () => {
+    const unknown = { ...leads[0], stage: "confirmed" as const, stageHistory: [] };
+    expect(avgCloseDays([unknown])).toBeNull();
+    const known = { ...unknown, stageHistory: [{ stage: "confirmed" as const, at: "2026-10-03T12:00:00Z", employeeId: "emp_sultan" }],
+      createdAt: "2026-10-01T12:00:00Z" };
+    expect(avgCloseDays([unknown, known])).toBe(2);
+  });
   it("возвращает средний срок закрытия или null", () => {
     const days = avgCloseDays(leads);
     if (days !== null) {

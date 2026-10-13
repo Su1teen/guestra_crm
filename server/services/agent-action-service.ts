@@ -21,6 +21,8 @@ export const executeConfirmedAgentAction = async <T extends Record<string, unkno
   propertyId: string; customerId: string; conversationId: string; proposalMessageId: string;
   confirmationMessageId: string; actionType: AgentConfirmationAction; payload: Record<string, unknown>;
   channel?: string;
+  /** Supplied only by the authoritative integration facade after scoped projection reads. */
+  allowedActions?: readonly AgentConfirmationAction[];
 }, operation: (tx: AgentTx) => Promise<T>) => db.transaction(async (tx) => {
   await tx.execute(sql`SELECT id FROM conversations WHERE id = ${input.conversationId} FOR UPDATE`);
   const [conversation] = await tx.select().from(s.conversations).where(and(
@@ -63,7 +65,7 @@ export const executeConfirmedAgentAction = async <T extends Record<string, unkno
   // must still return the result already committed before that handoff.
   if (conversation.automationMode !== "ai") throw new AgentActionError("CONVERSATION_HUMAN_OWNED", "Conversation is owned by a human");
   const context = await getAgentContext(tx, conversation.id, input.customerId);
-  if (!context || !context.allowedActions.includes(input.actionType)) {
+  if (!context || !(input.allowedActions ?? context.allowedActions as readonly AgentConfirmationAction[]).includes(input.actionType)) {
     throw new AgentActionError("ACTION_NOT_ALLOWED", "Это действие недоступно для текущего состояния гостя", 409, false, true);
   }
   if (!proposed.expiresAt || Date.parse(proposed.expiresAt) <= Date.now() ||

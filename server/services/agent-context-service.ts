@@ -115,7 +115,8 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
     // Keep enough recent history to find a valid 30-minute action proposal even
     // when the guest sends several messages before confirming it. The public
     // context stays compact below.
-    db.select().from(s.messages).where(eq(s.messages.conversationId, conversation.id))
+    db.select().from(s.messages).where(and(eq(s.messages.conversationId, conversation.id),
+      inArray(s.messages.direction, ["in", "out"]), notInArray(s.messages.senderType, ["internal", "note"])))
       .orderBy(desc(s.messages.sentAt)).limit(64),
     db.select().from(s.tasks).where(and(eq(s.tasks.propertyId, conversation.propertyId),
       inArray(s.tasks.status, ["todo", "in_progress", "overdue"]),
@@ -252,7 +253,8 @@ export const getAgentContext = async (db: Pick<Database, "select">, conversation
       id: conversation.id, channel: conversation.channel, automationMode,
       assigneeId: conversation.assigneeId,
       handoffReasonCode: automationMode === "needs_human" ? conversation.handoffReasonCode : null,
-      handoffNote: automationMode === "needs_human" ? conversation.handoffNote : null,
+      // Staff handoff notes never become LLM input.
+      handoffNote: null,
       requestedAction: automationMode === "needs_human" ? conversation.requestedAction : null,
       summary: conversation.summary, classification: conversationClassification,
       memory: conversationMemory,
