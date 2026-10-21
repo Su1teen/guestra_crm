@@ -26,7 +26,7 @@ export function identityFromEnv(system, env = process.env) {
 
 /** One dedicated connection, a session lock, and one transaction per migration. */
 export async function deploy(query, { identity, migrations, foreignTables, requiredTables,
-  baselineApproved = false, integrationApproved = false, attestationTable, afterMigrations = async () => {} }) {
+  baselineApproved = false, integrationApproved = false, attestationTable, beforeOwnershipCheck = async () => {}, afterMigrations = async () => {} }) {
   const lock = 'guestra:deployment:' + identity.system;
   await query("SET lock_timeout='60s'");
   await query("SET statement_timeout='5min'");
@@ -34,6 +34,7 @@ export async function deploy(query, { identity, migrations, foreignTables, requi
   try {
     const [owner] = await query("SELECT pg_has_role(current_user,datdba,'USAGE') AS owns_database FROM pg_database WHERE datname=current_database()");
     if (!owner?.owns_database) throw new Error('DATABASE_OWNER_ROLE_REQUIRED');
+    await beforeOwnershipCheck(query);
     const tables = await query("SELECT table_name FROM information_schema.tables WHERE table_schema='public'");
     const names = new Set(tables.map(t => t.table_name));
     if (foreignTables.some(t => names.has(t)) || requiredTables.some(t => !names.has(t)))

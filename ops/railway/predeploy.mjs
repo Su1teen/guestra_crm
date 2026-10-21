@@ -2,6 +2,7 @@ import pg from 'pg';
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { quarantineLegacyStudio } from './legacy-studio-quarantine.mjs';
 import { deploy, identityFromEnv, attestIntegration, loadMigrationPolicy } from './deploy-engine.mjs';
 if (process.env.GUESTRA_DEPLOY_AUTOMATION_ENABLED !== 'true') {
   console.log('Deployment automation disabled; apply the reviewed Railway bootstrap configuration to enable it.');
@@ -39,6 +40,7 @@ if (process.env.GUESTRA_DEPLOY_AUTOMATION_ENABLED !== 'true') {
     }
     await deploy(query, { identity, migrations, foreignTables: ['room_types', 'agent_runs', 'workflow_entity'],
       attestationTable: 'guestra_integration_deployment',
+      beforeOwnershipCheck: quarantineLegacyStudio,
       requiredTables: ['properties', 'organizations', 'app_users'],
       baselineApproved: process.env.GUESTRA_MIGRATION_BASELINE_APPROVED === 'true',
       integrationApproved: process.env.GUESTRA_INTEGRATION_MIGRATIONS_APPROVED === 'true',
