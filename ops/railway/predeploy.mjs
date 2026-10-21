@@ -21,7 +21,7 @@ if (process.env.GUESTRA_DEPLOY_AUTOMATION_ENABLED !== 'true') {
     const migrations = journal.entries.map(entry => {
       const old = installed.find(row => Number(row.created_at) === entry.when);
       return { name: 'core/' + entry.tag + '.sql', file: resolve('drizzle', entry.tag + '.sql'), installed: Boolean(old),
-        legacyDigest: old?.hash, category: category('core/' + entry.tag + '.sql'),
+        legacyDigest: old?.hash, equivalentDigests: category.equivalentDigests['core/' + entry.tag + '.sql'], category: category('core/' + entry.tag + '.sql'),
         record: async (query,checksum)=>{await query('INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES($1,$2)',[checksum,entry.when]);} };
     });
     // Historical business backfills need review when unexpectedly absent on an existing deployment.
