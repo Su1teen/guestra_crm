@@ -4,3 +4,7 @@ dist-server
 .git
 .env
 *.log
+
+# Never send operator secrets to the Docker build context
+ops/railway/generated/
+ops/railway/*.private.*

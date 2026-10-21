@@ -35,9 +35,11 @@ export class PmsClient {
       if(response.status===404) throw new IntegrationError("PMS_REFERENCE_NOT_FOUND",404);
       let code="PMS_OPERATION_REJECTED";
       try {const payload=await response.json();const text=JSON.stringify(payload);
-        for(const known of ["PRICE_CHANGED","QUOTE_EXPIRED","IDEMPOTENCY_CONFLICT","IDENTITY_CONFLICT","REVISION_CONFLICT","SCOPE_DENIED"])
+        for(const known of ["PRICE_CHANGED","QUOTE_EXPIRED","IDEMPOTENCY_CONFLICT","IDENTITY_CONFLICT","REVISION_CONFLICT","SCOPE_DENIED",
+          "INTEGRATION_DISABLED","INTEGRATION_DATABASE_NOT_ATTESTED","V2_REQUIRES_SCOPED_PRINCIPAL","PROPERTY_SCOPE_REQUIRED","ENVIRONMENT_NOT_CONFIGURED","BUSINESS_WRITES_DISABLED","TRUSTED_CRM_COMMAND_REQUIRED"])
           if(text.includes(known))code=known;
       }catch { /* HTTP status remains authoritative. */ }
+      if(code==="PMS_OPERATION_REJECTED"&&response.status===401)code="AUTH_REQUIRED";
       throw new IntegrationError(code,response.status>=500||response.status===429?503:409,response.status>=500||response.status===429);
     }
     return await response.json() as Record<string,unknown>;

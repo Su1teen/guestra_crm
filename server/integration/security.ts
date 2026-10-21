@@ -26,6 +26,8 @@ export function denyMockSession(request: Request, response: Response, next: Next
 export function requireScope(scope:string) {
   return (request:Request,response:Response,next:NextFunction)=>{
     const p=response.locals.integrationPrincipal as IntegrationPrincipal|undefined;
+    if ((scope.endsWith(".write") || ["inbox.handoff","events.consume","integration.reconcile"].includes(scope)) && response.locals.businessWritesEnabled === false)
+      return response.status(403).json({code:"BUSINESS_WRITES_DISABLED"});
     const property=request.body?.propertyId ?? request.query.propertyId;
     if (!p || !p.scopes.includes(scope) || typeof property!=="string" || !p.propertyIds.includes(property))
       return response.status(403).json({code:"SCOPE_DENIED",error:"Integration scope denied"});
