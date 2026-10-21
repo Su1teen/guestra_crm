@@ -4,6 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "integrations:generate-config": "node ops/railway/generate-config.mjs",
+    "integrations:predeploy": "node ops/railway/predeploy.mjs",
+    "integrations:bootstrap": "node dist-server/server/integration/bootstrap-registry.js",
+    "test:deployment": "node --test ops/railway/deploy-engine.test.mjs ops/railway/generate-config.test.mjs",
     "dev": "vite",
     "dev:server": "tsx watch server/index.ts",
     "build": "vite build && tsc -p tsconfig.server.json",
@@ -17,7 +21,7 @@
     "db:migrate": "node dist-server/server/db/migrate.js",
     "db:bootstrap": "node dist-server/server/db/bootstrap.js",
     "start": "node dist-server/server/index.js",
-    "start:production": "npm run db:migrate && npm run db:bootstrap && npm start"
+    "start:production": "npm run integrations:predeploy && npm start"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

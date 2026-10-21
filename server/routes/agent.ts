@@ -1,7 +1,10 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { AppConfig } from "../config.js";
-import { resolvePrincipal,principalRateLimit } from "../integration/security.js";
+import { principalRateLimit } from "../integration/security.js";
+import { resolveRegisteredPrincipal } from "../integration/registry.js";
+import { integrationReadiness } from "../integration/readiness.js";
+import { requireScope } from "../integration/security.js";
 import { createIntegrationV2Router } from "../integration/router.js";
 import { IntegrationError } from "../integration/contract.js";
 import {getIntegratedContext} from "../integration/context.js";
@@ -140,17 +143,19 @@ const previewAgentStayExtension = async (tx: ExtensionTx, input: {
 };
 export const createAgentRouter = (db: Database, apiKey: string, config?: AppConfig) => {
   const router = Router();
-  router.use((request, response, next) => {
+  router.use(async (request, response, next) => {
     const header = request.headers["x-crm-api-key"];
     const provided = Array.isArray(header) ? header[0] : header;
-    const principal = config ? resolvePrincipal(provided, config) : undefined;
+    const principal = config ? await resolveRegisteredPrincipal(db, provided, config) : undefined;
     if (!principal && !safeEqual(provided, apiKey)) return sendError(response, 401, "UNAUTHORIZED", "Invalid integration API key");
     if (principal) {
+      response.locals.businessWritesEnabled = (config?.INTEGRATION_ENVIRONMENT ?? "production") !== "production" || config?.GUESTRA_BUSINESS_WRITES_ENABLED === "true";
       response.locals.integrationPrincipal = principal;
-      if (request.path !== "/capabilities" && !request.path.startsWith("/v2/")) {
+      if (request.path !== "/capabilities" && request.path !== "/readiness" && !request.path.startsWith("/v2/")) {
         const propertyId = request.body?.propertyId ?? request.query.propertyId;
         const descriptor = Object.values(AGENT_TOOL_DESCRIPTORS).find(t => t.method === request.method && t.path === request.path);
         const mutation = descriptor?.mutation ?? request.method !== "GET";
+        if (mutation && response.locals.businessWritesEnabled === false) return sendError(response,403,"BUSINESS_WRITES_DISABLED","Integration business writes are disabled");
         if (typeof propertyId !== "string" || !principal.propertyIds.includes(propertyId) ||
             !principal.scopes.includes(mutation ? "agent.write" : "agent.read") ||
             (descriptor && !principal.scopes.includes(`tool:${descriptor.name}`)))
@@ -160,6 +165,10 @@ export const createAgentRouter = (db: Database, apiKey: string, config?: AppConf
     next();
   });
   router.use(principalRateLimit());
+  router.get("/readiness", requireScope("integration.read"), async (request, response) => {
+    if (!config) return response.status(503).json({statuses:["DATABASE_NOT_ATTESTED"],ready:false});
+    response.json(await integrationReadiness(db, config, String(request.query.propertyId)));
+  });
   router.use(agentToolTraceMiddleware(db));
   if (config) router.use(createIntegrationV2Router(db, config));
 

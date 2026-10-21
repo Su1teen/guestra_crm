@@ -13,5 +13,7 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/dist-server ./dist-server
 COPY --from=build /app/drizzle ./drizzle
+COPY --from=build /app/ops/railway ./ops/railway
+COPY --from=build /app/integration-migrations ./integration-migrations
 EXPOSE 3000
 CMD ["npm", "run", "start:production"]

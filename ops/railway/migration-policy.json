@@ -1,0 +1,5 @@
+{
+  "safe": ["bootstrap/0001_principal_registry.sql"],
+  "integration": ["integration/0001_cross_database_v2.sql"],
+  "manual": []
+}
