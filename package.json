@@ -7,7 +7,7 @@
     "integrations:generate-config": "node ops/railway/generate-config.mjs",
     "integrations:predeploy": "node ops/railway/predeploy.mjs",
     "integrations:bootstrap": "node dist-server/server/integration/bootstrap-registry.js",
-    "test:deployment": "node --test ops/railway/deploy-engine.test.mjs ops/railway/generate-config.test.mjs",
+    "test:deployment": "node --test ops/railway/deploy-engine.test.mjs ops/railway/generate-config.test.mjs ops/railway/legacy-studio-quarantine.test.mjs",
     "dev": "vite",
     "dev:server": "tsx watch server/index.ts",
     "build": "vite build && tsc -p tsconfig.server.json",
