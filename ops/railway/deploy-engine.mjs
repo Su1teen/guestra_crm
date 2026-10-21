@@ -13,7 +13,10 @@ export async function loadMigrationPolicy() {
     }
   }
   // New files require an explicit reviewed classification in the same release.
-  return name=>categories.get(name)??'manual';
+  const categoryOf=name=>categories.get(name)??'manual';
+  // Reviewed digests of earlier file revisions that only differ in statement-breakpoint markers (same SQL).
+  categoryOf.equivalentDigests=policy.equivalentDigests??{};
+  return categoryOf;
 }
 export function identityFromEnv(system, env = process.env) {
   const environment = env.INTEGRATION_ENVIRONMENT ?? env.STUDIO_ENVIRONMENT ?? 'production';
@@ -73,7 +76,7 @@ export async function deploy(query, { identity, migrations, foreignTables, requi
       const body = await readFile(migration.file, 'utf8');
       const checksum = digest(body);
       if (known.has(migration.name) && known.get(migration.name) !== checksum) throw new Error('MIGRATION_CHECKSUM_DRIFT:' + migration.name);
-      if (migration.legacyDigest && migration.legacyDigest !== checksum) throw new Error('LEGACY_MIGRATION_CHECKSUM_DRIFT:' + migration.name);
+      if (migration.legacyDigest && migration.legacyDigest !== checksum && !(migration.equivalentDigests ?? []).includes(migration.legacyDigest)) throw new Error('LEGACY_MIGRATION_CHECKSUM_DRIFT:' + migration.name);
       if (!known.has(migration.name) && migration.installed && !migration.legacyDigest && !baselineApproved)
         throw new Error('MIGRATION_BASELINE_APPROVAL_REQUIRED:' + migration.name);
       if (!known.has(migration.name) && !migration.installed && migration.category === 'manual')
