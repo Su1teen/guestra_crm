@@ -259,6 +259,7 @@ export const ReservationDrawer = ({ reservationId, onClose }: { reservationId: s
           <SheetTitle className="pr-6"><button type="button" className="text-left hover:text-brand-700 hover:underline" onClick={() => setRecognitionOpen(true)}>{primaryName ?? "Гость / контакт"}</button></SheetTitle>
           <SheetDescription>{reservation.code} · {propertyById(reservation.propertyId)?.name ?? reservation.propertyId}
             {customer && customer.fullName !== primaryName ? ` · оформил: ${customer.fullName}` : ""}</SheetDescription>
+          {dataMode === "database" && <div><Button size="sm" variant="outline" onClick={() => window.open(`/api/crm/reservations/${reservation.id}/confirmation`, "_blank", "noopener,noreferrer")}><Download className="mr-1.5 h-4 w-4" />Подтверждение брони</Button></div>}
         </SheetHeader>
         {deskAlerts.length > 0 && <div className="rounded-xl border border-amber-300 bg-amber-50 p-3"><p className="text-xs font-semibold uppercase tracking-wide text-amber-900">Важные сообщения для front desk</p>{deskAlerts.map((note) => <p key={note.id} className="mt-1 text-sm font-semibold text-amber-950">{note.text}</p>)}</div>}
         <ReservationReminders reservationId={reservation.id} status={reservation.status} />
