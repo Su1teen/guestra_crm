@@ -13,4 +13,14 @@ describe("document renderer", () => {
     expect(folio).toContain("Предварительное фолио");
     expect(folio).toContain("Остаток");
   });
+
+  it("renders a booking confirmation with stay, guests and terms", () => {
+    const confirmation = renderDocument({ ...document, kind: "RESERVATION_CONFIRMATION", code: "HTL-1", reservationCode: "R-7",
+      roomType: "Skyhouse", checkIn: "2027-03-01T14:00:00Z", checkOut: "2027-03-03T12:00:00Z", nights: 2, guests: 3,
+      terms: "Бесплатная отмена за 24 часа", paid: 5000, balance: 15000 });
+    expect(confirmation).toContain("Подтверждение бронирования");
+    expect(confirmation).toContain("Skyhouse");
+    expect(confirmation).toContain("3 гостей");
+    expect(confirmation).toContain("Бесплатная отмена за 24 часа");
+  });
 });

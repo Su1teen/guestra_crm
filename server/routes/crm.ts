@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
-import { and, eq, gt, inArray, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, lt, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Database } from "../db/client.js";
 import type { AppConfig } from "../config.js";
@@ -1094,6 +1094,31 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
       currency: folio.currency, subtotal: bill.subtotal, discount: bill.discountAmount, total: bill.totalAmount, paid: bill.paidAmount, balance: bill.balance,
       finalVersion: finalDocument?.version, finalisedAt: finalDocument?.createdAt,
       payments: (snapshot?.payments ?? payments).filter((payment) => payment.status === "paid" || payment.status === "completed").map((payment) => ({ date: payment.date, amount: payment.amount, method: payment.method, reference: payment.reference })) }));
+  });
+
+  // Guest-facing booking confirmation for a CRM reservation; amounts come from its folio (PMS-projected or CRM-owned).
+  router.get(["/reservations/:id/confirmation", "/reservations/:id/confirmation/print"], async (request, response) => {
+    const [reservation] = await db.select().from(s.reservations).where(eq(s.reservations.id, request.params.id as string)).limit(1);
+    if (!reservation) return response.status(404).send("Reservation not found");
+    const [guest, property, folio, unitType] = await Promise.all([
+      db.select().from(s.guests).where(eq(s.guests.id, reservation.bookerCustomerId)).limit(1).then((rows) => rows[0]),
+      db.select().from(s.properties).where(eq(s.properties.id, reservation.propertyId)).limit(1).then((rows) => rows[0]),
+      db.select().from(s.folios).where(eq(s.folios.reservationId, reservation.id)).limit(1).then((rows) => rows[0]),
+      reservation.unitTypeId ? db.select().from(s.unitTypes).where(eq(s.unitTypes.id, reservation.unitTypeId)).limit(1).then((rows) => rows[0]) : Promise.resolve(undefined),
+    ]);
+    const [organization] = property ? await db.select().from(s.organizations).where(eq(s.organizations.id, property.organizationId)).limit(1) : [];
+    const lines = folio ? (await db.select().from(s.folioLines).where(eq(s.folioLines.folioId, folio.id))).filter((line) => line.status !== "cancelled") : [];
+    const [offer] = reservation.requestId ? await db.select().from(s.offers).where(eq(s.offers.leadId, reservation.requestId)).orderBy(desc(s.offers.createdAt)).limit(1) : [];
+    const nights = Math.max(1, Math.round((Date.parse(reservation.departureAt) - Date.parse(reservation.arrivalAt)) / 86_400_000));
+    const subtotal = folio?.subtotal ?? lines.reduce((sum, line) => sum + line.lineTotal, 0);
+    response.type("html").send(renderDocument({ kind: "RESERVATION_CONFIRMATION", code: reservation.externalConfirmationNumber ?? reservation.code,
+      issueDate: reservation.confirmedAt ?? reservation.createdAt, propertyName: property?.name ?? "", city: property?.city, legalName: organization?.legalName,
+      guestName: guest?.fullName ?? "", guestContact: guest?.phone ?? guest?.email, reservationCode: reservation.code,
+      roomType: reservation.roomTypeSnapshot ?? unitType?.name, checkIn: reservation.arrivalAt, checkOut: reservation.departureAt, nights,
+      guests: reservation.adults + reservation.children,
+      lines: lines.map((line): DocumentLine => ({ date: line.createdAt, description: line.description, quantity: line.quantity, unit: line.unit, rate: line.unitPrice, amount: line.lineTotal })),
+      currency: folio?.currency ?? reservation.currency, subtotal, discount: folio?.discountAmount, total: folio?.totalAmount ?? subtotal,
+      paid: folio?.paidAmount ?? 0, balance: folio?.balance ?? subtotal, terms: offer?.terms ?? null }));
   });
 
   router.get(["/offers/:id/preview", "/offers/:id/print"], async (request, response) => {
