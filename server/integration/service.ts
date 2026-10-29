@@ -6,6 +6,7 @@ import * as i from "./schema.js";
 import {hashAgentPayload} from "../services/agent-action-service.js";
 import {IntegrationError,IntegrationEventSchema,type IntegrationEvent} from "./contract.js";
 import {PmsClient} from "./pms-client.js";
+import {mirrorPmsEntity,staffSyncEnabled} from "./staff-sync.js";
 type Tx=Pick<Database,"select"|"insert"|"update"|"execute">;
 export async function verifiedMapping(tx:Tx,input:typeof i.integrationMappings.$inferInsert) {
   const where=and(eq(i.integrationMappings.propertyId,input.propertyId),eq(i.integrationMappings.sourceSystem,input.sourceSystem),
@@ -145,6 +146,11 @@ export async function acceptEvent(db:Database,pms:PmsClient,propertyId:string,in
 export async function consumeEvent(db:Database,pms:PmsClient,propertyId:string,event:IntegrationEvent) {
   const [receipt]=await db.select().from(i.integrationInbox).where(and(eq(i.integrationInbox.propertyId,propertyId),eq(i.integrationInbox.eventId,event.eventId))).limit(1);
   if(receipt?.status==="applied")return {duplicate:true};
+  // Staff mirror first: it also creates the customer mapping a PMS-native stay lacks.
+  if(staffSyncEnabled(pms.config)) {
+    try {await mirrorPmsEntity(db,pms,propertyId,event.entityType,event.entityId);}
+    catch(error) {console.warn("Staff sync deferred",{propertyId,entityType:event.entityType,code:error instanceof IntegrationError?error.code:(error as Error).message});}
+  }
   let customerId=event.integrationContext?.customerId;
   if(!customerId) {
     const [mapping]=await db.select().from(i.integrationMappings).where(and(eq(i.integrationMappings.propertyId,propertyId),
