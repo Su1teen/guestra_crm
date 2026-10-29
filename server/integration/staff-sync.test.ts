@@ -98,7 +98,8 @@ describe("PMS -> CRM mirror", () => {
     const units = await db.select().from(s.reservationUnits).where(eq(s.reservationUnits.reservationId, reservation.id));
     expect(units).toHaveLength(1);
     const [folio] = await db.select().from(s.folios).where(eq(s.folios.reservationId, reservation.id));
-    expect(folio).toMatchObject({ totalAmount: 40000, paidAmount: 20000, balance: 20000 });
+    // Accommodation is one line with the PMS total (night-audit room charges are not doubled) plus the spa charge.
+    expect(folio).toMatchObject({ totalAmount: 70000, paidAmount: 20000, balance: 50000 });
     expect(calls.find((c) => c.path === "v2/sync/links")?.body).toMatchObject({ pmsGuestId: "40000000-0000-4000-8000-0000000000b1", customerId: customer.id, crmReservationId: reservation.id });
   });
 

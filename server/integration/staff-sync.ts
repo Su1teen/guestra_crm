@@ -216,11 +216,25 @@ async function mirrorFolio(tx: Tx, propertyId: string, reservationId: string, cu
     reservationId, stayId: stay?.id ?? null, guestId: customerId, propertyId, currency: snap.currencyCode ?? "KZT" }).returning();
   const charges: Snapshot[] = snap.folio.charges ?? [];
   const roomCharges = new Set(charges.filter((c) => c.type === "room").map((c) => c.id));
+  if (origin === "pms") {
+    // CRM bills a stay as one accommodation line (the accepted PMS total); PMS posts it night by night at audit.
+    const cancelled = ["cancelled", "no_show"].includes(String(snap.status));
+    const values = { category: "accommodation", description: `Проживание · ${snap.roomType?.name ?? "номер"} · ${snap.nights} ноч.`.slice(0, 255),
+      quantity: 1, unit: "за проживание", unitPrice: money(snap.totalAmount), lineTotal: cancelled ? 0 : money(snap.totalAmount),
+      status: cancelled ? "cancelled" : "active", metadata: { source: "guestra_pms", pmsReservationId: snap.id }, updatedAt: now() };
+    const known = await syncRow(tx, propertyId, "folio_line", { remoteId: "stay:" + snap.id });
+    if (known) await tx.update(s.folioLines).set(values).where(and(eq(s.folioLines.id, known.localId), eq(s.folioLines.folioId, folio.id)));
+    else {
+      const lineId = id("fline");
+      await tx.insert(s.folioLines).values({ id: lineId, folioId: folio.id, ...values });
+      await remember(tx, propertyId, "folio_line", lineId, "stay:" + snap.id, "pms");
+    }
+  }
   for (const charge of charges) {
     const key = String(charge.sourceKey ?? "");
     if (key.startsWith("crm:")) continue;
-    // CRM already bills accommodation for its own stays; PMS room nights would double it.
-    if (origin === "crm" && (charge.type === "room" || roomCharges.has(charge.parentChargeId) || key.startsWith("deposit:"))) continue;
+    // Accommodation is the single line above (or CRM's own); PMS room nights, their taxes and deposit moves would double it.
+    if (charge.type === "room" || roomCharges.has(charge.parentChargeId) || key.startsWith("deposit:")) continue;
     const values = { category: CHARGE_CATEGORY[charge.type] ?? "other", description: String(charge.description).slice(0, 255),
       quantity: 1, unit: null, unitPrice: money(charge.amount), lineTotal: money(charge.amount), status: "active",
       metadata: { source: "guestra_pms", pmsChargeId: charge.id, chargeType: charge.type }, updatedAt: now() };
