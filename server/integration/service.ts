@@ -148,7 +148,9 @@ export async function consumeEvent(db:Database,pms:PmsClient,propertyId:string,e
   if(receipt?.status==="applied")return {duplicate:true};
   // Staff mirror first: it also creates the customer mapping a PMS-native stay lacks.
   let staffSyncFailed=false;
-  if(staffSyncEnabled(pms.config)) {
+  // Only activity from the switch-on instant is mirrored; older PMS history stays where it is.
+  const since=Date.parse(pms.config.GUESTRA_STAFF_SYNC_SINCE??"");
+  if(staffSyncEnabled(pms.config)&&Number.isFinite(since)&&Date.parse(event.occurredAt)>=since) {
     try {await mirrorPmsEntity(db,pms,propertyId,event.entityType,event.entityId);}
     catch(error) {
       staffSyncFailed=true;
