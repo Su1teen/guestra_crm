@@ -114,6 +114,18 @@ describe("PMS -> CRM mirror", () => {
   });
 });
 
+describe("PMS group bookings", () => {
+  it("mirrors every room of one confirmation number as its own CRM stay", async () => {
+    resolveReply = { kind: "reservation", reservation: { ...pmsStay(), id: "30000000-0000-4000-8000-0000000000d1", confirmationNumber: "HAIP-GROUP", folio: null } };
+    const first = await mirrorPmsEntity(db, pms, "les_borovoe", "reservation", "30000000-0000-4000-8000-0000000000d1") as any;
+    resolveReply = { kind: "reservation", reservation: { ...pmsStay(), id: "30000000-0000-4000-8000-0000000000d2", confirmationNumber: "HAIP-GROUP", folio: null } };
+    const second = await mirrorPmsEntity(db, pms, "les_borovoe", "reservation", "30000000-0000-4000-8000-0000000000d2") as any;
+    const codes = (await db.select().from(s.reservations).where(eq(s.reservations.propertyId, "les_borovoe")))
+      .filter((r) => [first.reservationId, second.reservationId].includes(r.id)).map((r) => r.code).sort();
+    expect(codes).toEqual(["HAIP-GROUP", "HAIP-GROUP/2"]);
+  });
+});
+
 describe("CRM -> PMS push", () => {
   it("sends a CRM stay once, without accommodation as a charge, and never mirrors its own rows back", async () => {
     const [property] = await db.select().from(s.properties).where(eq(s.properties.id, "les_borovoe"));

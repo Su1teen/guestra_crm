@@ -156,11 +156,16 @@ export async function mirrorReservation(db: Database, pms: PmsClient, propertyId
     if (!reservationId) {
       isNew = true;
       reservationId = id("reservation");
-      const [reservation] = await tx.insert(s.reservations).values({ id: reservationId, code: String(snap.confirmationNumber).slice(0, 60),
+      // A PMS group booking shares one confirmation number across its rooms; CRM codes are unique per stay.
+      const confirmation = String(snap.confirmationNumber).slice(0, 60);
+      const siblings = await tx.select({ id: s.reservations.id }).from(s.reservations)
+        .where(and(eq(s.reservations.propertyId, propertyId), sql`(${s.reservations.code} = ${confirmation} or ${s.reservations.code} like ${confirmation + "/%"})`));
+      const code = siblings.length ? `${confirmation}/${siblings.length + 1}` : confirmation;
+      const [reservation] = await tx.insert(s.reservations).values({ id: reservationId, code,
         propertyId, bookerCustomerId: customerId, unitTypeId: category?.id ?? null,
         roomTypeSnapshot: category?.name ?? snap.roomType?.name ?? null, source: "pms", status: status.reservation,
         arrivalAt, departureAt, adults: snap.adults ?? 1, children: snap.children ?? 0, currency: snap.currencyCode ?? "KZT",
-        specialRequest: snap.specialRequests ?? null, externalReservationId: snap.id, externalConfirmationNumber: snap.confirmationNumber,
+        specialRequest: snap.specialRequests ?? null, externalReservationId: snap.id, externalConfirmationNumber: siblings.length ? null : confirmation,
         confirmedAt: status.reservation === "confirmed" ? at : null, cancelledAt: status.reservation === "cancelled" ? at : null }).returning();
       await tx.insert(s.reservationGuests).values({ id: id("reservation_guest"), reservationId, customerId, fullName: null,
         role: "primary", isPrimary: true, isBooker: true, ageGroup: "adult" });
@@ -172,10 +177,10 @@ export async function mirrorReservation(db: Database, pms: PmsClient, propertyId
       await tx.insert(s.guestStays).values({ id: id("stay"), guestId: customerId, propertyId, reservationId,
         reservationUnitId: unit?.id ?? null, roomId: unit?.roomId ?? null, roomType: category?.name ?? snap.roomType?.name ?? "—",
         checkIn: arrivalAt, checkOut: departureAt, nights, adults: snap.adults ?? 1, children: snap.children ?? 0,
-        amount: money(snap.totalAmount), bookingReference: String(snap.confirmationNumber), status: status.reservation,
+        amount: money(snap.totalAmount), bookingReference: code, status: status.reservation,
         operationalStatus: status.stay, actualCheckIn: snap.checkedInAt ?? null, actualCheckOut: snap.checkedOutAt ?? null }).onConflictDoNothing();
       await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: customerId, propertyId, reservationId, type: "booking",
-        title: "Бронирование из PMS", description: String(snap.confirmationNumber), amount: money(snap.totalAmount), occurredAt: at });
+        title: "Бронирование из PMS", description: code, amount: money(snap.totalAmount), occurredAt: at });
     } else {
       // A stay created in CRM keeps its CRM dates and commercial data; operational state follows PMS.
       const patch = origin === "pms"
