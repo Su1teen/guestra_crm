@@ -212,7 +212,9 @@ export async function mirrorReservation(db: Database, pms: PmsClient, propertyId
 async function mirrorFolio(tx: Tx, propertyId: string, reservationId: string, customerId: string, origin: "crm" | "pms", snap: Snapshot) {
   const [stay] = await tx.select({ id: s.guestStays.id }).from(s.guestStays).where(eq(s.guestStays.reservationId, reservationId)).limit(1);
   let [folio] = await tx.select().from(s.folios).where(eq(s.folios.reservationId, reservationId)).limit(1);
-  if (!folio) [folio] = await tx.insert(s.folios).values({ id: id("folio"), code: `F-${String(snap.confirmationNumber).slice(0, 60)}`,
+  // Folio codes follow the per-stay CRM code (group bookings share a PMS confirmation number).
+  const [own] = await tx.select({ code: s.reservations.code }).from(s.reservations).where(eq(s.reservations.id, reservationId)).limit(1);
+  if (!folio) [folio] = await tx.insert(s.folios).values({ id: id("folio"), code: `F-${own?.code ?? String(snap.confirmationNumber).slice(0, 60)}`,
     reservationId, stayId: stay?.id ?? null, guestId: customerId, propertyId, currency: snap.currencyCode ?? "KZT" }).returning();
   const charges: Snapshot[] = snap.folio.charges ?? [];
   const roomCharges = new Set(charges.filter((c) => c.type === "room").map((c) => c.id));

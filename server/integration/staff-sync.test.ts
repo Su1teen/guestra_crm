@@ -117,13 +117,15 @@ describe("PMS -> CRM mirror", () => {
 
 describe("PMS group bookings", () => {
   it("mirrors every room of one confirmation number as its own CRM stay", async () => {
-    resolveReply = { kind: "reservation", reservation: { ...pmsStay(), id: "30000000-0000-4000-8000-0000000000d1", confirmationNumber: "HAIP-GROUP", folio: null } };
+    resolveReply = { kind: "reservation", reservation: { ...pmsStay(), id: "30000000-0000-4000-8000-0000000000d1", confirmationNumber: "HAIP-GROUP", folio: { ...pmsStay().folio, charges: [], payments: [] } } };
     const first = await mirrorPmsEntity(db, pms, "les_borovoe", "reservation", "30000000-0000-4000-8000-0000000000d1") as any;
-    resolveReply = { kind: "reservation", reservation: { ...pmsStay(), id: "30000000-0000-4000-8000-0000000000d2", confirmationNumber: "HAIP-GROUP", folio: null } };
+    resolveReply = { kind: "reservation", reservation: { ...pmsStay(), id: "30000000-0000-4000-8000-0000000000d2", confirmationNumber: "HAIP-GROUP", folio: { ...pmsStay().folio, charges: [], payments: [] } } };
     const second = await mirrorPmsEntity(db, pms, "les_borovoe", "reservation", "30000000-0000-4000-8000-0000000000d2") as any;
     const codes = (await db.select().from(s.reservations).where(eq(s.reservations.propertyId, "les_borovoe")))
       .filter((r) => [first.reservationId, second.reservationId].includes(r.id)).map((r) => r.code).sort();
     expect(codes).toEqual(["HAIP-GROUP", "HAIP-GROUP/2"]);
+    const folioCodes = (await db.select().from(s.folios)).filter((f) => [first.reservationId, second.reservationId].includes(f.reservationId)).map((f) => f.code).sort();
+    expect(folioCodes).toEqual(["F-HAIP-GROUP", "F-HAIP-GROUP/2"]);
   });
 });
 
