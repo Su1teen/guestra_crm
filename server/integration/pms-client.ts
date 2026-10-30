@@ -5,7 +5,7 @@ import {createHmac} from "node:crypto";
 const mappings=z.array(z.object({crmPropertyId:z.string().min(1),crmTenantId:z.string().min(1),
   pmsPropertyId:z.string().uuid(),pmsTenantId:z.string().min(1),environment:z.enum(["test","sandbox","production"])}));
 export class PmsClient {
-  constructor(private readonly config:AppConfig) {}
+  constructor(readonly config:AppConfig) {}
   mapping(propertyId:string) {
     const mapping=mappings.parse(JSON.parse(this.config.PMS_PROPERTY_MAPPINGS ?? "[]")).find(m=>m.crmPropertyId===propertyId);
     if(!mapping || mapping.environment!==(this.config.INTEGRATION_ENVIRONMENT ?? "production"))

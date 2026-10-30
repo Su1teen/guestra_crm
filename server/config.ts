@@ -9,6 +9,9 @@ const productionSchema = z.object({
   GUESTRA_REGISTRY_ENABLED: z.enum(["true", "false"]).optional(),
   GUESTRA_PROPERTY_MAPPING_CONFIRMED: z.enum(["true", "false"]).optional(),
   GUESTRA_SANDBOX_SETUP_ENABLED: z.enum(["true","false"]).optional(),
+  GUESTRA_STAFF_SYNC_ENABLED: z.enum(["true", "false"]).optional(),
+  /** Only CRM records created at or after this instant are pushed to PMS. */
+  GUESTRA_STAFF_SYNC_SINCE: z.string().datetime().optional(),
   INTEGRATION_ENVIRONMENT: z.enum(["production", "sandbox", "test"]).optional(),
   CRM_INTEGRATION_PRINCIPALS: z.string().optional(),
   PMS_CONNECT_URL: z.string().url().optional(),

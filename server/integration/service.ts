@@ -6,6 +6,7 @@ import * as i from "./schema.js";
 import {hashAgentPayload} from "../services/agent-action-service.js";
 import {IntegrationError,IntegrationEventSchema,type IntegrationEvent} from "./contract.js";
 import {PmsClient} from "./pms-client.js";
+import {mirrorPmsEntity,staffSyncEnabled} from "./staff-sync.js";
 type Tx=Pick<Database,"select"|"insert"|"update"|"execute">;
 export async function verifiedMapping(tx:Tx,input:typeof i.integrationMappings.$inferInsert) {
   const where=and(eq(i.integrationMappings.propertyId,input.propertyId),eq(i.integrationMappings.sourceSystem,input.sourceSystem),
@@ -145,6 +146,21 @@ export async function acceptEvent(db:Database,pms:PmsClient,propertyId:string,in
 export async function consumeEvent(db:Database,pms:PmsClient,propertyId:string,event:IntegrationEvent) {
   const [receipt]=await db.select().from(i.integrationInbox).where(and(eq(i.integrationInbox.propertyId,propertyId),eq(i.integrationInbox.eventId,event.eventId))).limit(1);
   if(receipt?.status==="applied")return {duplicate:true};
+  // Staff mirror first: it also creates the customer mapping a PMS-native stay lacks.
+  let staffSyncFailed=false;
+  // Only activity from the switch-on instant is mirrored; older PMS history stays where it is.
+  const since=Date.parse(pms.config.GUESTRA_STAFF_SYNC_SINCE??"");
+  if(staffSyncEnabled(pms.config)&&Number.isFinite(since)&&Date.parse(event.occurredAt)>=since) {
+    try {await mirrorPmsEntity(db,pms,propertyId,event.entityType,event.entityId);}
+    catch(error) {
+      staffSyncFailed=true;
+      console.warn("Staff sync deferred",{propertyId,entityType:event.entityType,code:error instanceof IntegrationError?error.code:String((error as {cause?:unknown}).cause??(error as Error).message).slice(0,300)});
+    }
+  }
+  // A failed mirror keeps the receipt pending so the stay is retried with backoff instead of being lost.
+  const keepPending=async()=>{if(staffSyncFailed)await db.update(i.integrationInbox).set({status:"pending",lastError:"STAFF_SYNC_FAILED",
+    attempts:sql`${i.integrationInbox.attempts}+1`,availableAt:new Date(Date.now()+Math.min(3600000,1000*2**Math.min((receipt?.attempts??0)+4,12))).toISOString()})
+    .where(and(eq(i.integrationInbox.propertyId,propertyId),eq(i.integrationInbox.eventId,event.eventId)));};
   let customerId=event.integrationContext?.customerId;
   if(!customerId) {
     const [mapping]=await db.select().from(i.integrationMappings).where(and(eq(i.integrationMappings.propertyId,propertyId),
@@ -170,11 +186,13 @@ export async function consumeEvent(db:Database,pms:PmsClient,propertyId:string,e
   try {
     const snapshot=await pms.call(propertyId,"v2/entities/"+event.entityType+"/"+encodeURIComponent(event.entityId),"GET",undefined,{customerId});
     if(Number(snapshot.revision)<event.revision)throw new IntegrationError("READBACK_BEHIND_EVENT",503,true);
-    return await db.transaction(async tx=>{
+    const outcome=await db.transaction(async tx=>{
       const outcome=await projectSnapshot(tx,pms,propertyId,customerId!,snapshot,event.eventId);
       await tx.update(i.integrationInbox).set({status:"applied",lastError:null}).where(and(eq(i.integrationInbox.propertyId,propertyId),eq(i.integrationInbox.eventId,event.eventId)));
       return outcome;
     });
+    await keepPending();
+    return outcome;
   }catch(error) {
     await db.update(i.integrationInbox).set({attempts:sql`${i.integrationInbox.attempts}+1`,lastError:error instanceof IntegrationError?error.code:"READBACK_FAILED",
       availableAt:new Date(Date.now()+Math.min(3600000,1000*2**Math.min(receipt?.attempts??0,12))).toISOString()})

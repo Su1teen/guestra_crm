@@ -5,6 +5,7 @@ import { PmsClient } from "./pms-client.js";
 import { IntegrationEventSchema } from "./contract.js";
 import { acceptEvent, consumeEvent, runOperation } from "./service.js";
 import * as i from "./schema.js";
+import { pushCrmChanges, staffSyncEnabled } from "./staff-sync.js";
 
 /** Every remote call precedes a local transaction. Remote receipts make retries safe. */
 export async function recoverProperty(db: Database, pms: PmsClient, propertyId: string) {
@@ -43,6 +44,7 @@ export async function recoverProperty(db: Database, pms: PmsClient, propertyId: 
   await db.insert(i.integrationCursors).values({propertyId, sequence: next, checkedAt: now})
     .onConflictDoUpdate({target: i.integrationCursors.propertyId, set: {sequence: next, checkedAt: now},
       setWhere: lte(i.integrationCursors.sequence, next)});
+  if (staffSyncEnabled(pms.config)) await pushCrmChanges(db, pms, pms.config, propertyId);
 }
 
 export function startIntegrationRecovery(db: Database, config: AppConfig) {

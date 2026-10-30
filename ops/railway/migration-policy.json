@@ -1,6 +1,6 @@
 {
   "safe": ["bootstrap/0001_principal_registry.sql"],
-  "integration": ["integration/0001_cross_database_v2.sql"],
+  "integration": ["integration/0001_cross_database_v2.sql", "integration/0002_staff_sync.sql"],
   "manual": [],
   "equivalentDigests": {
     "core/0012_hospitality_lifecycle_alerts_and_folio_documents.sql": ["e5248bbfb6fc0c9ca230836410ab26d52d01a4dfd18d6f3dcbde642adde0548f"]

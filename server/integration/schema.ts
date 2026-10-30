@@ -64,3 +64,15 @@ export const integrationCursors = pgTable("integration_cursors", {
   sequence: bigint("sequence", {mode:"number"}).notNull().default(0),
   checkedAt: time("checked_at").notNull().defaultNow(),
 });
+/** Staff two-way sync with PMS. origin = system where the entity was created. */
+export const staffSync = pgTable("guestra_staff_sync", {
+  propertyId: text("property_id").notNull().references(() => properties.id), entity: text("entity").notNull(),
+  localId: text("local_id").notNull(), remoteId: text("remote_id").notNull(), origin: text("origin").notNull(),
+  state: jsonb("state").$type<Record<string, unknown>>().notNull().default({}), lastError: text("last_error"),
+  attempts: integer("attempts").notNull().default(0), syncedAt: time("synced_at").notNull().defaultNow(),
+}, t => [primaryKey({columns:[t.propertyId,t.entity,t.localId]}), uniqueIndex("guestra_staff_sync_remote").on(t.propertyId,t.entity,t.remoteId)]);
+export const staffSyncFailures = pgTable("guestra_staff_sync_failures", {
+  propertyId: text("property_id").notNull().references(() => properties.id), entity: text("entity").notNull(),
+  localId: text("local_id").notNull(), lastError: text("last_error").notNull(), attempts: integer("attempts").notNull().default(1),
+  updatedAt: time("updated_at").notNull().defaultNow(),
+}, t => [primaryKey({columns:[t.propertyId,t.entity,t.localId]})]);
