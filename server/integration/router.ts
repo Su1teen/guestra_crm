@@ -17,6 +17,7 @@ import {registerV2Messaging} from "./messaging.js";
 import {getIntegratedContext} from "./context.js";
 import {registerV2Media} from "./media.js";
 import {registerSandbox} from "./sandbox.js";
+import {registerV2Inbox} from "./inbox.js";
 const identityFields={channel:z.enum(["simulator","telegram","whatsapp","instagram"]).default("telegram"),
   externalUserId:z.string().min(1),propertyId:z.string().min(1),conversationId:z.string().min(1)};
 const quoteSchema=z.object({...identityFields,requestId:z.string().min(1),roomTypeId:z.string().uuid(),ratePlanId:z.string().uuid(),idempotencyKey:z.string().min(1).max(120)});
@@ -58,6 +59,7 @@ export function createIntegrationV2Router(db:Database,config:AppConfig) {
   registerV2Messaging(router,db,pms,identity);
   registerV2Media(router,db,config,identity);
   registerSandbox(router,db,config,pms);
+  registerV2Inbox(router,db,config,pms);
   router.get("/v2/capabilities",requireScope("integration.read"),async(request,response)=>{
     const propertyId=z.string().parse(request.query.propertyId);
     const [property]=await db.select().from(s.properties).where(eq(s.properties.id,propertyId)).limit(1);
@@ -295,28 +297,6 @@ export function createIntegrationV2Router(db:Database,config:AppConfig) {
       references:Object.fromEntries(["correlationId","executionReference","promptVersion","deploymentReference","messageId","requestId","offerId","operationId","reservationId","serviceBookingId"]
         .filter(key=>typeof event.metadata[key]==="string").map(key=>[key,event.metadata[key]])),
     }))});
-  });
-  router.get("/v2/inbox",requireScope("inbox.read"),async(request,response)=>{
-    const input=z.object({propertyId:z.string().min(1),offset:z.coerce.number().int().min(0).max(100000).default(0),
-      limit:z.coerce.number().int().positive().max(100).default(50)}).parse(request.query);
-    const remote=pms.mapping(input.propertyId);
-    const rows=await db.select({conversation:s.conversations,customer:s.guests}).from(s.conversations)
-      .innerJoin(s.guests,eq(s.guests.id,s.conversations.guestId)).where(and(eq(s.conversations.propertyId,input.propertyId),
-        eq(s.guests.organizationId,remote.crmTenantId))).orderBy(desc(s.conversations.lastMessageAt),asc(s.conversations.id)).offset(input.offset).limit(input.limit+1);
-    response.json({propertyId:input.propertyId,pmsPropertyId:remote.pmsPropertyId,tenantId:remote.crmTenantId,hasMore:rows.length>input.limit,
-      conversations:rows.slice(0,input.limit).map(({conversation,customer})=>({id:conversation.id,customerId:customer.id,
-        customerName:customer.fullName,channel:conversation.channel,status:conversation.status,automationMode:conversation.automationMode,
-        unreadCount:conversation.unreadCount,lastMessageAt:conversation.lastMessageAt,requestId:conversation.leadId}))});
-  });
-  router.get("/v2/inbox/:id",requireScope("inbox.read"),async(request,response)=>{
-    const propertyId=z.string().min(1).parse(request.query.propertyId);
-    const [conversation]=await db.select().from(s.conversations).where(and(eq(s.conversations.id,String(request.params.id)),eq(s.conversations.propertyId,propertyId))).limit(1);
-    if(!conversation)throw new IntegrationError("CONVERSATION_NOT_FOUND",404);
-    const rows=await db.select().from(s.messages).where(and(eq(s.messages.conversationId,conversation.id),
-      inArray(s.messages.direction,["in","out"]),notInArray(s.messages.senderType,["note","internal"]))).orderBy(desc(s.messages.sentAt),desc(s.messages.id)).limit(100);
-    response.json({id:conversation.id,customerId:conversation.guestId,propertyId,automationMode:conversation.automationMode,
-      messages:rows.reverse().map(message=>({id:message.id,direction:message.direction,text:message.text,at:message.sentAt,
-        senderType:message.senderType,deliveryStatus:message.deliveryStatus})),hasOlderMessages:rows.length===100});
   });
   router.post("/v2/inbox/:id/takeover",requireScope("inbox.handoff"),async(request,response)=>{
     const input=z.object({propertyId:z.string().min(1),staffReference:z.string().min(1).max(160)}).parse(request.body);

@@ -74,6 +74,8 @@ export const crmStatusFor = (pms: string) => {
   if (pms === "checked_out") return { reservation: "completed", stay: "checked_out" };
   if (pms === "due_out") return { reservation: "confirmed", stay: "due_out" };
   if (pms === "checked_in" || pms === "stayover") return { reservation: "confirmed", stay: "in_house" };
+  // A PMS option (tentative booking waiting for its guarantee) stays unconfirmed in CRM too.
+  if (pms === "pending") return { reservation: "pending", stay: "upcoming" };
   return { reservation: "confirmed", stay: "upcoming" };
 };
 /** CRM reservation + stay state -> PMS lifecycle target (forward only on the PMS side). */
@@ -102,7 +104,7 @@ async function remember(tx: Tx, propertyId: string, entity: string, localId: str
 
 // ---------------------------------------------------------------- PMS -> CRM
 
-async function ensureCustomer(tx: Tx, pms: PmsClient, propertyId: string, organizationId: string, guest: Snapshot, crmCustomerId: string | null) {
+export async function ensureCustomer(tx: Tx, pms: PmsClient, propertyId: string, organizationId: string, guest: Snapshot, crmCustomerId: string | null) {
   if (crmCustomerId) {
     const [own] = await tx.select({ id: s.guests.id }).from(s.guests).where(and(eq(s.guests.id, crmCustomerId), eq(s.guests.organizationId, organizationId))).limit(1);
     if (own) return { customerId: own.id, created: false };
@@ -166,7 +168,8 @@ export async function mirrorReservation(db: Database, pms: PmsClient, propertyId
         roomTypeSnapshot: category?.name ?? snap.roomType?.name ?? null, source: "pms", status: status.reservation,
         arrivalAt, departureAt, adults: snap.adults ?? 1, children: snap.children ?? 0, currency: snap.currencyCode ?? "KZT",
         specialRequest: snap.specialRequests ?? null, externalReservationId: snap.id, externalConfirmationNumber: siblings.length ? null : confirmation,
-        confirmedAt: status.reservation === "confirmed" ? at : null, cancelledAt: status.reservation === "cancelled" ? at : null }).returning();
+        confirmedAt: status.reservation === "confirmed" ? (snap.confirmedAt ?? at) : null, cancelledAt: status.reservation === "cancelled" ? at : null,
+        holdExpiresAt: status.reservation === "pending" ? (snap.optionUntil ?? null) : null }).returning();
       await tx.insert(s.reservationGuests).values({ id: id("reservation_guest"), reservationId, customerId, fullName: null,
         role: "primary", isPrimary: true, isBooker: true, ageGroup: "adult" });
       // Block a CRM unit of the same category so both chessboards agree on occupancy.
@@ -185,7 +188,9 @@ export async function mirrorReservation(db: Database, pms: PmsClient, propertyId
       // A stay created in CRM keeps its CRM dates and commercial data; operational state follows PMS.
       const patch = origin === "pms"
         ? { status: status.reservation, arrivalAt, departureAt, adults: snap.adults ?? 1, children: snap.children ?? 0,
-          unitTypeId: category?.id ?? null, roomTypeSnapshot: category?.name ?? snap.roomType?.name ?? null, updatedAt: at }
+          unitTypeId: category?.id ?? null, roomTypeSnapshot: category?.name ?? snap.roomType?.name ?? null,
+          holdExpiresAt: status.reservation === "pending" ? (snap.optionUntil ?? null) : null,
+          ...(status.reservation === "confirmed" && snap.confirmedAt ? { confirmedAt: snap.confirmedAt } : {}), updatedAt: at }
         : { status: status.reservation, updatedAt: at };
       await tx.update(s.reservations).set(patch).where(and(eq(s.reservations.id, reservationId), eq(s.reservations.propertyId, propertyId)));
       await tx.update(s.guestStays).set({ operationalStatus: status.stay, status: status.reservation,

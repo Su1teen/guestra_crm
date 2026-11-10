@@ -187,6 +187,8 @@ export const channelLabels: Record<Channel, string> = {
   website: "Сайт",
   instagram: "Instagram",
   email: "Эл. почта",
+  sms: "SMS",
+  simulator: "AI Studio (тест)",
   other: "Другое",
 };
 
