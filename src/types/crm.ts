@@ -65,7 +65,7 @@ export type SegmentKey =
   | "no_response_after_offer"
   | "reactivation_ready";
 
-export type Channel = "whatsapp" | "telegram" | "phone" | "website" | "instagram" | "email" | "other";
+export type Channel = "whatsapp" | "telegram" | "phone" | "website" | "instagram" | "email" | "sms" | "simulator" | "other";
 
 export type OfferStatus = "draft" | "sent" | "viewed" | "accepted" | "expired" | "rejected";
 

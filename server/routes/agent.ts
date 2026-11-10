@@ -1,6 +1,7 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { AppConfig } from "../config.js";
+import { handleDocumentReply } from "../integration/inbox.js";
 import { principalRateLimit } from "../integration/security.js";
 import { resolveRegisteredPrincipal } from "../integration/registry.js";
 import { integrationReadiness } from "../integration/readiness.js";
@@ -328,8 +329,15 @@ export const createAgentRouter = (db: Database, apiKey: string, config?: AppConf
     if (result.conflict) return writeError(response, 409, "Update idempotency key was reused for a different payload", { code: "IDEMPOTENCY_CONFLICT" });
     if (!result.conversationId || !result.guestId) return writeError(response, 409,
       "Duplicate update was received before its original transaction completed", { code: "IDEMPOTENCY_CONFLICT", retryable: true });
+    let documentReply: Awaited<ReturnType<typeof handleDocumentReply>> = null;
+    if (!result.duplicate && result.messageId && config) {
+      // A reply to a document sent for confirmation; never blocks the inbound message itself.
+      try { documentReply = await handleDocumentReply(db, config, result.conversationId, result.messageId); }
+      catch (error) { console.error("document confirmation reply failed", error instanceof Error ? error.message : error); }
+    }
     const context = await (config?.CRM_PMS_INTEGRATION_ENABLED==="true"?getIntegratedContext:getAgentContext)(db, result.conversationId, result.guestId);
     response.status(result.duplicate ? 200 : 201).json({ duplicate: result.duplicate, context,
+      ...(documentReply ? { documentConfirmation: { id: documentReply.id, status: documentReply.status } } : {}),
       messageId: result.messageId,
       aiReplyAllowed: context?.aiReplyAllowed ?? false, allowedActions: context?.allowedActions ?? [] });
   });

@@ -76,3 +76,24 @@ export const staffSyncFailures = pgTable("guestra_staff_sync_failures", {
   localId: text("local_id").notNull(), lastError: text("last_error").notNull(), attempts: integer("attempts").notNull().default(1),
   updatedAt: time("updated_at").notNull().defaultNow(),
 }, t => [primaryKey({columns:[t.propertyId,t.entity,t.localId]})]);
+/**
+ * A hotel document (proposal / booking confirmation) sent into a guest chat for confirmation.
+ * mode=ai: sent into the guest's AI conversation; mode=manual: a new staff-owned chat.
+ * status: awaiting -> confirmed (guest said yes, or staff marked it) | answered (guest replied otherwise,
+ * staff should look) | declined | superseded (a newer document for the same stay was sent).
+ */
+export const documentConfirmations = pgTable("guestra_document_confirmations", {
+  id: text("id").primaryKey(), propertyId: text("property_id").notNull().references(() => properties.id),
+  customerId: text("customer_id").notNull().references(() => guests.id),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  pmsReservationId: text("pms_reservation_id").notNull(), confirmationNumber: text("confirmation_number"),
+  kind: text("kind").notNull(), documentUrl: text("document_url").notNull(), mode: text("mode").notNull(),
+  status: text("status").notNull().default("awaiting"), requestMessageId: text("request_message_id").notNull(),
+  responseMessageId: text("response_message_id"), idempotencyKey: text("idempotency_key").notNull(),
+  requestedBy: text("requested_by"), resolvedBy: text("resolved_by"),
+  answeredAt: time("answered_at"), confirmedAt: time("confirmed_at"),
+  pmsSyncedAt: time("pms_synced_at"), pmsSyncError: text("pms_sync_error"),
+  createdAt: time("created_at").notNull().defaultNow(), updatedAt: time("updated_at").notNull().defaultNow(),
+}, t => [uniqueIndex("guestra_document_confirmation_key").on(t.propertyId, t.idempotencyKey),
+  index("guestra_document_confirmation_conversation").on(t.conversationId, t.status),
+  index("guestra_document_confirmation_reservation").on(t.propertyId, t.pmsReservationId)]);

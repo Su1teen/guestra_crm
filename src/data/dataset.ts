@@ -474,7 +474,7 @@ const stageActivityTitle: Record<LeadStage, string> = {
   cancelled: "Заказ отменён",
 };
 
-const messageScripts: Record<Channel, { in: string[]; out: string[] }> = {
+const messageScripts: Record<Exclude<Channel, "sms" | "simulator">, { in: string[]; out: string[] }> = {
   telegram: {
     in: [
       "Здравствуйте! Подскажите свободные номера на ближайшие выходные.",

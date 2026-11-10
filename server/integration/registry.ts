@@ -16,7 +16,7 @@ export const principalRegistry = pgTable("integration_principal_registry", {
 });
 const bootstrapAudit = pgTable("integration_bootstrap_audit", { principalId: text("principal_id").notNull(), action: text("action").notNull() });
 const mappingKeys = ["crmPropertyId", "crmTenantId", "pmsPropertyId", "pmsTenantId", "environment"] as const;
-const scopes = new Set(["integration.read", "integration.write", "integration.reconcile", "events.read", "events.consume", "media.read", "media.write", "agent.read", "agent.write", "inspector.read", "inbox.read", "inbox.handoff", "sandbox.setup",
+const scopes = new Set(["integration.read", "integration.write", "integration.reconcile", "events.read", "events.consume", "media.read", "media.write", "agent.read", "agent.write", "inspector.read", "inbox.read", "inbox.handoff", "inbox.write", "email.inbound", "sandbox.setup",
   ...Object.values(AGENT_TOOL_DESCRIPTORS).map(tool => "tool:" + tool.name), ...AgentConfirmationActionSchema.options.map(action=>"tool:"+action)]);
 export async function bootstrapRegistry(db: Database, config: AppConfig) {
   const principals = principalSchema.array().parse(JSON.parse(config.CRM_INTEGRATION_PRINCIPALS ?? "[]"));
