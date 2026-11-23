@@ -35,6 +35,8 @@ import Login from "@/pages/Login";
 import Staff from "@/pages/Staff";
 import Channels from "@/pages/Channels";
 import MoneyReports from "@/pages/MoneyReports";
+import Knowledge from "@/pages/Knowledge";
+import PriceCalendarView from "@/pages/PriceCalendarView";
 import { LoadingScreen } from "@/components/common/States";
 
 const queryClient = new QueryClient();
@@ -84,6 +86,8 @@ const AppRoutes = () => {
         <Route path="staff" element={<Staff />} />
         <Route path="channels" element={<Channels />} />
         <Route path="money-reports" element={<MoneyReports />} />
+        <Route path="knowledge" element={<Knowledge />} />
+        <Route path="price-calendar" element={<PriceCalendarView />} />
         <Route path="housekeeping" element={<Housekeeping />} />
         <Route path="maintenance" element={<Maintenance />} />
         </Route>

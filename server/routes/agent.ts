@@ -14,7 +14,7 @@ import { and, asc, desc, eq, gt, gte, inArray, notInArray, or, sql } from "drizz
 import { z } from "zod";
 import { AGENT_API_VERSION, AGENT_ATTACHMENT_KINDS, AGENT_ATTACHMENT_PROCESSING_STATES, AGENT_BOOKING_MODES,
   AGENT_CHANNELS, AGENT_CONFIRMATION_POLICY, AGENT_LIFECYCLES, AGENT_MEMORY_SCHEMA_VERSION, AGENT_MESSAGE_TYPES,
-  AGENT_TOOLS, AGENT_TOOL_DESCRIPTORS,
+  AGENT_TOOLS, AGENT_TOOL_DESCRIPTORS, AgentChannelSchema,
   AgentAccommodationAvailabilitySchema, AgentAccommodationBookSchema, AgentAccommodationOptionsQuerySchema,
   AgentAttachmentProcessResultSchema, AgentClassifyConversationSchema, AgentContextRequestSchema,
   AgentConversationMemoryUpdateSchema, AgentConversationMessagesQuerySchema, AgentFolioSummarySchema,
@@ -277,6 +277,46 @@ export const createAgentRouter = (db: Database, apiKey: string, config?: AppConf
         `Бронь подтверждается после предоплаты ${terms.depositPercentage}% от стоимости.`,
         ...(terms.lateCancellationHours == null ? [] : [`Изменить или отменить бронь без удержания можно не позднее чем за ${terms.lateCancellationHours} ч до заезда; при более поздней отмене предоплата не возвращается.`]),
       ], policyTexts });
+  });
+  /**
+   * Final nightly prices from PMS (seasons, holidays, promos, min / max already applied) with the reasons.
+   * Prices change, so the agent reads them here and never from knowledge texts; without PMS nothing is returned.
+   */
+  router.get("/price-calendar", async (request, response) => {
+    const query = z.object({ propertyId: z.string().trim().min(1), from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).parse(request.query);
+    const days = (Date.parse(query.to) - Date.parse(query.from)) / 86_400_000;
+    if (!(days >= 0 && days <= 31)) return writeError(response, 400, "Period must be 0 to 31 days", { code: "INVALID_PERIOD" });
+    if (config?.CRM_PMS_INTEGRATION_ENABLED !== "true") return response.json({ ...query, source: "not_connected", days: [] });
+    try {
+      const pms = new PmsClient(config);
+      pms.mapping(query.propertyId);
+      const read = await pms.call(query.propertyId, "v2/price-calendar", "GET", undefined, { from: query.from, to: query.to }) as { days?: unknown[] };
+      response.json({ ...query, source: "guestra_pms", days: Array.isArray(read.days) ? read.days : [] });
+    } catch { response.json({ ...query, source: "unavailable", days: [] }); }
+  });
+  /**
+   * Earlier stays of the guest of this chat at this property, from PMS. Only the guest of the identity is read;
+   * prices and internal price types are not returned to the agent.
+   */
+  router.get("/guest-history", async (request, response) => {
+    const query = z.object({ channel: AgentChannelSchema.default("telegram"), externalUserId: z.string().trim().min(1),
+      propertyId: z.string().trim().min(1) }).parse(request.query);
+    const identity = await identityFor(db, query.channel, query.propertyId, query.externalUserId);
+    if (!identity) return writeError(response, 404, "Identity not found for this channel and property", { code: "IDENTITY_NOT_FOUND" });
+    const empty = { propertyId: query.propertyId, guestTier: null, privileges: null, totals: { stays: 0, completedStays: 0, nights: 0 }, stays: [] };
+    if (config?.CRM_PMS_INTEGRATION_ENABLED !== "true") return response.json({ ...empty, source: "not_connected" });
+    try {
+      const pms = new PmsClient(config);
+      pms.mapping(query.propertyId);
+      const read = await pms.call(query.propertyId, `v2/sync/guests/${encodeURIComponent(identity.guestId)}/history`, "GET") as {
+        linked?: boolean; guest?: { guestTier?: string | null; privileges?: string | null } | null; totals?: unknown;
+        stays?: { arrivalDate: string; departureDate: string; status: string; roomType?: string | null; adults?: number; children?: number }[] };
+      if (!read?.linked) return response.json({ ...empty, source: "guestra_pms" });
+      response.json({ propertyId: query.propertyId, source: "guestra_pms", guestTier: read.guest?.guestTier ?? null, privileges: read.guest?.privileges ?? null,
+        totals: read.totals, stays: (read.stays ?? []).map((stay) => ({ arrivalDate: stay.arrivalDate, departureDate: stay.departureDate,
+          status: stay.status, roomType: stay.roomType ?? null, adults: stay.adults, children: stay.children })) });
+    } catch { response.json({ ...empty, source: "unavailable" }); }
   });
   router.get("/accommodations/options", async (request, response) => {
     const query = AgentAccommodationOptionsQuerySchema.parse(request.query);

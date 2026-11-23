@@ -60,6 +60,7 @@ const handoffReasonLabels: Record<string, string> = {
   barter: "Бартер — решает сотрудник",
   complimentary: "Комплимент — решает сотрудник",
   corporate_client: "Корпоративный клиент",
+  ai_unsure: "ИИ не уверен в ответе",
   unsupported_action: "Нужна помощь сотрудника",
 };
 
