@@ -86,10 +86,22 @@ export const receivePaymentRequest = async (tx: Tx, paymentRequestId: string, in
     confirmationMessageId, duplicate: false };
 };
 
+/** Hours before arrival for each pre-arrival reminder a property can choose. */
+export const PRE_ARRIVAL_REMINDERS = { pre_arrival_3d: 72, pre_arrival_48h: 48, pre_arrival_1d: 24 } as const;
+export type PreArrivalReminder = keyof typeof PRE_ARRIVAL_REMINDERS;
+const DEFAULT_REMINDERS: PreArrivalReminder[] = ["pre_arrival_3d", "pre_arrival_1d"];
+
+/**
+ * Plans the property's pre-arrival reminders. A reminder whose time has already passed (booking made
+ * later than that) is not planned: the confirmation went out at booking time.
+ */
 export const planPreArrivalMessages = async (tx: Tx, reservation: typeof s.reservations.$inferSelect,
   conversationId: string | null, timestamp = now()) => {
-  for (const [days, triggerType] of [[3, "pre_arrival_3d"], [1, "pre_arrival_1d"]] as const) {
-    const scheduledAt = new Date(new Date(reservation.arrivalAt).getTime() - days * 86_400_000).toISOString();
+  const [settings] = await tx.select({ reminders: s.propertyInboxSettings.preArrivalReminders }).from(s.propertyInboxSettings)
+    .where(eq(s.propertyInboxSettings.propertyId, reservation.propertyId)).limit(1);
+  const chosen = (settings?.reminders ?? DEFAULT_REMINDERS).filter((key): key is PreArrivalReminder => key in PRE_ARRIVAL_REMINDERS);
+  for (const triggerType of chosen) {
+    const scheduledAt = new Date(new Date(reservation.arrivalAt).getTime() - PRE_ARRIVAL_REMINDERS[triggerType] * 3_600_000).toISOString();
     if (scheduledAt <= timestamp) continue;
     const key = `${reservation.id}:${triggerType}:${reservation.arrivalAt}`;
     await tx.insert(s.scheduledOutboundMessages).values({ id: id("communication"), reservationId: reservation.id,
