@@ -181,6 +181,8 @@ export interface Employee {
   email: string;
   phone: string;
   propertyIds: PropertyId[];
+  /** На линии: получает новые диалоги при распределении. */
+  availableForDistribution?: boolean;
 }
 
 export interface GuestPreference {
@@ -727,6 +729,14 @@ export interface Lead {
   items: LeadItem[];
   /** Серверная оценка готовности к следующему этапу (database mode). */
   journey?: LeadJourney;
+  /** Первый менеджер, получивший диалог. */
+  firstContactEmployeeId?: string;
+  /** Кто закрыл продажу; фиксируется один раз и не меняется при передаче диалога. */
+  closingEmployeeId?: string;
+  commissionEmployeeId?: string;
+  closedAt?: string;
+  /** manager — продажу закрыл сотрудник; guestra — оформлено через Guestra без участия менеджера. */
+  closedVia?: "manager" | "guestra";
 }
 
 export type Request = Lead;
@@ -800,6 +810,12 @@ export interface Message {
   senderType?: "contact" | "ai" | "human" | "system";
   externalMessageId?: string;
   deliveryStatus?: "received" | "pending" | "sent" | "failed";
+  provider?: string;
+  /** Время отправки гостем по данным канала; `at` — время в ленте. */
+  providerSentAt?: string;
+  receivedAt?: string;
+  eventType?: string;
+  templateKey?: string;
 }
 
 export interface Conversation {
@@ -834,6 +850,16 @@ export interface Conversation {
   handoffRequestedAt?: string;
   handoffResolvedAt?: string;
   aiResumedAt?: string;
+  urgent?: boolean;
+  urgentReason?: string;
+  /** Повторное обращение после закрытия диалога или сделки. */
+  reopenedAt?: string;
+  closedAt?: string;
+  lastInboundAt?: string;
+  /** Сообщение пришло с задержкой канала (отправлено раньше, чем получено). */
+  delayedInboundAt?: string;
+  assignedAt?: string;
+  channelAccountId?: string;
 }
 
 export interface PaymentRequest {
@@ -1237,6 +1263,8 @@ export interface CrmDataset {
   serviceCatalog: ServiceCatalogEntry[];
   folios: Folio[];
   paymentRequests?: PaymentRequest[];
+  /** Избранные диалоги текущего сотрудника. */
+  favoriteConversationIds?: string[];
   scheduledOutboundMessages?: { id: string; reservationId: string; triggerType: string; scheduledAt: string; status: string }[];
 }
 import type { ServiceResourceGroup, ServiceResource, ServiceResourceRequirement, ServiceResourceAllocation, ServiceResourceBlock, ServiceBookingMode } from "@shared/service-availability";

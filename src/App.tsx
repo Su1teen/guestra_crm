@@ -32,6 +32,7 @@ import Housekeeping from "@/pages/Housekeeping";
 import Maintenance from "@/pages/Maintenance";
 import NotFound from "./pages/NotFound.tsx";
 import Login from "@/pages/Login";
+import Staff from "@/pages/Staff";
 import { LoadingScreen } from "@/components/common/States";
 
 const queryClient = new QueryClient();
@@ -78,6 +79,7 @@ const AppRoutes = () => {
         <Route path="reports" element={<Reports />} />
         <Route path="management-report" element={<ManagementReport />} />
         <Route path="reputation" element={<Reputation />} />
+        <Route path="staff" element={<Staff />} />
         <Route path="housekeeping" element={<Housekeeping />} />
         <Route path="maintenance" element={<Maintenance />} />
         </Route>

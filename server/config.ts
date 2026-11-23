@@ -25,6 +25,13 @@ const productionSchema = z.object({
   AGENT_OUTBOUND_WEBHOOK_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().min(16).optional()),
   WHATSAPP_OUTBOUND_WEBHOOK_URL: z.preprocess((value) => value === "" ? undefined : value, z.string().url().optional()),
   WHATSAPP_OUTBOUND_WEBHOOK_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().min(16).optional()),
+  /** Meta (WhatsApp Cloud API, Instagram): off until keys arrive; the webhook answers 404 while off. */
+  META_ENABLED: z.enum(["true", "false"]).optional(),
+  /** App secret: verifies X-Hub-Signature-256 of every webhook delivery. */
+  META_APP_SECRET: z.preprocess((value) => value === "" ? undefined : value, z.string().min(16).optional()),
+  /** Token echoed back when Meta verifies the callback URL. */
+  META_VERIFY_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().min(16).optional()),
+  META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/).optional(),
   SALES_BOOTSTRAP_EMAIL: z.string().email().default("sales@guestra.com"),
   SALES_BOOTSTRAP_PASSWORD: z.string().min(8),
   ADMIN_BOOTSTRAP_EMAIL: z.string().email().default("admin@guestra.com"),

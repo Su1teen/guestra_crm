@@ -43,6 +43,8 @@ export const employees = pgTable("employees", {
   role: text("role").notNull(),
   email: text("email").notNull(),
   phone: text("phone").notNull(),
+  availableForDistribution: boolean("available_for_distribution").notNull().default(true),
+  availabilityChangedAt: timestamp("availability_changed_at", { withTimezone: true, mode: "string" }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, (table) => [uniqueIndex("employees_email_uidx").on(table.email)]);
@@ -60,6 +62,10 @@ export const appUsers = pgTable("app_users", {
   dataMode: text("data_mode").notNull(),
   employeeId: text("employee_id").references(() => employees.id, { onDelete: "set null" }),
   name: text("name").notNull(),
+  active: boolean("active").notNull().default(true),
+  sessionVersion: integer("session_version").notNull().default(1),
+  passwordChangedAt: timestamp("password_changed_at", { withTimezone: true, mode: "string" }),
+  lastLoginAt: timestamp("last_login_at", { withTimezone: true, mode: "string" }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, (table) => [uniqueIndex("app_users_email_uidx").on(table.email)]);
@@ -240,6 +246,13 @@ export const leads = pgTable("leads", {
   paidAmount: integer("paid_amount").notNull().default(0),
   paymentDueAt: timestamp("payment_due_at", { withTimezone: true, mode: "string" }),
   paymentTerms: text("payment_terms"),
+  /** Sales attribution: fixed when the request is won; reassigning the chat never moves it. */
+  firstContactEmployeeId: text("first_contact_employee_id").references(() => employees.id, { onDelete: "set null" }),
+  closingEmployeeId: text("closing_employee_id").references(() => employees.id, { onDelete: "set null" }),
+  commissionEmployeeId: text("commission_employee_id").references(() => employees.id, { onDelete: "set null" }),
+  closedAt: timestamp("closed_at", { withTimezone: true, mode: "string" }),
+  /** "manager" — a person closed the sale; "guestra" — it was completed without a manager. */
+  closedVia: text("closed_via"),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, (table) => [
@@ -443,6 +456,17 @@ export const conversations = pgTable("conversations", {
   handoffRequestedAt: timestamp("handoff_requested_at", { withTimezone: true, mode: "string" }),
   handoffResolvedAt: timestamp("handoff_resolved_at", { withTimezone: true, mode: "string" }),
   aiResumedAt: timestamp("ai_resumed_at", { withTimezone: true, mode: "string" }),
+  urgent: boolean("urgent").notNull().default(false),
+  urgentReason: text("urgent_reason"),
+  urgentDismissedAt: timestamp("urgent_dismissed_at", { withTimezone: true, mode: "string" }),
+  /** Guest wrote again after the chat or its request was closed. */
+  reopenedAt: timestamp("reopened_at", { withTimezone: true, mode: "string" }),
+  closedAt: timestamp("closed_at", { withTimezone: true, mode: "string" }),
+  lastInboundAt: timestamp("last_inbound_at", { withTimezone: true, mode: "string" }),
+  /** Latest inbound arrived much later than the guest sent it (provider redelivery). */
+  delayedInboundAt: timestamp("delayed_inbound_at", { withTimezone: true, mode: "string" }),
+  assignedAt: timestamp("assigned_at", { withTimezone: true, mode: "string" }),
+  channelAccountId: text("channel_account_id"),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, (table) => [uniqueIndex("conversations_channel_property_guest_chat_uidx").on(table.channel, table.propertyId, table.guestId, table.externalChatId)]);
@@ -461,6 +485,13 @@ export const messages = pgTable("messages", {
   deliveryStatus: text("delivery_status").notNull().default("sent"),
   idempotencyKey: text("idempotency_key"),
   metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+  provider: text("provider"),
+  /** When the guest sent it, as reported by the provider. */
+  providerSentAt: timestamp("provider_sent_at", { withTimezone: true, mode: "string" }),
+  /** When the CRM received it. */
+  receivedAt: timestamp("received_at", { withTimezone: true, mode: "string" }),
+  eventType: text("event_type").notNull().default("message"),
+  templateKey: text("template_key"),
   createdAt: createdAt(),
 }, (table) => [uniqueIndex("messages_idempotency_uidx").on(table.idempotencyKey)]);
 
@@ -1126,3 +1157,121 @@ export const agentToolEvents = pgTable("agent_tool_events", {
   index("agent_tool_events_tool_idx").on(table.tool, table.createdAt),
   index("agent_tool_events_guest_idx").on(table.guestId, table.createdAt),
 ]);
+
+export const propertyInboxSettings = pgTable("property_inbox_settings", {
+  propertyId: text("property_id").primaryKey().references(() => properties.id, { onDelete: "cascade" }),
+  distributionEnabled: boolean("distribution_enabled").notNull().default(true),
+  /** Local time (property timezone) when the overnight pool is distributed. */
+  shiftStart: text("shift_start").notNull().default("09:00"),
+  shiftEnd: text("shift_end").notNull().default("21:00"),
+  urgentKeywords: jsonb("urgent_keywords").$type<string[]>().notNull().default([]),
+  delayedAfterMinutes: integer("delayed_after_minutes").notNull().default(60),
+  handoffMessage: text("handoff_message"),
+  handoffMessageOffHours: text("handoff_message_off_hours"),
+  updatedBy: text("updated_by").references(() => employees.id, { onDelete: "set null" }),
+  updatedAt: updatedAt(),
+});
+
+export const conversationAssignments = pgTable("conversation_assignments", {
+  id: text("id").primaryKey(),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  propertyId: text("property_id").notNull().references(() => properties.id),
+  fromEmployeeId: text("from_employee_id").references(() => employees.id, { onDelete: "set null" }),
+  toEmployeeId: text("to_employee_id").references(() => employees.id, { onDelete: "set null" }),
+  actorEmployeeId: text("actor_employee_id").references(() => employees.id, { onDelete: "set null" }),
+  /** auto | manual | take | transfer | release */
+  reason: text("reason").notNull(),
+  operationId: text("operation_id"),
+  /** Property-local date the assignment counts toward (equal daily load). */
+  businessDate: text("business_date").notNull(),
+  createdAt: createdAt(),
+}, (table) => [index("conversation_assignments_conversation_idx").on(table.conversationId, table.createdAt),
+  index("conversation_assignments_load_idx").on(table.propertyId, table.businessDate, table.toEmployeeId)]);
+
+export const conversationFavorites = pgTable("conversation_favorites", {
+  employeeId: text("employee_id").notNull().references(() => employees.id, { onDelete: "cascade" }),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  createdAt: createdAt(),
+}, (table) => [primaryKey({ columns: [table.employeeId, table.conversationId] })]);
+
+export const staffAuditEvents = pgTable("staff_audit_events", {
+  id: text("id").primaryKey(),
+  actorUserId: text("actor_user_id").references(() => appUsers.id, { onDelete: "set null" }),
+  actorEmployeeId: text("actor_employee_id").references(() => employees.id, { onDelete: "set null" }),
+  propertyId: text("property_id").references(() => properties.id, { onDelete: "set null" }),
+  entityType: text("entity_type").notNull(),
+  entityId: text("entity_id").notNull(),
+  action: text("action").notNull(),
+  details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: createdAt(),
+});
+
+export const channelAccounts = pgTable("channel_accounts", {
+  id: text("id").primaryKey(),
+  /** meta_cloud | studio */
+  provider: text("provider").notNull(),
+  /** whatsapp | instagram */
+  channel: text("channel").notNull(),
+  displayName: text("display_name").notNull(),
+  /** Fixed property; null with property_ids = one shared number routed later. */
+  propertyId: text("property_id").references(() => properties.id),
+  propertyIds: jsonb("property_ids").$type<string[]>().notNull().default([]),
+  wabaId: text("waba_id"),
+  phoneNumberId: text("phone_number_id"),
+  displayPhone: text("display_phone"),
+  igUserId: text("ig_user_id"),
+  pageId: text("page_id"),
+  /** Name of the environment variable holding the access token; the token itself is never stored. */
+  accessTokenRef: text("access_token_ref"),
+  appSecretRef: text("app_secret_ref"),
+  /** disabled | active | error */
+  status: text("status").notNull().default("disabled"),
+  lastEventAt: timestamp("last_event_at", { withTimezone: true, mode: "string" }),
+  lastError: text("last_error"),
+  lastErrorAt: timestamp("last_error_at", { withTimezone: true, mode: "string" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
+export const providerEvents = pgTable("provider_events", {
+  id: text("id").primaryKey(),
+  provider: text("provider").notNull(),
+  channelAccountId: text("channel_account_id").references(() => channelAccounts.id, { onDelete: "set null" }),
+  dedupeKey: text("dedupe_key").notNull(),
+  eventType: text("event_type").notNull(),
+  payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+  providerTimestamp: timestamp("provider_timestamp", { withTimezone: true, mode: "string" }),
+  receivedAt: timestamp("received_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+  /** received | processed | ignored | failed | dead */
+  status: text("status").notNull().default("received"),
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true, mode: "string" }).notNull().defaultNow(),
+  processedAt: timestamp("processed_at", { withTimezone: true, mode: "string" }),
+  lastError: text("last_error"),
+  result: jsonb("result").$type<Record<string, unknown>>().notNull().default({}),
+}, (table) => [uniqueIndex("provider_events_dedupe_uidx").on(table.provider, table.dedupeKey),
+  index("provider_events_queue_idx").on(table.status, table.nextAttemptAt)]);
+
+export const messageTemplates = pgTable("message_templates", {
+  id: text("id").primaryKey(),
+  /** null = default for every property. */
+  propertyId: text("property_id").references(() => properties.id, { onDelete: "cascade" }),
+  key: text("key").notNull(),
+  category: text("category").notNull(),
+  title: text("title").notNull(),
+  /** Text with {{variables}} filled from the chat, guest and booking. */
+  body: text("body").notNull(),
+  language: text("language").notNull().default("ru"),
+  /** Optional CRM action behind the template (send offer, payment request, document, reminder). */
+  action: text("action"),
+  waTemplateName: text("wa_template_name"),
+  waTemplateLanguage: text("wa_template_language"),
+  /** Ordered variables passed to the approved WhatsApp template body. */
+  waTemplateParams: jsonb("wa_template_params").$type<string[]>().notNull().default([]),
+  waStatus: text("wa_status").notNull().default("not_submitted"),
+  active: boolean("active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(100),
+  updatedBy: text("updated_by").references(() => employees.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});

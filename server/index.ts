@@ -3,13 +3,18 @@ import { readConfig } from "./config.js";
 import { createDatabase } from "./db/client.js";
 import { startIntegrationRecovery } from "./integration/recovery.js";
 import { loadRegisteredMappings } from "./integration/registry.js";
+import { startDistributionLoop } from "./services/distribution.js";
+import { startProviderEventWorker } from "./meta/events.js";
 
 const config = readConfig();
 const { db } = createDatabase(config.DATABASE_URL);
 await loadRegisteredMappings(db, config);
-const app = createApp(db, config);
+const providerEvents = startProviderEventWorker(db);
+const app = createApp(db, config, { onProviderEvents: providerEvents.kick });
 const stopRecovery = startIntegrationRecovery(db, config);
-process.once("SIGTERM", stopRecovery);
-process.once("SIGINT", stopRecovery);
+const stopDistribution = startDistributionLoop(db);
+const stop = () => { stopRecovery(); stopDistribution(); providerEvents.stop(); };
+process.once("SIGTERM", stop);
+process.once("SIGINT", stop);
 
 app.listen(config.PORT, () => console.log(`Guestra CRM listening on port ${config.PORT}`));

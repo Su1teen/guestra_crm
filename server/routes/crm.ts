@@ -7,6 +7,14 @@ import type { AppConfig } from "../config.js";
 import * as s from "../db/schema.js";
 import { requireDatabaseMode, type AuthenticatedRequest } from "../auth/middleware.js";
 import { loadCrmDataset } from "../services/crm-bootstrap.js";
+import { scopeCrmDataset } from "../services/crm-scope.js";
+import { recordLeadClosed } from "../services/attribution.js";
+import { assignConversation } from "../services/distribution.js";
+import { audit } from "../services/audit.js";
+import { createInboxRouter } from "./inbox.js";
+import { createStaffRouter } from "./staff.js";
+import { createChannelsRouter } from "./channels.js";
+import { AccessDenied, accessMiddleware, accessOf, assertPermission, resourceGuard } from "../auth/access.js";
 import {
   ensureFolio, recalcFolio, removeFolioLineForItem, resolveItemPricing,
   syncFolioLineForItem, createOfferFromFolio,
@@ -115,8 +123,17 @@ const buildItemValues = (
 export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEGRATION_API_KEY" | "AGENT_OUTBOUND_WEBHOOK_URL" | "AGENT_OUTBOUND_WEBHOOK_TOKEN" | "WHATSAPP_OUTBOUND_WEBHOOK_URL" | "WHATSAPP_OUTBOUND_WEBHOOK_TOKEN">) => {
   const router = Router();
   router.use(requireDatabaseMode);
+  router.use(accessMiddleware(db));
+  router.use(resourceGuard(db));
 
-  router.get("/bootstrap", async (_request, response) => response.json(await loadCrmDataset(db)));
+  router.get("/bootstrap", async (request, response) => {
+    const access = accessOf(request);
+    const favorites = access.employeeId ? await db.select({ id: s.conversationFavorites.conversationId }).from(s.conversationFavorites)
+      .where(eq(s.conversationFavorites.employeeId, access.employeeId)) : [];
+    const data = scopeCrmDataset(await loadCrmDataset(db), access);
+    const visible = new Set(data.conversations.map((conversation) => conversation.id));
+    response.json({ ...data, favoriteConversationIds: favorites.map((row) => row.id).filter((id) => visible.has(id)) });
+  });
 
   router.post("/reservations/:id/check-in", async (request, response) => {
     const body = z.object({ readinessOverride: z.boolean().optional(), overrideReason: z.string().optional() }).parse(request.body ?? {});
@@ -606,6 +623,8 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
       dueAt: z.string().datetime().optional(),
     }).parse(request.body);
     if (["lost", "closed"].includes(status) && !reason) return response.status(400).json({ error: "Укажите причину закрытия" });
+    if (status === "won" && !accessOf(request).permissions.has("leads.close"))
+      return response.status(403).json({ error: "Недостаточно прав, чтобы закрыть сделку" });
     const result = await db.transaction(async (tx) => {
       await tx.execute(sql`SELECT id FROM leads WHERE id = ${request.params.id} FOR UPDATE`);
       const [lead] = await tx.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
@@ -626,6 +645,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
         ...(status === "lost" ? { lostReason: reason, requestStatus: "lost" } : {}),
         ...(status === "closed" ? { requestStatus: "closed" } : {}),
         updatedAt: changedAt }).where(eq(s.leads.id, lead.id)).returning();
+      if (status === "won") await recordLeadClosed(tx, lead.id, accessOf(request).employeeId, changedAt);
       if (status === "tentative") {
         const [open] = await tx.select().from(s.followUps).where(and(eq(s.followUps.leadId, lead.id), eq(s.followUps.status, "open"))).limit(1);
         if (open) await tx.update(s.followUps).set({ dueAt: followUpDueAt!, reason: reason || open.reason, updatedAt: changedAt }).where(eq(s.followUps.id, open.id));
@@ -723,6 +743,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
           fromStatus: lead.requestLifecycle, toStatus: requiresPayment ? "definite" : "won",
           employeeId: (request as AuthenticatedRequest).authUser?.employeeId, source: "manual_booking",
           reason: requiresPayment ? "Ожидается предоплата" : "Предоплата не требуется", changedAt: updatedAt });
+        if (!requiresPayment) await recordLeadClosed(tx, lead.id, (request as AuthenticatedRequest).authUser?.employeeId ?? null, updatedAt);
         if (requiresPayment) await tx.update(s.conversations).set({ automationMode: "needs_human",
           handoffReasonCode: "payment_ready", requestedAction: "Отправить счёт или ссылку на оплату",
           handoffPriority: "high", handoffRequestedAt: updatedAt, updatedAt }).where(eq(s.conversations.leadId, lead.id));
@@ -823,6 +844,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
           fromStatus: null, toStatus: requiresPayment ? "definite" : "won", source: "manual_booking",
           employeeId: (request as AuthenticatedRequest).authUser?.employeeId,
           reason: requiresPayment ? "Ожидается предоплата" : "Предоплата не требуется", changedAt: at });
+        if (!requiresPayment) await recordLeadClosed(tx, leadId, (request as AuthenticatedRequest).authUser?.employeeId ?? null, at);
         await tx.insert(s.leadStageHistory).values({ id: id("stage"), leadId,
           stage: requiresPayment ? "payment_pending" : "confirmed", changedAt: at });
         await tx.insert(s.guestActivity).values({ id: id("activity"), guestId: guest.id, propertyId: property.id,
@@ -1312,6 +1334,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
   });
 
   router.post("/conversations/:id/messages", async (request, response) => {
+    assertPermission(accessOf(request), "inbox.reply");
     const { text, asNote = false } = z.object({ text: z.string().trim().min(1), asNote: z.boolean().default(false) }).parse(request.body);
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
     if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
@@ -1352,9 +1375,15 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     const employeeId = (request as AuthenticatedRequest).authUser?.employeeId;
     if (!employeeId) return response.status(400).json({ error: "У пользователя нет employeeId" });
     const timestamp = now();
-    const [conversation] = await db.update(s.conversations).set({ automationMode: "human", assigneeId: employeeId,
+    const [current] = await db.select().from(s.conversations).where(eq(s.conversations.id, request.params.id)).limit(1);
+    if (!current) return response.status(404).json({ error: "Диалог не найден" });
+    if (current.assigneeId !== employeeId) {
+      const moved = await assignConversation(db, { conversationId: current.id, toEmployeeId: employeeId,
+        expectedAssigneeId: current.assigneeId, reason: "take", actorEmployeeId: employeeId });
+      if (!moved) return response.status(409).json({ error: "Диалог уже взял другой сотрудник" });
+    }
+    const [conversation] = await db.update(s.conversations).set({ automationMode: "human",
       handoffResolvedAt: timestamp, updatedAt: timestamp }).where(eq(s.conversations.id, request.params.id)).returning();
-    if (!conversation) return response.status(404).json({ error: "Диалог не найден" });
     response.json(conversation);
   });
 
@@ -1386,12 +1415,41 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
       deliveryError: delivery.sent ? undefined : delivery.error });
   });
 
+  /**
+   * Status, read state and assignee of a chat. Changing the assignee follows the distribution rules:
+   * anyone may take an unassigned chat or give back their own; assigning to someone else needs
+   * `inbox.assign`, and the new assignee must work at the chat's property.
+   */
   router.patch("/conversations/:id", async (request, response) => {
+    const access = accessOf(request);
     const patch = z.object({ status: z.enum(["open", "pending", "closed"]).optional(),
       assigneeId: z.string().nullable().optional(), unreadCount: z.number().int().min(0).optional() }).parse(request.body);
-    const [conversation] = await db.update(s.conversations).set({ ...patch, updatedAt: now() })
-      .where(eq(s.conversations.id, request.params.id)).returning();
-    if (!conversation) return response.status(404).json({ error: "Диалог не найден" });
+    const [current] = await db.select().from(s.conversations).where(eq(s.conversations.id, request.params.id)).limit(1);
+    if (!current) return response.status(404).json({ error: "Диалог не найден" });
+    if (patch.assigneeId !== undefined && patch.assigneeId !== current.assigneeId) {
+      const self = access.employeeId;
+      const taking = patch.assigneeId === self && !current.assigneeId;
+      const releasing = patch.assigneeId === null && current.assigneeId === self;
+      if (!taking && !releasing && !access.permissions.has("inbox.assign"))
+        return response.status(403).json({ error: "Назначать диалоги другим сотрудникам может руководитель" });
+      if (patch.assigneeId) {
+        const [link] = await db.select().from(s.employeeProperties).where(and(eq(s.employeeProperties.employeeId, patch.assigneeId),
+          eq(s.employeeProperties.propertyId, current.propertyId))).limit(1);
+        if (!link) return response.status(400).json({ error: "Сотрудник не работает на этом объекте" });
+      }
+      const moved = await assignConversation(db, { conversationId: current.id, toEmployeeId: patch.assigneeId,
+        expectedAssigneeId: current.assigneeId, reason: taking ? "take" : releasing ? "release" : "manual", actorEmployeeId: self });
+      if (!moved) return response.status(409).json({ error: "Диалог уже изменён другим сотрудником, обновите страницу" });
+    }
+    const timestamp = now();
+    const [conversation] = await db.update(s.conversations).set({
+      ...(patch.status ? { status: patch.status, closedAt: patch.status === "closed" ? timestamp : null } : {}),
+      ...(patch.unreadCount !== undefined ? { unreadCount: patch.unreadCount } : {}),
+      updatedAt: timestamp,
+    }).where(eq(s.conversations.id, request.params.id)).returning();
+    if (patch.status && patch.status !== current.status)
+      await audit(db, access, { propertyId: current.propertyId, entityType: "conversation", entityId: current.id,
+        action: "status", details: { from: current.status, to: patch.status } });
     response.json(conversation);
   });
 
@@ -1935,6 +1993,16 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     if (!result) return response.status(404).json({ error: "Лид не найден" });
     const [lead] = await db.select().from(s.leads).where(eq(s.leads.id, request.params.id)).limit(1);
     response.status(201).json({ ...result, paymentStatus: lead?.paymentStatus });
+  });
+
+  router.use(createInboxRouter(db));
+  router.use(createStaffRouter(db));
+  router.use(createChannelsRouter(db));
+
+  router.use((error: unknown, _request: import("express").Request, response: import("express").Response, next: import("express").NextFunction) => {
+    if (error instanceof AccessDenied) return response.status(403).json({ error: error.message });
+    if (error instanceof z.ZodError) return response.status(400).json({ error: "Некорректные данные", issues: error.issues });
+    next(error);
   });
 
   return router;

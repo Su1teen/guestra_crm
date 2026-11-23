@@ -21,7 +21,7 @@ import type { LucideIcon } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Bell } from "lucide-react";
+import { Bell, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
@@ -86,7 +86,7 @@ export const AppShell = () => {
       ] },
       {
         title: "Управление",
-        items: [{ to: "/analytics", label: "Аналитика", icon: BarChart3 }],
+        items: [{ to: "/analytics", label: "Аналитика", icon: BarChart3 }, { to: "/staff", label: "Сотрудники и доступ", icon: ShieldCheck }],
       },
     ],
     [overdueTasks.length, unread],
@@ -147,7 +147,7 @@ export const AppShell = () => {
           <InitialsAvatar name={currentEmployee.name} initials={currentEmployee.initials} />
           <div className={cn("min-w-0 flex-1", collapsed && !isMobile && "hidden")}>
             <p className="truncate text-sm font-medium text-foreground">{currentEmployee.name}</p>
-            <p className="truncate text-xs text-muted-foreground">{currentEmployee.role} · {user?.dataMode === "database" ? "База данных" : "Демо"}</p>
+            <p className="truncate text-xs text-muted-foreground">{user?.roleLabel ?? currentEmployee.role} · {user?.dataMode === "database" ? "База данных" : "Демо"}</p>
           </div>
           <Button variant="ghost" size="icon" onClick={() => void logout()} aria-label="Выйти" title="Выйти"><LogOut className="h-4 w-4" /></Button>
         </div>

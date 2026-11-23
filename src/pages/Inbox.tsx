@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowRight, CalendarClock, Check, Circle, Inbox as InboxIcon, MessageCircle, Paperclip, Send, StickyNote, UserPlus } from "lucide-react";
+import { AlertTriangle, ArrowRight, CalendarClock, Check, Circle, Clock, Inbox as InboxIcon, MessageCircle, Paperclip, Send, Star, StickyNote, UserPlus, Users } from "lucide-react";
 import { EmptyState, ErrorState, LoadingScreen } from "@/components/common/States";
 import { InitialsAvatar } from "@/components/common/Identity";
 import { FilterSelect, SearchInput } from "@/components/common/Filters";
@@ -33,15 +33,19 @@ import { customerContext, effectiveStayStatus, operationalStatusLabels, reservat
 import { attentionForStay, folioForReservation, todayForStay } from "@/lib/stay-workspace";
 import { propertyTime } from "@/lib/service-time";
 import { previewMockOffer } from "@/lib/document-preview";
+import { useAuth } from "@/contexts/AuthContext";
+import { InboxTeamPanel } from "@/components/crm/InboxTeamPanel";
 
 const channelOptions = [
   { value: "all", label: "Все каналы" },
   ...Object.entries(channelLabels).map(([value, label]) => ({ value, label })),
 ];
-const inboxQueues: { value: InboxQueue; label: string }[] = [
-  { value: "focus", label: "Фокус" }, { value: "payment", label: "К оплате" },
-  { value: "follow_up", label: "Follow-up" }, { value: "waiting_guest", label: "Ждём гостя" },
-  { value: "all", label: "Все" }, { value: "archive", label: "Архив" },
+/** Attention queues plus the team's blocks: new (nobody owns it), in work, favorites, closed. */
+type InboxTab = InboxQueue | "new" | "in_work" | "favorites";
+const inboxQueues: { value: InboxTab; label: string }[] = [
+  { value: "focus", label: "Фокус" }, { value: "new", label: "Новые" }, { value: "in_work", label: "В работе" },
+  { value: "payment", label: "К оплате" }, { value: "follow_up", label: "Follow-up" }, { value: "waiting_guest", label: "Ждём гостя" },
+  { value: "favorites", label: "Избранное" }, { value: "archive", label: "Закрытые" },
 ];
 
 const handoffReasonLabels: Record<string, string> = {
@@ -73,10 +77,14 @@ const Inbox = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [params, setParams] = useSearchParams();
-  const [queue, setQueue] = useState<InboxQueue>(() => {
+  const { can } = useAuth();
+  const [queue, setQueue] = useState<InboxTab>(() => {
     const value = params.get("tab");
-    return inboxQueues.some((item) => item.value === value) ? value as InboxQueue : "focus";
+    return inboxQueues.some((item) => item.value === value) ? value as InboxTab : "focus";
   });
+  const [propertyTab, setPropertyTab] = useState<string>(() => params.get("property") ?? "all");
+  const [teamOpen, setTeamOpen] = useState(false);
+  const favoriteIds = new Set(data.favoriteConversationIds ?? []);
   const [channel, setChannel] = useState("all");
   const [search, setSearch] = useState("");
   const [teamScope, setTeamScope] = useState<"team" | "mine" | "unassigned">("team");
@@ -123,12 +131,21 @@ const Inbox = () => {
       attention: inboxAttention({ conversation, request: linkedRequest, reservation: linkedReservation, followUp, paymentRequest }) };
   };
 
+  const tabMatches = (tab: InboxTab, conversation: Conversation) => {
+    const { attention, linkedRequest, followUp } = contextFor(conversation);
+    if (tab === "favorites") return favoriteIds.has(conversation.id);
+    // New: nobody owns it and the AI is not leading it — the chats waiting for the distribution pool.
+    if (tab === "new") return inboxQueueMatches("all", attention, conversation, linkedRequest, followUp) && !conversation.assigneeId && attention.state !== "ai_handling";
+    if (tab === "in_work") return inboxQueueMatches("all", attention, conversation, linkedRequest, followUp) && Boolean(conversation.assigneeId);
+    return inboxQueueMatches(tab, attention, conversation, linkedRequest, followUp);
+  };
+  const propertyConversations = scoped.conversations.filter((conversation) => propertyTab === "all" || conversation.propertyId === propertyTab);
+
   const visibleConversations = (() => {
     const query = search.trim().toLowerCase();
-    return scoped.conversations.filter((conversation) => {
+    return propertyConversations.filter((conversation) => {
       if (channel !== "all" && conversation.channel !== channel) return false;
-      const { attention, linkedRequest, followUp } = contextFor(conversation);
-      if (!inboxQueueMatches(queue, attention, conversation, linkedRequest, followUp)) return false;
+      if (!tabMatches(queue, conversation)) return false;
       if (teamScope === "mine" && conversation.assigneeId !== currentEmployee.id) return false;
       if (teamScope === "unassigned" && conversation.assigneeId) return false;
       if (query) {
@@ -141,6 +158,8 @@ const Inbox = () => {
       }
       return true;
     }).sort((a, b) => {
+      const urgent = Number(Boolean(b.urgent)) - Number(Boolean(a.urgent));
+      if (urgent) return urgent;
       const priority = contextFor(b).attention.priority - contextFor(a).attention.priority;
       return priority || a.lastMessageAt.localeCompare(b.lastMessageAt);
     });
@@ -167,12 +186,13 @@ const Inbox = () => {
   if (status === "error") return <ErrorState onRetry={reload} />;
   if (status === "loading") return <LoadingScreen />;
 
-  const queueCounts = Object.fromEntries(inboxQueues.map(({ value }) => [value, scoped.conversations.filter((item) => {
-    const { attention, linkedRequest, followUp } = contextFor(item);
-    return inboxQueueMatches(value, attention, item, linkedRequest, followUp) &&
+  const queueCounts = Object.fromEntries(inboxQueues.map(({ value }) => [value, propertyConversations.filter((item) =>
+    tabMatches(value, item) &&
       (teamScope !== "mine" || item.assigneeId === currentEmployee.id) &&
-      (teamScope !== "unassigned" || !item.assigneeId);
-  }).length])) as Record<InboxQueue, number>;
+      (teamScope !== "unassigned" || !item.assigneeId)).length])) as Record<InboxTab, number>;
+  const propertyTabs = [{ id: "all", label: "Все" }, ...data.properties.map((property) => ({ id: property.id, label: property.shortName || property.name }))];
+  const urgentCountFor = (propertyId: string) => scoped.conversations.filter((item) => item.urgent && item.status !== "closed" &&
+    (propertyId === "all" || item.propertyId === propertyId)).length;
   const guest = selected ? guestById(selected.guestId) : undefined;
   const request = selected?.leadId ? leadById(selected.leadId) : undefined;
   const guestSummary = guest ? customerContext(data, guest.id) : null;
@@ -209,7 +229,28 @@ const Inbox = () => {
   const paidAmount = folio?.paidAmount ?? request?.paidAmount ?? 0;
   const balance = folio?.balance ?? Math.max(0, totalAmount - paidAmount);
 
-  const writeQueueToUrl = (nextQueue: InboxQueue) => {
+  const writePropertyToUrl = (nextProperty: string) => {
+    setPropertyTab(nextProperty);
+    const next = new URLSearchParams(params);
+    if (nextProperty === "all") next.delete("property"); else next.set("property", nextProperty);
+    setParams(next, { replace: true });
+  };
+  const toggleFavorite = async (conversation: Conversation) => {
+    try {
+      await apiRequest(`/api/crm/conversations/${conversation.id}/favorite`, { method: "PUT", body: JSON.stringify({ favorite: !favoriteIds.has(conversation.id) }) });
+      reload();
+    } catch (error) { toast({ title: "Не удалось изменить избранное", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); }
+  };
+  const toggleUrgent = async (conversation: Conversation) => {
+    try {
+      await apiRequest(`/api/crm/conversations/${conversation.id}/urgent`, { method: "POST", body: JSON.stringify({ urgent: !conversation.urgent }) });
+      reload(); toast({ title: conversation.urgent ? "Срочность снята" : "Отмечено как срочное" });
+    } catch (error) { toast({ title: "Не удалось изменить срочность", description: error instanceof Error ? error.message : undefined, variant: "destructive" }); }
+  };
+  const assignableEmployees = selected ? data.employees.filter((employee) => employee.propertyIds.includes(selected.propertyId) &&
+    (can("inbox.assign") || employee.id === currentEmployee.id || employee.id === selected.assigneeId)) : [];
+
+  const writeQueueToUrl = (nextQueue: InboxTab) => {
     setQueue(nextQueue);
     const next = new URLSearchParams(params);
     if (nextQueue === "focus") next.delete("tab");
@@ -500,7 +541,7 @@ const Inbox = () => {
           <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Ответственный за диалог</Label>
           <FilterSelect value={selected.assigneeId ?? "none"} onChange={(value) => {
             void assignConversation(selected.id, value === "none" ? null : value).then(() => toast({ title: "Ответственный обновлён" })).catch((error) => toast({ title: "Не удалось назначить диалог", description: error instanceof Error ? error.message : undefined, variant: "destructive" }));
-          }} options={[{ value: "none", label: "Без ответственного" }, ...data.employees.map((employee) => ({ value: employee.id, label: employee.name }))]} className="w-full" ariaLabel="Ответственный за диалог" />
+          }} options={[{ value: "none", label: "Без ответственного" }, ...assignableEmployees.map((employee) => ({ value: employee.id, label: employee.name }))]} className="w-full" ariaLabel="Ответственный за диалог" />
         </section>
         </div></details>
       </div>
@@ -514,8 +555,18 @@ const Inbox = () => {
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2 xl:flex-none"><SearchInput value={search} onChange={setSearch} placeholder="Гость, бронь или сообщение" className="w-full max-w-xs" /><FilterSelect value={channel} onChange={setChannel} options={channelOptions} ariaLabel="Канал" /></div>
       </div>
 
+      {propertyTabs.length > 2 && <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Объект">
+        {propertyTabs.map((tab) => {
+          const urgentCount = dataMode === "database" ? urgentCountFor(tab.id) : 0;
+          return <button key={tab.id} type="button" role="tab" aria-selected={propertyTab === tab.id} onClick={() => writePropertyToUrl(tab.id)}
+            className={cn("rounded-full border px-3 py-1 text-xs font-medium transition-colors", propertyTab === tab.id ? "border-brand-500 bg-brand-50 text-brand-800" : "border-border text-muted-foreground hover:bg-secondary/60")}>
+            {tab.label}{urgentCount > 0 && <span className="ml-1.5 rounded-full bg-red-600 px-1.5 text-[10px] font-semibold text-white">{urgentCount}</span>}
+          </button>;
+        })}
+      </div>}
+
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
-        <Tabs value={queue} onValueChange={(value) => writeQueueToUrl(value as InboxQueue)}>
+        <Tabs value={queue} onValueChange={(value) => writeQueueToUrl(value as InboxTab)}>
           <TabsList className="h-9 bg-transparent p-0">
             {inboxQueues.map(({ value, label }) => <TabsTrigger key={value} value={value} className="h-9 rounded-none border-b-2 border-transparent px-3 text-xs data-[state=active]:border-brand-500 data-[state=active]:bg-transparent data-[state=active]:text-foreground">
               {label} <span className="ml-1.5 text-[10px] text-muted-foreground">{queueCounts[value]}</span>
@@ -523,7 +574,8 @@ const Inbox = () => {
           </TabsList>
         </Tabs>
         <div className="flex flex-wrap items-center gap-1.5">
-          <FilterSelect value={teamScope} onChange={(value) => setTeamScope(value as typeof teamScope)} options={[{ value: "team", label: "Команда" }, { value: "mine", label: "Мои" }, { value: "unassigned", label: "Без ответственного" }]} ariaLabel="Чьи диалоги" />
+          <FilterSelect value={teamScope} onChange={(value) => setTeamScope(value as typeof teamScope)} options={[{ value: "team", label: can("inbox.view_all") ? "Команда" : "Мои и новые" }, { value: "mine", label: "Мои" }, { value: "unassigned", label: "Без ответственного" }]} ariaLabel="Чьи диалоги" />
+          {dataMode === "database" && <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5" onClick={() => setTeamOpen(true)}><Users className="h-3.5 w-3.5" />Команда</Button>}
           <Button type="button" size="sm" variant="outline" className="h-8 xl:hidden" onClick={() => setContextOpen(true)}>Контекст</Button>
         </div>
       </div>
@@ -539,6 +591,12 @@ const Inbox = () => {
               return <button key={conversation.id} type="button" onClick={() => setSelectedId(conversation.id)} className={cn("w-full border-l-[3px] px-3 py-3 text-left transition-colors", selected?.id === conversation.id ? "border-brand-500 bg-brand-50/60" : "border-transparent hover:bg-secondary/50")}>
                 <div className="flex items-center justify-between gap-2"><span className="flex min-w-0 items-center gap-2">{linkedRequest?.requestLifecycle === "definite" && <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" title="Готов оплатить" />}<InitialsAvatar name={person?.fullName ?? "Гость"} size="sm" /><span className="truncate text-sm font-medium">{person?.fullName ?? "Гость"}</span></span><span className="shrink-0 text-[10px] text-muted-foreground">{formatRelative(conversation.lastMessageAt)}</span></div>
                 <p className="mt-1.5 line-clamp-1 text-xs text-muted-foreground">{last?.text}</p>
+                {(conversation.urgent || conversation.delayedInboundAt || favoriteIds.has(conversation.id) || (conversation.assigneeId && conversation.assigneeId !== currentEmployee.id)) && <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[10px]">
+                  {conversation.urgent && <span className="inline-flex items-center gap-0.5 rounded bg-red-100 px-1.5 py-0.5 font-semibold text-red-800" title={conversation.urgentReason}><AlertTriangle className="h-3 w-3" />Срочно</span>}
+                  {conversation.delayedInboundAt && <span className="inline-flex items-center gap-0.5 rounded bg-secondary px-1.5 py-0.5 text-muted-foreground" title="Канал доставил сообщение позже, чем гость его отправил"><Clock className="h-3 w-3" />С задержкой</span>}
+                  {favoriteIds.has(conversation.id) && <Star className="h-3 w-3 fill-amber-400 text-amber-500" aria-label="В избранном" />}
+                  {conversation.assigneeId && conversation.assigneeId !== currentEmployee.id && <span className="truncate text-muted-foreground">{employeeById(conversation.assigneeId)?.shortName}</span>}
+                </div>}
                 <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10px]">
                   <span className="shrink-0 text-muted-foreground">{channelLabels[conversation.channel]}</span><span className="text-muted-foreground">·</span>
                   <span className={cn("truncate font-medium", rowAttention.requiresHuman ? "text-amber-700" : "text-muted-foreground")}>{rowAttention.label}</span>
@@ -555,6 +613,8 @@ const Inbox = () => {
           <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
             <div className="min-w-0"><div className="flex items-center gap-2"><button type="button" onClick={() => setRecognitionOpen(true)} className="truncate text-left text-sm font-semibold hover:text-brand-700 hover:underline">{guest.fullName}</button><span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-semibold">{attention?.label}</span></div><p className="text-xs text-muted-foreground">{channelLabels[selected.channel]} · {propertyById(selected.propertyId)?.shortName ?? selected.propertyId}{request?.roomType ? ` · ${request.roomType}` : ""}{request?.checkIn && request.checkOut ? ` · ${formatStayRange(request.checkIn, request.checkOut)}` : ""} · {automationMode === "ai" ? "AI active" : automationMode === "needs_human" ? "AI paused" : "Сотрудник"}</p></div>
             <div className="flex items-center gap-2">
+              {dataMode === "database" && <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => void toggleFavorite(selected)} aria-label={favoriteIds.has(selected.id) ? "Убрать из избранного" : "В избранное"} title={favoriteIds.has(selected.id) ? "Убрать из избранного" : "В избранное"}><Star className={cn("h-4 w-4", favoriteIds.has(selected.id) && "fill-amber-400 text-amber-500")} /></Button>}
+              {dataMode === "database" && <Button size="icon" variant="ghost" className={cn("h-8 w-8", selected.urgent && "text-red-600")} onClick={() => void toggleUrgent(selected)} aria-label={selected.urgent ? "Снять срочность" : "Отметить срочным"} title={selected.urgent ? `Снять срочность${selected.urgentReason ? ` (${selected.urgentReason})` : ""}` : "Отметить срочным"}><AlertTriangle className="h-4 w-4" /></Button>}
               {automationMode === "human" && selected.assigneeId === currentEmployee.id ? <Button size="sm" variant="outline" onClick={() => void changeAutomationMode()}>Вернуть ИИ</Button>
                 : <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void changeAutomationMode()}><UserPlus className="h-3.5 w-3.5" />Взять диалог</Button>}
               <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void changeConversationStatus()}><Check className="h-3.5 w-3.5" />{conversationQueueState(selected) === "closed" ? "Открыть" : "Закрыть"}</Button>
@@ -581,6 +641,7 @@ const Inbox = () => {
         <aside className="hidden min-h-0 overflow-hidden rounded-xl border border-border xl:block">{commandPanel}</aside>
       </div>
 
+      {dataMode === "database" && <InboxTeamPanel open={teamOpen} onOpenChange={setTeamOpen} initialPropertyId={propertyTab === "all" ? undefined : propertyTab} />}
       <Sheet open={contextOpen} onOpenChange={setContextOpen}><SheetContent side="right" className="w-[min(380px,92vw)] overflow-y-auto p-0"><SheetHeader className="sr-only"><SheetTitle>Контекст гостя</SheetTitle><SheetDescription>Текущая бронь, обращение и задача</SheetDescription></SheetHeader>{commandPanel}</SheetContent></Sheet>
       <Dialog open={offerOpen} onOpenChange={setOfferOpen}><DialogContent className="sm:max-w-xl"><DialogHeader><DialogTitle>Коммерческое предложение</DialogTitle><DialogDescription>Проверьте состав и сумму перед отправкой в текущий диалог.</DialogDescription></DialogHeader>
         {offerBlockers.length > 0 && <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><p className="font-semibold">Для КП нужно заполнить:</p><ul className="mt-1 list-inside list-disc">{offerBlockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul><Button size="sm" variant="outline" className="mt-2" onClick={() => request && navigate(`/requests/${request.id}`)}>Исправить обращение</Button></div>}
