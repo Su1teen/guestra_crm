@@ -1273,6 +1273,11 @@ describe("AI Guest Agent gateway", () => {
       expect.objectContaining({ topic: "contacts.address" }),
       expect.objectContaining({ topic: "amenities.overview" }),
     ]));
+    // Without a PMS link the agent gets no invented terms, only the property's own texts.
+    const terms = await request(app).get("/api/integrations/agent/cancellation-terms")
+      .set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).query({ propertyId: "les_borovoe" }).expect(200);
+    expect(terms.body).toMatchObject({ propertyId: "les_borovoe", source: "not_connected", depositPercentage: null, lateCancellationHours: null, rules: [] });
+    expect(Array.isArray(terms.body.policyTexts)).toBe(true);
   });
 
   it("creates offers only from a confirmed CRM rate and keeps guest requests idempotent", async () => {
