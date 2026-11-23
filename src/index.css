@@ -93,3 +93,11 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+/* Money reports print on A4 without the app chrome. */
+@media print {
+  @page { size: A4 portrait; margin: 12mm; }
+  body:has(.money-report) * { visibility: hidden; }
+  body:has(.money-report) .money-report, body:has(.money-report) .money-report * { visibility: visible; }
+  body:has(.money-report) .money-report { position: absolute; inset: 0 auto auto 0; width: 100%; font-size: 11px; }
+}

@@ -15,6 +15,8 @@ import { createInboxRouter } from "./inbox.js";
 import { createStaffRouter } from "./staff.js";
 import { createChannelsRouter } from "./channels.js";
 import { createTemplatesRouter } from "./templates.js";
+import { IntegrationError } from "../integration/contract.js";
+import { createMoneyReportsRouter } from "./money-reports.js";
 import { AccessDenied, accessMiddleware, accessOf, assertPermission, resourceGuard } from "../auth/access.js";
 import {
   ensureFolio, recalcFolio, removeFolioLineForItem, resolveItemPricing,
@@ -2000,10 +2002,13 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
   router.use(createStaffRouter(db));
   router.use(createChannelsRouter(db));
   router.use(createTemplatesRouter(db, config));
+  router.use(createMoneyReportsRouter(db, config as AppConfig));
 
   router.use((error: unknown, _request: import("express").Request, response: import("express").Response, next: import("express").NextFunction) => {
     if (error instanceof AccessDenied) return response.status(403).json({ error: error.message });
     if (error instanceof z.ZodError) return response.status(400).json({ error: "Некорректные данные", issues: error.issues });
+    if (error instanceof IntegrationError) return response.status(error.status).json({ error: error.code === "VERIFIED_PROPERTY_MAPPING_REQUIRED"
+      ? "Объект не связан с PMS: отчёты по деньгам строятся по данным PMS" : error.code === "PMS_NOT_CONFIGURED" ? "PMS не подключена" : "PMS не ответила, попробуйте ещё раз", code: error.code });
     next(error);
   });
 
