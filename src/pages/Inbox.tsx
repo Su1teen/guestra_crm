@@ -35,6 +35,7 @@ import { propertyTime } from "@/lib/service-time";
 import { previewMockOffer } from "@/lib/document-preview";
 import { useAuth } from "@/contexts/AuthContext";
 import { InboxTeamPanel } from "@/components/crm/InboxTeamPanel";
+import { TemplatePicker } from "@/components/crm/TemplatePicker";
 
 const channelOptions = [
   { value: "all", label: "Все каналы" },
@@ -634,7 +635,7 @@ const Inbox = () => {
             {replyDisabled && <p className="mb-2 rounded-md bg-secondary px-2.5 py-2 text-xs text-muted-foreground">{automationMode === "needs_human" ? "ИИ остановлен и ждёт сотрудника." : "Возьмите диалог в работу, чтобы ответить гостю."}</p>}
             <div className="mb-2 flex gap-1"><Button size="sm" variant={!asNote ? "secondary" : "ghost"} className="h-7 px-2 text-xs" disabled={replyDisabled} onClick={() => setAsNote(false)}>Ответ гостю</Button><Button size="sm" variant={asNote ? "secondary" : "ghost"} className="h-7 px-2 text-xs" onClick={() => setAsNote(true)}>Внутренняя заметка</Button></div>
             <Textarea id="inbox-message-draft" value={draft} onChange={(event) => setDraft(event.target.value)} rows={2} className="resize-none" disabled={!asNote && replyDisabled} placeholder={asNote ? "Заметка видна только команде" : replyDisabled ? "Сначала возьмите диалог в работу" : "Напишите сообщение гостю"} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submitMessage(); } }} />
-            <div className="mt-2 flex items-center justify-between"><Button variant="ghost" size="sm" className="h-8 gap-1.5 text-muted-foreground" disabled><Paperclip className="h-3.5 w-3.5" />Вложение</Button><Button size="sm" className="h-8 gap-1.5" onClick={() => void submitMessage()} disabled={!draft.trim() || busy || (!asNote && replyDisabled)}><Send className="h-3.5 w-3.5" />{busy ? "Отправляем…" : asNote ? "Сохранить заметку" : "Отправить"}</Button></div>
+            <div className="mt-2 flex items-center justify-between"><div className="flex items-center gap-1">{dataMode === "database" && <TemplatePicker conversationId={selected.id} disabled={replyDisabled} onSent={reload} onAction={(action) => { if (action === "offer") setOfferOpen(true); else if (paymentRequest) setPaymentRequestOpen(true); else toast({ title: "Запроса оплаты ещё нет", description: "Сначала оформите бронь или КП по обращению." }); }} />}<Button variant="ghost" size="sm" className="h-8 gap-1.5 text-muted-foreground" disabled><Paperclip className="h-3.5 w-3.5" />Вложение</Button></div><Button size="sm" className="h-8 gap-1.5" onClick={() => void submitMessage()} disabled={!draft.trim() || busy || (!asNote && replyDisabled)}><Send className="h-3.5 w-3.5" />{busy ? "Отправляем…" : asNote ? "Сохранить заметку" : "Отправить"}</Button></div>
           </div>
         </section> : <EmptyState title="Диалог не выбран" description="Выберите переписку из списка." icon={InboxIcon} />}
 

@@ -14,6 +14,7 @@ import { audit } from "../services/audit.js";
 import { createInboxRouter } from "./inbox.js";
 import { createStaffRouter } from "./staff.js";
 import { createChannelsRouter } from "./channels.js";
+import { createTemplatesRouter } from "./templates.js";
 import { AccessDenied, accessMiddleware, accessOf, assertPermission, resourceGuard } from "../auth/access.js";
 import {
   ensureFolio, recalcFolio, removeFolioLineForItem, resolveItemPricing,
@@ -1998,6 +1999,7 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
   router.use(createInboxRouter(db));
   router.use(createStaffRouter(db));
   router.use(createChannelsRouter(db));
+  router.use(createTemplatesRouter(db, config));
 
   router.use((error: unknown, _request: import("express").Request, response: import("express").Response, next: import("express").NextFunction) => {
     if (error instanceof AccessDenied) return response.status(403).json({ error: error.message });

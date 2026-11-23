@@ -5,10 +5,12 @@ import { startIntegrationRecovery } from "./integration/recovery.js";
 import { loadRegisteredMappings } from "./integration/registry.js";
 import { startDistributionLoop } from "./services/distribution.js";
 import { startProviderEventWorker } from "./meta/events.js";
+import { seedDefaultTemplates } from "./services/message-templates.js";
 
 const config = readConfig();
 const { db } = createDatabase(config.DATABASE_URL);
 await loadRegisteredMappings(db, config);
+await seedDefaultTemplates(db);
 const providerEvents = startProviderEventWorker(db);
 const app = createApp(db, config, { onProviderEvents: providerEvents.kick });
 const stopRecovery = startIntegrationRecovery(db, config);

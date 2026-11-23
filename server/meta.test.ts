@@ -198,3 +198,35 @@ describe("Meta normalizer", () => {
     expect(instagramContent({ message: { mid: "1", is_deleted: true } })).toBeNull();
   });
 });
+
+describe("message templates", () => {
+  const admin = () => { const agent = request.agent(app); return agent.post("/api/auth/login").send({ email: config.ADMIN_BOOTSTRAP_EMAIL, password: config.ADMIN_BOOTSTRAP_PASSWORD }).then(() => agent); };
+
+  it("fills a template for the chat and refuses to send what it cannot fill", async () => {
+    const agent = await admin();
+    const [conversation] = await conversationsOf("77015550001");
+    await db.update(s.conversations).set({ automationMode: "human", lastInboundAt: new Date().toISOString() }).where(eq(s.conversations.id, conversation!.id));
+    const list = await agent.get(`/api/crm/conversations/${conversation!.id}/templates`).expect(200);
+    const handoff = list.body.templates.find((item: { key: string }) => item.key === "handoff");
+    const reminder = list.body.templates.find((item: { key: string }) => item.key === "arrival_reminder");
+    expect(handoff.text).toBe("Передаю менеджеру, с вами свяжутся.");
+    expect(reminder.missing).toContain("booking_code");
+    await agent.post(`/api/crm/conversations/${conversation!.id}/templates/${reminder.id}/send`).send({}).expect(422);
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ messages: [{ id: "wamid.template" }] }), { status: 200 }));
+    const sent = await agent.post(`/api/crm/conversations/${conversation!.id}/templates/${handoff.id}/send`).send({}).expect(201);
+    fetchMock.mockRestore();
+    expect(sent.body.message).toMatchObject({ templateKey: "handoff", text: "Передаю менеджеру, с вами свяжутся.", deliveryStatus: "sent" });
+  });
+
+  it("lets a property override a default template without touching other properties", async () => {
+    const agent = await admin();
+    const defaults = await agent.get("/api/crm/message-templates").query({ propertyId: "les_borovoe" }).expect(200);
+    const handoff = defaults.body.templates.find((item: { key: string }) => item.key === "handoff");
+    await agent.put(`/api/crm/message-templates/${handoff.id}`).send({ propertyId: "les_borovoe", body: "Передаю администратору Борового." }).expect(200);
+    const borovoe = await agent.get("/api/crm/message-templates").query({ propertyId: "les_borovoe" }).expect(200);
+    const astana = await agent.get("/api/crm/message-templates").query({ propertyId: "les_astana" }).expect(200);
+    expect(borovoe.body.templates.filter((item: { key: string }) => item.key === "handoff").map((item: { body: string }) => item.body)).toEqual(["Передаю администратору Борового."]);
+    expect(astana.body.templates.find((item: { key: string }) => item.key === "handoff").body).toBe("Передаю менеджеру, с вами свяжутся.");
+  });
+});

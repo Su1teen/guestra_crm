@@ -21,7 +21,7 @@ import type { LucideIcon } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Bell, ShieldCheck } from "lucide-react";
+import { Bell, Radio, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
@@ -51,7 +51,7 @@ export const AppShell = () => {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("guestra-sidebar-collapsed") === "true");
   const location = useLocation();
   const { currentEmployee } = useCrm();
-  const { user, logout } = useAuth();
+  const { user, logout, can } = useAuth();
   const scoped = useScopedData();
 
   const unread = scoped.conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
@@ -86,10 +86,11 @@ export const AppShell = () => {
       ] },
       {
         title: "Управление",
-        items: [{ to: "/analytics", label: "Аналитика", icon: BarChart3 }, { to: "/staff", label: "Сотрудники и доступ", icon: ShieldCheck }],
+        items: [{ to: "/analytics", label: "Аналитика", icon: BarChart3 }, { to: "/staff", label: "Сотрудники и доступ", icon: ShieldCheck },
+          ...(can("channels.manage") && user?.dataMode === "database" ? [{ to: "/channels", label: "Каналы", icon: Radio }] : [])],
       },
     ],
-    [overdueTasks.length, unread],
+    [can, overdueTasks.length, unread, user?.dataMode],
   );
 
   const sidebar = (isMobile = false) => (

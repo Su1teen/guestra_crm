@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { Database } from "./client.js";
 import { createDatabase } from "./client.js";
 import { readConfig, type AppConfig } from "../config.js";
+import { seedDefaultTemplates } from "../services/message-templates.js";
 import * as s from "./schema.js";
 import { AgentInboundMessageSchema } from "../contracts/agent-contract.js";
 import { lesBorovoeUnitTypes, lesBorovoeLegacyCategoryNames } from "../../shared/les-borovoe-inventory.js";
@@ -879,6 +880,7 @@ export const bootstrapDatabase = async (db: Database, _config?: Pick<AppConfig,
     eventType: "agent_inbound_message", externalEventId: "agent-demo-duplicate-update",
     payloadHash: createHash("sha256").update(JSON.stringify(AgentInboundMessageSchema.parse(duplicatePayload))).digest("hex"),
     guestId: duplicateFixture.guestId, leadId: null }).onConflictDoNothing();
+  await seedDefaultTemplates(db);
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
