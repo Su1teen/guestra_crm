@@ -191,7 +191,8 @@ export async function mirrorReservation(db: Database, pms: PmsClient, propertyId
           unitTypeId: category?.id ?? null, roomTypeSnapshot: category?.name ?? snap.roomType?.name ?? null,
           holdExpiresAt: status.reservation === "pending" ? (snap.optionUntil ?? null) : null,
           ...(status.reservation === "confirmed" && snap.confirmedAt ? { confirmedAt: snap.confirmedAt } : {}), updatedAt: at }
-        : { status: status.reservation, updatedAt: at };
+        // PMS owns the option deadline for every stay, including ones created in CRM.
+        : { status: status.reservation, ...("optionUntil" in snap ? { holdExpiresAt: status.reservation === "pending" ? (snap.optionUntil ?? null) : null } : {}), updatedAt: at };
       await tx.update(s.reservations).set(patch).where(and(eq(s.reservations.id, reservationId), eq(s.reservations.propertyId, propertyId)));
       await tx.update(s.guestStays).set({ operationalStatus: status.stay, status: status.reservation,
         ...(snap.checkedInAt ? { actualCheckIn: snap.checkedInAt } : {}), ...(snap.checkedOutAt ? { actualCheckOut: snap.checkedOutAt } : {}),
