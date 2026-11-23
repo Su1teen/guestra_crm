@@ -3,6 +3,8 @@ import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 import { sendConversationMessage } from "./outbound-messaging.js";
+import { renderTemplate, templateContext, templatesFor } from "./message-templates.js";
+import { serviceWindowOpen } from "../meta/graph.js";
 
 type Config = { webhookUrl?: string; webhookToken?: string; whatsappWebhookUrl?: string; whatsappWebhookToken?: string };
 export class ScheduledMessageConflict extends Error {}
@@ -28,6 +30,22 @@ export const deliverScheduledMessage = async (db: Database, jobId: string, confi
       tx.select().from(s.propertyKnowledge).where(and(eq(s.propertyKnowledge.propertyId, job.propertyId),
         eq(s.propertyKnowledge.topic, "cancellation_policy"), eq(s.propertyKnowledge.active, true))).limit(1),
     ]);
+    // The 48-hour reminder is the property's editable template; a missing value stops it instead of reaching the guest blank.
+    if (job.triggerType === "pre_arrival_48h") {
+      const template = (await templatesFor(tx as unknown as Database, job.propertyId)).find((item) => item.key === "pre_arrival_48h");
+      const context = await templateContext(tx, conversation.id, null);
+      if (!template || !context) throw new ScheduledMessageConflict("Шаблон напоминания за 48 часов не найден");
+      const rendered = renderTemplate(template.body, context.values);
+      if (rendered.missing.length) throw new ScheduledMessageConflict(`Не хватает данных для напоминания: ${rendered.missing.join(", ")}`);
+      const params = template.waTemplateParams.map((name) => context.values[name] ?? "");
+      const useMeta = Boolean(template.waTemplateName && template.waStatus === "approved") && conversation.channel === "whatsapp"
+        && !serviceWindowOpen(conversation.lastInboundAt) && params.every(Boolean);
+      const [message] = await tx.insert(s.messages).values({ id: `message_${randomUUID()}`, conversationId: conversation.id,
+        direction: "out", text: rendered.text, sentAt: new Date().toISOString(), senderType: "system", deliveryStatus: "pending", templateKey: template.key,
+        idempotencyKey: `scheduled:${job.id}`, metadata: { scheduledJobId: job.id, reservationId: reservation.id, templateId: template.id,
+          ...(useMeta ? { waTemplate: { name: template.waTemplateName, language: template.waTemplateLanguage ?? template.language, params } } : {}) } }).returning();
+      return { job, messageId: message.id, duplicate: false };
+    }
     const days = job.triggerType === "pre_arrival_3d" ? "через 3 дня" : job.triggerType === "pre_arrival_1d" ? "завтра" : "скоро";
     const text = `Здравствуйте, ${guest?.fullName.split(/\s+/)[0] ?? "гость"}! Напоминаем: заезд в ${property?.name ?? "наш отель"} ${days}, ${new Date(reservation.arrivalAt).toLocaleDateString("ru-RU")}. Бронь ${reservation.externalConfirmationNumber ?? reservation.code}, категория ${reservation.roomTypeSnapshot ?? "размещение"}. ${policy[0]?.content ?? ""} Ждём вас!`.replace(/\s+/g, " ").trim();
     const [message] = await tx.insert(s.messages).values({ id: `message_${randomUUID()}`, conversationId: conversation.id,

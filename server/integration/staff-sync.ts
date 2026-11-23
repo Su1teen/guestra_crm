@@ -8,6 +8,7 @@ import { PmsClient } from "./pms-client.js";
 import { recalcFolio } from "../services/folio.js";
 import { autoAssignReservationUnit } from "../services/availability-service.js";
 import { normalizeEmail, normalizePhone } from "../services/customer-service.js";
+import { planPreArrivalMessages } from "../services/payment-service.js";
 
 /**
  * Staff two-way sync between this CRM and Guestra PMS.
@@ -150,6 +151,8 @@ export async function mirrorReservation(db: Database, pms: PmsClient, propertyId
         .where(and(eq(s.reservations.propertyId, propertyId), eq(s.reservations.externalReservationId, snap.id))).limit(1);
       reservationId = byExternal?.id ?? null;
     }
+    const [before] = reservationId ? await tx.select({ status: s.reservations.status, arrivalAt: s.reservations.arrivalAt }).from(s.reservations)
+      .where(and(eq(s.reservations.id, reservationId), eq(s.reservations.propertyId, propertyId))).limit(1) : [];
     const unitTypes = await tx.select().from(s.unitTypes).where(and(eq(s.unitTypes.propertyId, propertyId), eq(s.unitTypes.active, true)));
     const category = snap.roomType ? matchCategory(snap.roomType.name, unitTypes) : null;
     const nights = Math.max(1, Number(snap.nights) || 1);
@@ -191,7 +194,8 @@ export async function mirrorReservation(db: Database, pms: PmsClient, propertyId
           unitTypeId: category?.id ?? null, roomTypeSnapshot: category?.name ?? snap.roomType?.name ?? null,
           holdExpiresAt: status.reservation === "pending" ? (snap.optionUntil ?? null) : null,
           ...(status.reservation === "confirmed" && snap.confirmedAt ? { confirmedAt: snap.confirmedAt } : {}), updatedAt: at }
-        : { status: status.reservation, updatedAt: at };
+        // PMS owns the option deadline for every stay, including ones created in CRM.
+        : { status: status.reservation, ...("optionUntil" in snap ? { holdExpiresAt: status.reservation === "pending" ? (snap.optionUntil ?? null) : null } : {}), updatedAt: at };
       await tx.update(s.reservations).set(patch).where(and(eq(s.reservations.id, reservationId), eq(s.reservations.propertyId, propertyId)));
       await tx.update(s.guestStays).set({ operationalStatus: status.stay, status: status.reservation,
         ...(snap.checkedInAt ? { actualCheckIn: snap.checkedInAt } : {}), ...(snap.checkedOutAt ? { actualCheckOut: snap.checkedOutAt } : {}),
@@ -200,6 +204,18 @@ export async function mirrorReservation(db: Database, pms: PmsClient, propertyId
       if (["cancelled", "no_show", "completed"].includes(status.reservation))
         await tx.update(s.reservationUnits).set({ status: "released", updatedAt: at })
           .where(and(eq(s.reservationUnits.reservationId, reservationId), inArray(s.reservationUnits.status, ["assigned", "active"])));
+    }
+    // Pre-arrival reminders follow the booking: cancelled or moved → old ones stop; confirmed → planned for the new dates.
+    const [after] = await tx.select().from(s.reservations).where(and(eq(s.reservations.id, reservationId), eq(s.reservations.propertyId, propertyId))).limit(1);
+    if (after) {
+      const moved = Boolean(before) && Date.parse(before!.arrivalAt) !== Date.parse(after.arrivalAt);
+      if (["cancelled", "no_show"].includes(after.status) || moved)
+        await tx.update(s.scheduledOutboundMessages).set({ status: "cancelled", updatedAt: at })
+          .where(and(eq(s.scheduledOutboundMessages.reservationId, after.id), eq(s.scheduledOutboundMessages.status, "pending")));
+      if (after.status === "confirmed" && (!before || before.status !== "confirmed" || moved)) {
+        const [conversation] = await tx.select({ id: s.conversations.id }).from(s.conversations).where(eq(s.conversations.reservationId, after.id)).limit(1);
+        await planPreArrivalMessages(tx, after, conversation?.id ?? null, at);
+      }
     }
     await remember(tx, propertyId, "reservation", reservationId, snap.id, origin, { status: pmsTargetFor(status.reservation, status.stay) });
     if (snap.folio) await mirrorFolio(tx, propertyId, reservationId, customerId, origin, snap);

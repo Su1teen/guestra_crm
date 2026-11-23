@@ -173,5 +173,12 @@ describe("CRM -> PMS push", () => {
     expect(applied).toBe(1);
     const [link] = await db.select().from(i.staffSync).where(and(eq(i.staffSync.entity, "reservation"), eq(i.staffSync.localId, reservationId)));
     expect(link).toMatchObject({ remoteId: pmsReservation, origin: "crm" });
+    // PMS owns the option deadline, also for a stay created in CRM.
+    resolveReply = { kind: "reservation", reservation: { ...pmsStay("pending"), id: pmsReservation, confirmationNumber: "HAIP-SYNC-2",
+      crm: { reservationId, customerId: guestId }, optionUntil: "2027-02-01T11:30:00.000Z", folio: null } };
+    await mirrorPmsEntity(db, pms, "les_borovoe", "reservation", pmsReservation);
+    const [held] = await db.select().from(s.reservations).where(eq(s.reservations.id, reservationId));
+    expect(held!.status).toBe("pending");
+    expect(new Date(held!.holdExpiresAt!).toISOString()).toBe("2027-02-01T11:30:00.000Z");
   });
 });

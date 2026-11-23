@@ -2,7 +2,8 @@
   "safe": [
     "bootstrap/0001_principal_registry.sql",
     "core/0015_staff_access_and_chat_distribution.sql",
-    "core/0016_messaging_channels_and_templates.sql"
+    "core/0016_messaging_channels_and_templates.sql",
+    "core/0017_reminders_and_report_templates.sql"
   ],
   "integration": [
     "integration/0001_cross_database_v2.sql",

@@ -1168,6 +1168,8 @@ export const propertyInboxSettings = pgTable("property_inbox_settings", {
   delayedAfterMinutes: integer("delayed_after_minutes").notNull().default(60),
   handoffMessage: text("handoff_message"),
   handoffMessageOffHours: text("handoff_message_off_hours"),
+  /** Pre-arrival reminders this property sends: pre_arrival_3d | pre_arrival_1d | pre_arrival_48h. */
+  preArrivalReminders: jsonb("pre_arrival_reminders").$type<string[]>().notNull().default(["pre_arrival_3d", "pre_arrival_1d"]),
   updatedBy: text("updated_by").references(() => employees.id, { onDelete: "set null" }),
   updatedAt: updatedAt(),
 });
@@ -1275,3 +1277,17 @@ export const messageTemplates = pgTable("message_templates", {
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
+
+/** Saved report settings: the report, its filters, grouping and columns; never the figures. */
+export const reportTemplates = pgTable("report_templates", {
+  id: text("id").primaryKey(),
+  reportKey: text("report_key").notNull(),
+  name: text("name").notNull(),
+  params: jsonb("params").$type<Record<string, unknown>>().notNull().default({}),
+  /** me | team | management */
+  visibility: text("visibility").notNull().default("me"),
+  ownerUserId: text("owner_user_id").notNull(),
+  propertyIds: jsonb("property_ids").$type<string[]>().notNull().default([]),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (table) => [index("report_templates_owner_idx").on(table.ownerUserId)]);

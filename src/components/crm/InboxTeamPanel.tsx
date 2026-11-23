@@ -22,7 +22,9 @@ interface TeamMember {
 interface InboxSettings {
   distributionEnabled: boolean; shiftStart: string; shiftEnd: string; urgentKeywords: string[];
   delayedAfterMinutes: number; handoffMessage: string | null; handoffMessageOffHours: string | null;
+  preArrivalReminders?: string[];
 }
+const REMINDERS: [string, string][] = [["pre_arrival_3d", "За 3 дня"], ["pre_arrival_48h", "За 48 часов"], ["pre_arrival_1d", "За 1 день"]];
 interface Distribution {
   propertyId: string; businessDate: string; localTime: string; inShift: boolean; settings: InboxSettings;
   pool: number; team: TeamMember[]; canManage: boolean;
@@ -149,6 +151,15 @@ export const InboxTeamPanel = ({ open, onOpenChange, initialPropertyId }: { open
               <div className="space-y-1"><Label htmlFor="delayed-after" className="text-xs">«Пришло с задержкой», если доставлено позже чем через, мин</Label><Input id="delayed-after" type="number" min={5} value={settingsDraft.delayedAfterMinutes} onChange={(event) => setSettingsDraft({ ...settingsDraft, delayedAfterMinutes: Number(event.target.value) })} /></div>
               <div className="space-y-1"><Label htmlFor="handoff-day" className="text-xs">Сообщение гостю при передаче менеджеру</Label><Textarea id="handoff-day" rows={2} value={settingsDraft.handoffMessage ?? ""} placeholder="Передаю менеджеру, с вами свяжутся." onChange={(event) => setSettingsDraft({ ...settingsDraft, handoffMessage: event.target.value })} /></div>
               <div className="space-y-1"><Label htmlFor="handoff-night" className="text-xs">То же, вне смены</Label><Textarea id="handoff-night" rows={2} value={settingsDraft.handoffMessageOffHours ?? ""} placeholder="Передаю менеджеру, с вами свяжутся утром." onChange={(event) => setSettingsDraft({ ...settingsDraft, handoffMessageOffHours: event.target.value })} /></div>
+              <div className="space-y-1"><p className="text-xs font-medium">Напоминания гостю перед заездом</p>
+                <div className="flex flex-wrap gap-3">{REMINDERS.map(([key, label]) => {
+                  const chosen = (settingsDraft.preArrivalReminders ?? ["pre_arrival_3d", "pre_arrival_1d"]).includes(key);
+                  return <label key={key} className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={chosen} onChange={(event) => {
+                    const current = settingsDraft.preArrivalReminders ?? ["pre_arrival_3d", "pre_arrival_1d"];
+                    setSettingsDraft({ ...settingsDraft, preArrivalReminders: event.target.checked ? [...current, key] : current.filter((item) => item !== key) });
+                  }} />{label}</label>;
+                })}</div>
+                <p className="text-[11px] text-muted-foreground">Текст напоминания за 48 часов — шаблон «Напоминание за 48 часов».</p></div>
               <Button variant="outline" className="w-full" disabled={busy} onClick={() => void saveSettings()}>Сохранить настройки</Button>
             </section>}
           </>}

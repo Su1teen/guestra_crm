@@ -174,7 +174,8 @@ export const createInboxRouter = (db: Database) => {
       urgentKeywords: z.array(z.string().trim().min(2).max(60)).max(100),
       delayedAfterMinutes: z.number().int().min(5).max(7 * 24 * 60),
       handoffMessage: z.string().trim().max(1000).nullable().optional(),
-      handoffMessageOffHours: z.string().trim().max(1000).nullable().optional() }).parse(request.body);
+      handoffMessageOffHours: z.string().trim().max(1000).nullable().optional(),
+      preArrivalReminders: z.array(z.enum(["pre_arrival_3d", "pre_arrival_48h", "pre_arrival_1d"])).max(3).optional() }).parse(request.body);
     const values = { ...body, handoffMessage: body.handoffMessage || null, handoffMessageOffHours: body.handoffMessageOffHours || null,
       updatedBy: access.employeeId, updatedAt: new Date().toISOString() };
     await db.insert(s.propertyInboxSettings).values({ propertyId, ...values })

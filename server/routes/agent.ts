@@ -9,6 +9,7 @@ import { requireScope } from "../integration/security.js";
 import { createIntegrationV2Router } from "../integration/router.js";
 import { IntegrationError } from "../integration/contract.js";
 import {getIntegratedContext} from "../integration/context.js";
+import { PmsClient } from "../integration/pms-client.js";
 import { and, asc, desc, eq, gt, gte, inArray, notInArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { AGENT_API_VERSION, AGENT_ATTACHMENT_KINDS, AGENT_ATTACHMENT_PROCESSING_STATES, AGENT_BOOKING_MODES,
@@ -246,6 +247,36 @@ export const createAgentRouter = (db: Database, apiKey: string, config?: AppConf
         tags: item.tags, language: item.language, source: item.source }));
     response.json({ propertyId: query.propertyId, query: { topic: query.topic ?? null, q: query.q ?? null,
       tags: requestedTags }, items });
+  });
+  /**
+   * Booking guarantee and cancellation terms for the agent: the property's PMS booking policy and its own
+   * cancellation texts from the knowledge base. Values the property has not set are returned as null.
+   */
+  router.get("/cancellation-terms", async (request, response) => {
+    const { propertyId } = z.object({ propertyId: z.string().trim().min(1) }).parse(request.query);
+    const rows = await db.select().from(s.propertyKnowledge).where(and(eq(s.propertyKnowledge.propertyId, propertyId),
+      eq(s.propertyKnowledge.active, true))).orderBy(asc(s.propertyKnowledge.topic));
+    const policyTexts = rows.filter((item) => /отмен|возврат|предоплат|cancel|refund|prepay/i.test(`${item.topic} ${item.title} ${item.tags.join(" ")}`))
+      .slice(0, 5).map((item) => ({ topic: item.topic, title: item.title, content: item.content.slice(0, 1500), language: item.language }));
+    let terms: { depositPercentage: number | null; lateCancellationHours: number | null; optionHoldMinutes: number | null } =
+      { depositPercentage: null, lateCancellationHours: null, optionHoldMinutes: null };
+    let source = "not_connected";
+    if (config?.CRM_PMS_INTEGRATION_ENABLED === "true") {
+      try {
+        const pms = new PmsClient(config);
+        pms.mapping(propertyId);
+        const read = await pms.call(propertyId, "v2/booking-terms", "GET") as Record<string, unknown>;
+        terms = { depositPercentage: typeof read.depositPercentage === "number" ? read.depositPercentage : null,
+          lateCancellationHours: typeof read.lateCancellationHours === "number" ? read.lateCancellationHours : null,
+          optionHoldMinutes: typeof read.optionHoldMinutes === "number" ? read.optionHoldMinutes : null };
+        source = "guestra_pms";
+      } catch { source = "unavailable"; }
+    }
+    response.json({ propertyId, source, ...terms,
+      rules: terms.depositPercentage == null ? [] : [
+        `Бронь подтверждается после предоплаты ${terms.depositPercentage}% от стоимости.`,
+        ...(terms.lateCancellationHours == null ? [] : [`Изменить или отменить бронь без удержания можно не позднее чем за ${terms.lateCancellationHours} ч до заезда; при более поздней отмене предоплата не возвращается.`]),
+      ], policyTexts });
   });
   router.get("/accommodations/options", async (request, response) => {
     const query = AgentAccommodationOptionsQuerySchema.parse(request.query);

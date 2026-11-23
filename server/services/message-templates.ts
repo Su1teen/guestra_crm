@@ -16,12 +16,14 @@ export const DEFAULT_TEMPLATES: Pick<TemplateRow, "key" | "category" | "title" |
     body: "Здравствуйте, {{guest_first_name}}! Недавно мы обсуждали {{offer}}. Подскажите, это ещё актуально для вас? Если появились вопросы, с радостью помогу." },
   { key: "arrival_reminder", category: "stay", title: "Напоминание о заезде", action: null, sortOrder: 30,
     body: "Здравствуйте, {{guest_first_name}}! Напоминаем: заезд в {{property_name}} {{arrival_date}}. Бронь {{booking_code}}, категория {{room_type}}. Ждём вас!" },
+  { key: "pre_arrival_48h", category: "stay", title: "Напоминание за 48 часов", action: null, sortOrder: 35,
+    body: "Здравствуйте, {{guest_first_name}}! Напоминаем о бронировании в {{property_name}}: {{arrival_date}} – {{departure_date}}, заезд с {{check_in_time}}. Бронь {{booking_code}}, {{room_type}}. Оплачено: {{paid_amount}}. Изменить или отменить бронь можно до {{change_deadline}}; при более поздней отмене предоплата не возвращается." },
   { key: "send_offer", category: "sales", title: "Коммерческое предложение", action: "offer", sortOrder: 40, body: "" },
   { key: "payment_request", category: "payment", title: "Запрос оплаты", action: "payment_request", sortOrder: 50, body: "" },
 ];
 
 export const TEMPLATE_VARIABLES = ["guest_first_name", "guest_name", "property_name", "booking_code", "arrival_date", "departure_date",
-  "room_type", "offer", "total_amount", "deposit_amount", "manager_name"] as const;
+  "room_type", "offer", "total_amount", "deposit_amount", "manager_name", "check_in_time", "paid_amount", "change_deadline"] as const;
 
 export const seedDefaultTemplates = async (db: Pick<Database, "insert">) => {
   await db.insert(s.messageTemplates).values(DEFAULT_TEMPLATES.map((template) => ({ id: `template_default_${template.key}`, propertyId: null,
@@ -30,9 +32,12 @@ export const seedDefaultTemplates = async (db: Pick<Database, "insert">) => {
 
 const tenge = (value: number | null | undefined) => value || value === 0 ? `${new Intl.NumberFormat("ru-RU").format(value).replace(/[\u00a0\u202f]/g, " ")} ₸` : "";
 const day = (value: string | null | undefined, timezone: string) => value ? new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", timeZone: timezone }).format(new Date(value)) : "";
+const clock = (value: string | null | undefined, timezone: string) => value ? new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone: timezone }).format(new Date(value)) : "";
+/** Changes are free until 24 hours before arrival (the late-cancellation limit). */
+export const CHANGE_DEADLINE_HOURS = 24;
 
 /** Values of the template variables for one chat: guest, property, its request and booking. */
-export const templateContext = async (db: Database, conversationId: string, employeeId: string | null) => {
+export const templateContext = async (db: Pick<Database, "select">, conversationId: string, employeeId: string | null) => {
   const [conversation] = await db.select().from(s.conversations).where(eq(s.conversations.id, conversationId)).limit(1);
   if (!conversation) return null;
   const [[guest], [property], [employee]] = await Promise.all([
@@ -47,6 +52,9 @@ export const templateContext = async (db: Database, conversationId: string, empl
       conversation.reservationId ? eq(s.reservations.id, conversation.reservationId) : eq(s.reservations.requestId, lead!.id)))
       .orderBy(desc(s.reservations.createdAt)).limit(1) : [];
   const timezone = property?.timezone ?? "Asia/Almaty";
+  const [folio] = reservation ? await db.select({ paidAmount: s.folios.paidAmount }).from(s.folios)
+    .where(eq(s.folios.reservationId, reservation.id)).orderBy(desc(s.folios.createdAt)).limit(1) : [];
+  const deadline = reservation ? new Date(new Date(reservation.arrivalAt).getTime() - CHANGE_DEADLINE_HOURS * 3_600_000).toISOString() : null;
   const firstName = guest?.firstName || guest?.fullName.split(/\s+/)[0] || "";
   const roomType = reservation?.roomTypeSnapshot ?? lead?.roomType ?? "";
   const values: Record<string, string> = {
@@ -55,6 +63,8 @@ export const templateContext = async (db: Database, conversationId: string, empl
     arrival_date: day(reservation?.arrivalAt ?? lead?.checkIn, timezone), departure_date: day(reservation?.departureAt ?? lead?.checkOut, timezone),
     room_type: roomType, offer: roomType ? `размещение «${roomType}»` : "",
     total_amount: tenge(lead?.totalAmount), deposit_amount: tenge(lead?.deposit), manager_name: employee?.name ?? "",
+    check_in_time: clock(reservation?.arrivalAt, timezone), paid_amount: folio ? tenge(folio.paidAmount) : "",
+    change_deadline: deadline ? `${day(deadline, timezone)} ${clock(deadline, timezone)}` : "",
   };
   return { conversation, values, lead: lead ?? null, reservation: reservation ?? null };
 };

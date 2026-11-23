@@ -21,7 +21,7 @@ import type { LucideIcon } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Bell, Radio, ShieldCheck } from "lucide-react";
+import { Bell, Radio, ShieldCheck, Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCrm } from "@/store/crm-store";
 import { useScopedData } from "@/hooks/use-scoped-data";
@@ -86,7 +86,7 @@ export const AppShell = () => {
       ] },
       {
         title: "Управление",
-        items: [{ to: "/analytics", label: "Аналитика", icon: BarChart3 }, { to: "/staff", label: "Сотрудники и доступ", icon: ShieldCheck },
+        items: [{ to: "/money-reports", label: "Деньги и отчёты", icon: Wallet }, { to: "/analytics", label: "Аналитика", icon: BarChart3 }, { to: "/staff", label: "Сотрудники и доступ", icon: ShieldCheck },
           ...(can("channels.manage") && user?.dataMode === "database" ? [{ to: "/channels", label: "Каналы", icon: Radio }] : [])],
       },
     ],

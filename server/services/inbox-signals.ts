@@ -18,6 +18,7 @@ export const inboxSettings = async (db: Pick<Database, "select">, propertyId: st
     delayedAfterMinutes: row?.delayedAfterMinutes ?? 60,
     handoffMessage: row?.handoffMessage ?? null,
     handoffMessageOffHours: row?.handoffMessageOffHours ?? null,
+    preArrivalReminders: row?.preArrivalReminders ?? ["pre_arrival_3d", "pre_arrival_1d"],
     configured: Boolean(row),
   };
 };
