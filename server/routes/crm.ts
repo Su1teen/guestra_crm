@@ -17,6 +17,8 @@ import { createChannelsRouter } from "./channels.js";
 import { createTemplatesRouter } from "./templates.js";
 import { IntegrationError } from "../integration/contract.js";
 import { createMoneyReportsRouter } from "./money-reports.js";
+import { createKnowledgeRouter } from "./knowledge.js";
+import { createPmsViewsRouter } from "./pms-views.js";
 import { AccessDenied, accessMiddleware, accessOf, assertPermission, resourceGuard } from "../auth/access.js";
 import {
   ensureFolio, recalcFolio, removeFolioLineForItem, resolveItemPricing,
@@ -2003,6 +2005,8 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
   router.use(createChannelsRouter(db));
   router.use(createTemplatesRouter(db, config));
   router.use(createMoneyReportsRouter(db, config as AppConfig));
+  router.use(createKnowledgeRouter(db));
+  router.use(createPmsViewsRouter(db, config as AppConfig));
 
   router.use((error: unknown, _request: import("express").Request, response: import("express").Response, next: import("express").NextFunction) => {
     if (error instanceof AccessDenied) return response.status(403).json({ error: error.message });

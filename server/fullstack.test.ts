@@ -1278,6 +1278,14 @@ describe("AI Guest Agent gateway", () => {
       .set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).query({ propertyId: "les_borovoe" }).expect(200);
     expect(terms.body).toMatchObject({ propertyId: "les_borovoe", source: "not_connected", depositPercentage: null, lateCancellationHours: null, rules: [] });
     expect(Array.isArray(terms.body.policyTexts)).toBe(true);
+    // Prices and stay history come only from PMS; without it the agent gets nothing to repeat.
+    const prices = await request(app).get("/api/integrations/agent/price-calendar")
+      .set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).query({ propertyId: "les_borovoe", from: "2027-06-01", to: "2027-06-07" }).expect(200);
+    expect(prices.body).toMatchObject({ source: "not_connected", days: [] });
+    await request(app).get("/api/integrations/agent/price-calendar")
+      .set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).query({ propertyId: "les_borovoe", from: "2027-06-01", to: "2027-08-01" }).expect(400);
+    await request(app).get("/api/integrations/agent/guest-history")
+      .set("x-crm-api-key", config.CRM_INTEGRATION_API_KEY).query({ propertyId: "les_borovoe", channel: "telegram", externalUserId: "tg_nobody_here" }).expect(404);
   });
 
   it("creates offers only from a confirmed CRM rate and keeps guest requests idempotent", async () => {

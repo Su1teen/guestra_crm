@@ -37,6 +37,7 @@ import {
   stayStatusLabels,
 } from "@/lib/labels";
 import CashbackWallet from "@/components/common/CashbackWallet";
+import { PmsStayHistory } from "@/components/crm/PmsStayHistory";
 import { buildReputationReviews, CHANNELS } from "@/lib/reputation-demo";
 import { customerContext, reservationStatusLabels, operationalStatusLabels } from "@/lib/hospitality";
 import { folioForReservation, todayForStay } from "@/lib/stay-workspace";
@@ -254,6 +255,8 @@ const GuestDetail = () => {
           </div>
         </div>
       )}
+
+      {tab === "bookings" && dataMode === "database" && <PmsStayHistory guestId={guest.id} properties={data.properties} />}
 
       {tab === "bookings" && related.reservations.length === 0 && (
         <SectionCard padded={false} bodyClassName="p-0">

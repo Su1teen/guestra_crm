@@ -172,7 +172,8 @@ const MoneyReports = () => {
         columns: [{ key: "label", header: "Статья", width: 34 }, { key: "plan", header: "План", format: "currency" }, { key: "fact", header: "Факт", format: "currency" },
           { key: "variance", header: "Отклонение", format: "currency" }, { key: "previous", header: "Прошлый период", format: "currency" }],
         rows: lines, methodology: [{ metric: "Доходы", formula: "Оплаты за период по долям категорий в цене брони, плюс штрафы" }, { metric: "Себестоимость", formula: "Себестоимость включённых услуг (питание поставщика и др.)" },
-          { metric: "Расходы", formula: "Вводятся вручную; пусто = «не заполнено»" }] });
+          { metric: "Расходы", formula: "Вводятся вручную; пусто = «не заполнено»" },
+          { metric: "Комплиментарное и бартер", formula: "Доход 0; ночи и себестоимость учитываются, процент менеджера не начисляется" }] });
     }
   };
 
@@ -319,6 +320,7 @@ const MoneyReports = () => {
             <ManagementRow line={result.result} strong />
           </tbody>
         </table></div>
+        {result.complimentary && <p className="pt-3 text-sm text-muted-foreground">Комплиментарное и бартер: {result.complimentary.stays} брон., {result.complimentary.nights} ноч. (прошлый период {result.complimentary.previousNights}); доход 0, себестоимость {money(result.complimentary.cost)} входит в строку «Себестоимость».</p>}
       </SectionCard>
     </>}
 
