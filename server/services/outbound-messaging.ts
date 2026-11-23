@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
+import { sendViaMeta, sendViaStudio } from "../meta/graph.js";
 
 type OutboundConfig = { webhookUrl?: string; webhookToken?: string; whatsappWebhookUrl?: string; whatsappWebhookToken?: string };
 type OutboundResult = { sent: boolean; code?: string; error?: string; externalMessageId?: string };
@@ -67,6 +68,12 @@ export const sendConversationMessage = async (db: DbLike, messageId: string, con
   const [conversation] = await db.select().from(s.conversations)
     .where(eq(s.conversations.id, message.conversationId)).limit(1);
   if (message.deliveryStatus === "sent" && message.externalMessageId) return { sent: true, externalMessageId: message.externalMessageId };
+  // A chat that came through a connected messaging account answers through the same account.
+  if (conversation?.channelAccountId) {
+    const [account] = await db.select().from(s.channelAccounts).where(eq(s.channelAccounts.id, conversation.channelAccountId)).limit(1);
+    if (account?.provider === "meta_cloud") return sendViaMeta(db, message, conversation, account);
+    if (account?.provider === "studio") return sendViaStudio(db, message, conversation, account);
+  }
   const transport = conversation ? transports[conversation.channel] : undefined;
   if (!conversation || !transport || (conversation.channel !== "simulator" && !conversation.externalChatId)) {
     return fail(db, message, "Канал не поддерживает отправку или не указан внешний chat id");

@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 import { recalcFolio } from "./folio.js";
+import { recordLeadClosed } from "./attribution.js";
 
 type Tx = Pick<Database, "select" | "insert" | "update" | "delete" | "execute">;
 const id = (kind: string) => `${kind}_${randomUUID()}`;
@@ -52,6 +53,7 @@ export const receivePaymentRequest = async (tx: Tx, paymentRequestId: string, in
     await tx.insert(s.requestLifecycleHistory).values({ id: id("request_lifecycle"), leadId: paymentRequest.leadId,
       fromStatus: "definite", toStatus: "won", source: "payment", employeeId: input.employeeId ?? null,
       reason: "Предоплата получена", changedAt: timestamp });
+    await recordLeadClosed(tx, paymentRequest.leadId, input.employeeId ?? null, timestamp);
     // Financial facts cannot release sticky human takeover. Resume is explicit.
     await tx.update(s.conversations).set({ reservationId: reservation.id, stayId: stay?.id ?? null,
       updatedAt: timestamp })

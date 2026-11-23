@@ -6,6 +6,7 @@ import { assignReservationUnit, autoAssignReservationUnit } from "./availability
 import { resolveOrCreateExternalCustomer } from "./customer-service.js";
 import { ensureFolio, recalcFolio } from "./folio.js";
 import { planPreArrivalMessages } from "./payment-service.js";
+import { recordLeadClosed } from "./attribution.js";
 
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const now = () => new Date().toISOString();
@@ -130,6 +131,7 @@ export const bookAcceptedOfferByCategoryInTransaction = async (tx: AgentReservat
     id: id("request_lifecycle"), leadId: lead.id, fromStatus: lead.requestLifecycle,
     toStatus: requiresPayment ? "definite" : "won", source: "agent_booking",
     reason: requiresPayment ? "Гость согласился на бронирование, ожидается предоплата" : "Оплата не требуется", changedAt: timestamp });
+  if (!requiresPayment) await recordLeadClosed(tx, lead.id, null, timestamp);
   if (lead.stage !== (requiresPayment ? "payment_pending" : "confirmed")) await tx.insert(s.leadStageHistory).values({
     id: id("stage"), leadId: lead.id, stage: requiresPayment ? "payment_pending" : "confirmed", employeeId: null, changedAt: timestamp,
   });
@@ -318,6 +320,7 @@ export const confirmBooking = async (db: Database, input: ConfirmBookingInput) =
       roomType: input.roomType, checkIn: arrivalAt, checkOut: departureAt, nights,
       adults: input.adults, children: input.children, lastActivityAt: timestamp, updatedAt: timestamp,
     }).where(eq(s.leads.id, request.id));
+    await recordLeadClosed(tx, request.id, null, timestamp);
     if (request.stage !== "confirmed") await tx.insert(s.leadStageHistory).values({
       id: id("stage"), leadId: request.id, stage: "confirmed", changedAt: timestamp,
     });

@@ -12,13 +12,16 @@ import { createCommunicationRouter } from "./routes/communications.js";
 import { denyMockSession } from "./integration/security.js";
 import { createPmsWebhookRouter } from "./integration/webhook.js";
 import { createMediaRetrievalRouter } from "./integration/media.js";
+import { createMetaWebhookRouter } from "./meta/webhook.js";
 
-export const createApp = (db: Database, config: AppConfig) => {
+export const createApp = (db: Database, config: AppConfig, hooks: { onProviderEvents?: () => void } = {}) => {
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "1mb", verify: (request, _response, body) => {
     (request as unknown as { rawBody: Buffer }).rawBody = Buffer.from(body);
   } }));
+  // Signed by Meta, not by a staff session: mounted before the session middleware.
+  app.use("/api/webhooks/meta", createMetaWebhookRouter(db, config, hooks.onProviderEvents));
   app.use(authMiddleware(db, config.SESSION_SECRET));
   app.use("/api/auth", createAuthRouter(db, config));
   app.use("/api/crm", createCrmRouter(db, config));

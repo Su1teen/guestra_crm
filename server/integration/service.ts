@@ -7,6 +7,7 @@ import {hashAgentPayload} from "../services/agent-action-service.js";
 import {IntegrationError,IntegrationEventSchema,type IntegrationEvent} from "./contract.js";
 import {PmsClient} from "./pms-client.js";
 import {mirrorPmsEntity,staffSyncEnabled} from "./staff-sync.js";
+import { recordLeadClosed } from "../services/attribution.js";
 type Tx=Pick<Database,"select"|"insert"|"update"|"execute">;
 export async function verifiedMapping(tx:Tx,input:typeof i.integrationMappings.$inferInsert) {
   const where=and(eq(i.integrationMappings.propertyId,input.propertyId),eq(i.integrationMappings.sourceSystem,input.sourceSystem),
@@ -73,6 +74,7 @@ export async function projectSnapshot(tx:Tx,pms:PmsClient,propertyId:string,cust
       if(lead.stage!==stage)await tx.insert(s.leadStageHistory).values({id:"pms_stage_"+randomUUID(),leadId:lead.id,stage,changedAt:timestamp});
       if(lead.requestLifecycle!==lifecycle)await tx.insert(s.requestLifecycleHistory).values({id:"pms_lifecycle_"+randomUUID(),leadId:lead.id,
         fromStatus:lead.requestLifecycle,toStatus:lifecycle,source:"pms_projection",reason:"Verified PMS "+String(snapshot.status),changedAt:timestamp});
+      if(lifecycle==="won")await recordLeadClosed(tx,lead.id,null,timestamp);
     }
     if(context?.sourceSystem==="guestra_crm"&&typeof context.offerId==="string") {
       await tx.update(s.offers).set({status:snapshot.status==="cancelled"?"cancelled":"accepted",updatedAt:timestamp})

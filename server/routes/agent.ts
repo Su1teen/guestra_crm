@@ -32,6 +32,8 @@ import { extendStay, StayConflict } from "../services/stay-service.js";
 import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 import { resolveOrCreateExternalCustomer } from "../services/customer-service.js";
+import { ingestGuestInbound } from "../services/guest-inbound.js";
+import { handoffGuestMessage } from "../services/inbox-signals.js";
 import { getAgentContext } from "../services/agent-context-service.js";
 import { assertRoomAvailable, findAvailableUnitsByCategory, AvailabilityConflict } from "../services/availability-service.js";
 import { createAgentOffer, AgentOfferConflict } from "../services/agent-offer-service.js";
@@ -202,130 +204,7 @@ export const createAgentRouter = (db: Database, apiKey: string, config?: AppConf
   // separate tool calls.
   router.post("/messages/inbound", async (request, response) => {
     const input = AgentInboundMessageSchema.parse(request.body);
-    const messageKey = `property:${input.propertyId}:${input.channel}:${input.externalChatId}:${input.externalUserId}:${input.externalMessageId}`;
-    const eventId = `${input.propertyId}:${input.externalUpdateId ?? messageKey}`;
-    const payloadHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
-    const inboundMessageHash = hashAgentPayload({ channel: input.channel, externalUserId: input.externalUserId,
-      externalChatId: input.externalChatId, externalMessageId: input.externalMessageId,
-      propertyId: input.propertyId, text: input.text ?? "", attachments: input.attachments });
-    const result = await db.transaction(async (tx) => {
-      let [priorEvent] = await tx.select().from(s.integrationEvents).where(and(
-        eq(s.integrationEvents.provider, input.channel), eq(s.integrationEvents.eventType, "agent_inbound_message"),
-        eq(s.integrationEvents.externalEventId, eventId),
-      )).limit(1);
-      const legacyKey = `${input.channel}:${input.externalChatId}:${input.externalUserId}:${input.externalMessageId}`;
-      const [priorRow] = await tx.select({message:s.messages}).from(s.messages)
-        .innerJoin(s.conversations,eq(s.conversations.id,s.messages.conversationId)).where(and(
-          eq(s.conversations.propertyId,input.propertyId),eq(s.conversations.channel,input.channel),
-          eq(s.conversations.externalChatId,input.externalChatId),
-          or(eq(s.messages.idempotencyKey,messageKey),eq(s.messages.idempotencyKey,legacyKey)))).limit(1);
-      const priorMessage=priorRow?.message;
-      if (!priorEvent && priorMessage?.idempotencyKey===legacyKey) {
-        [priorEvent]=await tx.select().from(s.integrationEvents).where(and(
-          eq(s.integrationEvents.provider,input.channel),eq(s.integrationEvents.eventType,"agent_inbound_message"),
-          eq(s.integrationEvents.externalEventId,input.externalUpdateId??legacyKey),
-          eq(s.integrationEvents.guestId, (await tx.select().from(s.conversations).where(eq(s.conversations.id,priorMessage.conversationId)).limit(1))[0].guestId))).limit(1);
-      }
-      if (priorEvent || priorMessage) {
-        if (priorEvent && priorEvent.payloadHash !== payloadHash) {
-          return { duplicate: true, conflict: true, conversationId: null, guestId: null, messageId: null };
-        }
-        if (priorMessage && priorMessage.metadata?.inboundMessageHash &&
-            priorMessage.metadata.inboundMessageHash !== inboundMessageHash) {
-          return { duplicate: true, conflict: true, conversationId: null, guestId: null, messageId: null };
-        }
-        const [priorConversation] = priorMessage ? await tx.select().from(s.conversations)
-          .where(eq(s.conversations.id, priorMessage.conversationId)).limit(1) : [];
-        return { duplicate: true, conversationId: priorMessage?.conversationId ?? null,
-          guestId: priorEvent?.guestId ?? priorConversation?.guestId ?? null,
-          messageId: priorMessage?.id ?? null, conflict: false };
-      }
-      const [event] = await tx.insert(s.integrationEvents).values({ id: id("event"), provider: input.channel,
-        eventType: "agent_inbound_message", externalEventId: eventId, payloadHash, guestId: null, leadId: null,
-      }).onConflictDoNothing().returning();
-      if (!event) {
-        const [existingEvent] = await tx.select().from(s.integrationEvents).where(and(
-          eq(s.integrationEvents.provider, input.channel), eq(s.integrationEvents.eventType, "agent_inbound_message"),
-          eq(s.integrationEvents.externalEventId, eventId),
-        )).limit(1);
-        if (existingEvent && existingEvent.payloadHash !== payloadHash) {
-          return { duplicate: true, conflict: true, conversationId: null, guestId: null, messageId: null };
-        }
-        const [message] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, messageKey)).limit(1);
-        const identity = await findExternalIdentity(tx,input.channel,input.propertyId,input.externalUserId);
-        return { duplicate: true, conversationId: message?.conversationId ?? null,
-          guestId: existingEvent?.guestId ?? identity?.guestId ?? null,
-          messageId: message?.id ?? null, conflict: false };
-      }
-      const customer = await resolveOrCreateExternalCustomer(tx, {
-        channel: input.channel, externalUserId: input.externalUserId, externalChatId: input.externalChatId,
-        propertyId: input.propertyId, firstName: input.firstName, lastName: input.lastName,
-        displayName: input.displayName, language: input.language, username: input.username, createAsStub: true,
-      });
-      const timestamp = now();
-      const [guest] = await tx.select().from(s.guests).where(eq(s.guests.id, customer.customerId)).limit(1);
-      if (guest?.profileStatus === "stub") {
-        // Provider-supplied names/language fill empty stub fields only; phone and
-        // email stay untouched here so identity merges never happen silently.
-        const fill: Record<string, string> = {};
-        if (input.firstName?.trim() && !guest.firstName) fill.firstName = input.firstName.trim();
-        if (input.lastName?.trim() && !guest.lastName) fill.lastName = input.lastName.trim();
-        const displayName = input.displayName?.trim() ||
-          [fill.firstName ?? guest.firstName, fill.lastName ?? guest.lastName].filter(Boolean).join(" ").trim() || null;
-        if (displayName && (!guest.fullName || guest.fullName.startsWith("Контакт ") || fill.firstName || fill.lastName)) {
-          fill.fullName = displayName;
-        }
-        if (input.language?.trim() && !guest.language?.trim()) fill.language = input.language.trim();
-        if (Object.keys(fill).length) {
-          await tx.update(s.guests).set({ ...fill, updatedAt: timestamp }).where(eq(s.guests.id, guest.id));
-        }
-      }
-      let [conversation] = await tx.select().from(s.conversations).where(and(
-        eq(s.conversations.guestId, customer.customerId), eq(s.conversations.propertyId, input.propertyId),
-        eq(s.conversations.channel, input.channel), eq(s.conversations.externalChatId, input.externalChatId),
-      )).limit(1);
-      if (!conversation) {
-        [conversation] = await tx.insert(s.conversations).values({ id: id("conversation"), guestId: customer.customerId,
-          channel: input.channel, propertyId: input.propertyId, externalChatId: input.externalChatId,
-          status: "open", automationMode: "ai", unreadCount: 0, lastMessageAt: timestamp, slaMinutes: 15,
-        }).onConflictDoNothing({ target: [s.conversations.channel, s.conversations.propertyId, s.conversations.guestId, s.conversations.externalChatId] }).returning();
-        if (!conversation) [conversation] = await tx.select().from(s.conversations).where(and(
-          eq(s.conversations.guestId, customer.customerId), eq(s.conversations.propertyId, input.propertyId),
-          eq(s.conversations.channel, input.channel), eq(s.conversations.externalChatId, input.externalChatId),
-        )).limit(1);
-      }
-      if (!conversation) throw new Error("Не удалось создать диалог канала");
-      const [message] = await tx.insert(s.messages).values({ id: id("message"), conversationId: conversation.id,
-        direction: "in", senderType: "contact", text: input.text ?? "", sentAt: timestamp, createdAt: timestamp,
-        externalMessageId: input.externalMessageId, externalUpdateId: input.externalUpdateId,
-        deliveryStatus: "received", idempotencyKey: messageKey,
-        metadata: { channel: input.channel, username: input.username ?? null, inboundMessageHash,
-          messageType: input.attachments.length ? input.attachments[0].kind : "text",
-          contact: { firstName: input.firstName ?? null, lastName: input.lastName ?? null,
-            displayName: input.displayName ?? null, phone: input.phone ?? null, email: input.email ?? null } },
-      }).onConflictDoNothing({ target: s.messages.idempotencyKey }).returning();
-      if (!message) {
-        const [existingMessage] = await tx.select().from(s.messages).where(eq(s.messages.idempotencyKey, messageKey)).limit(1);
-        await tx.update(s.integrationEvents).set({ guestId: customer.customerId }).where(eq(s.integrationEvents.id, event.id));
-        return { duplicate: true, conversationId: conversation.id, guestId: customer.customerId,
-          messageId: existingMessage?.id ?? null, conflict: false };
-      }
-      if (input.attachments.length) {
-        await tx.insert(s.messageAttachments).values(input.attachments.map((attachment) => ({
-          id: id("attachment"), messageId: message.id, kind: attachment.kind,
-          mimeType: attachment.mimeType ?? null, fileName: attachment.fileName ?? null,
-          fileSize: attachment.fileSize ?? null, externalFileId: attachment.externalFileId ?? null,
-          storageProvider: attachment.storageProvider ?? null, storageKey: attachment.storageKey ?? null,
-          durationMs: attachment.durationMs ?? null,
-          processingStatus: attachment.storageKey ? "ready" : "received",
-          metadata: attachment.metadata ?? {},
-        }))).onConflictDoNothing();
-      }
-      await tx.update(s.conversations).set({ status: "open", unreadCount: sql`${s.conversations.unreadCount} + 1`,
-        lastMessageAt: timestamp, updatedAt: timestamp }).where(eq(s.conversations.id, conversation.id));
-      await tx.update(s.integrationEvents).set({ guestId: customer.customerId }).where(eq(s.integrationEvents.id, event.id));
-      return { duplicate: false, conversationId: conversation.id, guestId: customer.customerId, messageId: message.id, conflict: false };
-    });
+    const result = await ingestGuestInbound(db, input);
     if (result.conflict) return writeError(response, 409, "Update idempotency key was reused for a different payload", { code: "IDEMPOTENCY_CONFLICT" });
     if (!result.conversationId || !result.guestId) return writeError(response, 409,
       "Duplicate update was received before its original transaction completed", { code: "IDEMPOTENCY_CONFLICT", retryable: true });
@@ -941,7 +820,8 @@ export const createAgentRouter = (db: Database, apiKey: string, config?: AppConf
     if (conversation.automationMode === "human") return writeError(response, 409, "Conversation is owned by a human", { code: "CONVERSATION_HUMAN_OWNED" });
     if (conversation.automationMode === "needs_human" && conversation.handoffReasonCode === input.reasonCode) {
       return response.json({ conversationId: conversation.id, automationMode: conversation.automationMode,
-        reasonCode: conversation.handoffReasonCode, handoffRequestedAt: conversation.handoffRequestedAt, duplicate: true });
+        reasonCode: conversation.handoffReasonCode, handoffRequestedAt: conversation.handoffRequestedAt, duplicate: true,
+        guestMessage: await handoffGuestMessage(db, conversation.propertyId) });
     }
     const timestamp = now();
     const [updated] = await db.update(s.conversations).set({ automationMode: "needs_human",
@@ -953,7 +833,9 @@ export const createAgentRouter = (db: Database, apiKey: string, config?: AppConf
     response.json({ conversationId: updated.id, automationMode: updated.automationMode,
       reasonCode: updated.handoffReasonCode, handoffNote: updated.handoffNote,
       requestedAction: updated.requestedAction, handoffRequestedAt: updated.handoffRequestedAt,
-      priority: input.priority, duplicate: false });
+      priority: input.priority, duplicate: false,
+      // The agent sends exactly this text and stops; the chat waits in the pool for a person.
+      guestMessage: await handoffGuestMessage(db, updated.propertyId) });
   });
 
   router.post("/stay-context", async (request, response) => {

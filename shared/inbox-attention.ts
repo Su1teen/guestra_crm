@@ -6,7 +6,8 @@
 export type InboxQueue = "focus" | "payment" | "follow_up" | "waiting_guest" | "all" | "archive";
 export const INBOX_QUEUES: InboxQueue[] = ["focus", "payment", "follow_up", "waiting_guest", "all", "archive"];
 export type AttentionState = "no_action" | "ai_handling" | "human_reply_required" | "human_handoff_required" |
-  "follow_up_due" | "payment_ready" | "payment_pending" | "payment_problem" | "reservation_attention" | "document_answer";
+  "follow_up_due" | "payment_ready" | "payment_pending" | "payment_problem" | "reservation_attention" | "document_answer" |
+  "repeat_contact";
 
 export interface InboxAttention {
   state: AttentionState;
@@ -22,7 +23,20 @@ export interface AttentionConversation {
   handoffReasonCode?: string | null;
   lastMessageAt: string;
   messages: Array<{ direction: string; at: string }>;
+  /** Set when the guest wrote again after the chat or the deal was closed. */
+  reopenedAt?: string | null;
+  urgent?: boolean | null;
 }
+
+/**
+ * The guest wrote again after the chat or deal was closed and nobody has answered yet: the chat
+ * comes back out of the archive. A closed chat stays archived; the deal keeps its won/lost result.
+ */
+export const isRepeatContact = (conversation: AttentionConversation) => {
+  if (conversation.status === "closed" || !conversation.reopenedAt) return false;
+  const latest = [...conversation.messages].reverse().find((message) => message.direction !== "note");
+  return latest?.direction === "in";
+};
 export interface AttentionRequest { requestLifecycle?: string | null }
 export interface AttentionReservation { status: string }
 export interface AttentionFollowUp { status: string; dueAt: string }
@@ -38,6 +52,7 @@ export const inboxAttention = ({ conversation, request, reservation, followUp, p
   const since = latest?.at ?? conversation.lastMessageAt;
   const make = (state: AttentionState, priority: number, label: string, requiresHuman = true): InboxAttention =>
     ({ state, priority, label, since, requiresHuman });
+  if (isRepeatContact(conversation)) return make("repeat_contact", conversation.urgent ? 95 : 75, "Повторное обращение");
   if (conversation.status === "closed" || ["lost", "closed"].includes(request?.requestLifecycle ?? "") || reservation?.status === "completed")
     return make("no_action", 0, "Архив", false);
   if (document?.status === "answered") return make("document_answer", 85, "Гость ответил по документу");
@@ -57,13 +72,14 @@ export const inboxAttention = ({ conversation, request, reservation, followUp, p
   if (followUp?.status === "open" && followUp.dueAt <= now)
     return make("follow_up_due", 70, "Follow-up сегодня");
   if (conversation.automationMode === "ai") return make("ai_handling", 0, "AI ведёт диалог", false);
-  if (latest?.direction === "in") return make("human_reply_required", 60, "Ответить гостю");
+  if (latest?.direction === "in") return conversation.urgent ? make("human_reply_required", 95, "Срочно") : make("human_reply_required", 60, "Ответить гостю");
   return make("no_action", 0, "Ждём гостя", false);
 };
 
 export const inboxQueueMatches = (queue: InboxQueue, attention: InboxAttention, conversation: { status: string },
   request?: AttentionRequest, followUp?: { status: string }): boolean => {
-  const archived = conversation.status === "closed" || ["lost", "closed"].includes(request?.requestLifecycle ?? "") || attention.label === "Архив";
+  const archived = attention.state !== "repeat_contact" &&
+    (conversation.status === "closed" || ["lost", "closed"].includes(request?.requestLifecycle ?? "") || attention.label === "Архив");
   if (queue === "archive") return archived;
   if (queue === "all") return !archived;
   if (archived) return false;

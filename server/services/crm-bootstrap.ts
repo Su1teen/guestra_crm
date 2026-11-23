@@ -65,7 +65,7 @@ export const loadCrmDataset = async (db: Database) => {
   const activePropertyRows = propertyRows.filter((row) => row.id !== "les_alakol");
   const organization = { id: org.id, name: org.name, legalName: org.legalName, currency: "KZT", propertyIds: activePropertyRows.map((row) => row.id) };
   const properties = activePropertyRows.map((row) => ({ id: row.id, name: row.name, shortName: row.shortName, city: row.city, roomTypes: row.roomTypes ?? [] }));
-  const employees = employeeRows.map((row) => ({ id: row.id, name: row.name, shortName: row.shortName, initials: row.initials, role: row.role, email: row.email, phone: row.phone, propertyIds: (employeePropertiesByEmployee.get(row.id) ?? []).map((item) => item.propertyId) }));
+  const employees = employeeRows.map((row) => ({ id: row.id, name: row.name, shortName: row.shortName, initials: row.initials, role: row.role, email: row.email, phone: row.phone, availableForDistribution: row.availableForDistribution, propertyIds: (employeePropertiesByEmployee.get(row.id) ?? []).map((item) => item.propertyId) }));
   const guests = guestRows.map((row) => {
     const identity = (row.identityMetadata ?? {}) as Record<string, unknown>;
     const preferences = (row.preferences ?? {}) as Record<string, unknown>;
@@ -156,6 +156,9 @@ export const loadCrmDataset = async (db: Database) => {
       items: (itemsByLead.get(row.id) ?? []).map((item) => ({ id: item.id, leadId: item.leadId, interestId: item.interestId ?? undefined, type: item.type, name: item.name, category: item.category ?? undefined, quantity: item.quantity, startAt: item.startAt ?? undefined, endAt: item.endAt ?? undefined, adults: item.adults ?? undefined, children: item.children ?? undefined, participants: item.participants ?? undefined, roomType: item.roomType ?? undefined, nights: item.nights ?? undefined, unitAmount: item.unitAmount ?? undefined, totalAmount: item.totalAmount ?? undefined, currency: item.currency, externalReference: item.externalReference ?? undefined, catalogItemId: item.catalogItemId ?? undefined, pricingModeSnapshot: item.pricingModeSnapshot ?? undefined, catalogDefaultPrice: item.catalogDefaultPrice ?? undefined, priceOverridden: item.priceOverridden, overrideReason: item.overrideReason ?? undefined, metadata: item.metadata ?? undefined, status: item.status, createdAt: item.createdAt, updatedAt: item.updatedAt })),
       paidAmount: row.paidAmount, paymentDueAt: row.paymentDueAt ?? undefined, paymentTerms: row.paymentTerms ?? undefined,
       journey: journeyByLead.get(row.id),
+      firstContactEmployeeId: row.firstContactEmployeeId ?? undefined, closingEmployeeId: row.closingEmployeeId ?? undefined,
+      commissionEmployeeId: row.commissionEmployeeId ?? undefined, closedAt: row.closedAt ?? undefined,
+      closedVia: (row.closedVia ?? undefined) as "manager" | "guestra" | undefined,
     };
   });
   const offers = offerRows.map((row) => ({ id: row.id, code: row.code, leadId: row.leadId, guestId: row.guestId, propertyId: row.propertyId, folioId: row.folioId ?? undefined, roomType: row.roomType, checkIn: row.checkIn, checkOut: row.checkOut, nights: row.nights, adults: row.adults, children: row.children, status: row.status, ownerId: row.ownerId, createdAt: row.createdAt, expiresAt: row.expiresAt, sentAt: row.sentAt ?? undefined, viewedAt: row.viewedAt ?? undefined, lines: (linesByOffer.get(row.id) ?? []).sort((a, b) => a.position - b.position).map((item) => ({ label: item.label, quantity: item.quantity ?? undefined, amount: item.amount, leadItemId: item.leadItemId ?? undefined })), total: row.total, deposit: row.deposit, comment: row.comment ?? undefined, terms: row.terms ?? undefined }));
@@ -167,10 +170,15 @@ export const loadCrmDataset = async (db: Database) => {
     handoffNote: row.handoffNote ?? undefined, requestedAction: row.requestedAction ?? undefined,
     handoffRequestedAt: row.handoffRequestedAt ?? undefined, handoffResolvedAt: row.handoffResolvedAt ?? undefined,
     aiResumedAt: row.aiResumedAt ?? undefined,
+    urgent: row.urgent, urgentReason: row.urgentReason ?? undefined, reopenedAt: row.reopenedAt ?? undefined,
+    closedAt: row.closedAt ?? undefined, lastInboundAt: row.lastInboundAt ?? undefined, delayedInboundAt: row.delayedInboundAt ?? undefined,
+    assignedAt: row.assignedAt ?? undefined, channelAccountId: row.channelAccountId ?? undefined,
     messages: (messagesByConversation.get(row.id) ?? []).map((item) => ({ id: item.id, conversationId: item.conversationId,
       direction: item.direction, employeeId: item.employeeId ?? undefined, text: item.text, at: item.sentAt,
       attachmentName: item.attachmentName ?? undefined, senderType: item.senderType as "contact" | "ai" | "human" | "system",
-      externalMessageId: item.externalMessageId ?? undefined, deliveryStatus: item.deliveryStatus as "received" | "pending" | "sent" | "failed" })) }));
+      externalMessageId: item.externalMessageId ?? undefined, deliveryStatus: item.deliveryStatus as "received" | "pending" | "sent" | "failed",
+      provider: item.provider ?? undefined, providerSentAt: item.providerSentAt ?? undefined, receivedAt: item.receivedAt ?? undefined,
+      eventType: item.eventType, templateKey: item.templateKey ?? undefined })) }));
   const segments = segmentRows.map((row) => ({ id: row.id, key: row.key, name: row.name, description: row.description, rules: (rulesBySegment.get(row.id) ?? []).map((item) => ({ field: item.field, operator: item.operator, value: item.value })), guestIds: (guestsBySegment.get(row.id) ?? []).map((item) => item.guestId), avgLifetimeValue: row.avgLifetimeValue, avgStays: row.avgStays, lastActivityAt: row.lastActivityAt }));
   const campaigns = campaignRows.map((row) => ({ id: row.id, name: row.name, segmentId: row.segmentId, propertyId: row.propertyId ?? "all", status: row.status, createdAt: row.createdAt, scheduledAt: row.scheduledAt, channel: row.channel, message: row.message, metrics: row.metrics }));
   const rooms = roomRows.map((row) => ({ id: row.id, number: row.number, propertyId: row.propertyId, category: row.category, floor: row.floor, zone: row.zone, status: row.status, activeTaskId: activeHousekeepingByRoom.get(row.id), activeMaintenanceId: activeMaintenanceByRoom.get(row.id), occupiedByGuestId: row.occupiedByGuestId ?? undefined, checkOutAt: row.checkOutAt ?? undefined }));
