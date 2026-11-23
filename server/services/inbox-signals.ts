@@ -22,6 +22,21 @@ export const inboxSettings = async (db: Pick<Database, "select">, propertyId: st
   };
 };
 
+const DEFAULT_HANDOFF_MESSAGE = "Передаю менеджеру, с вами свяжутся.";
+
+/**
+ * What the guest is told when the AI hands the chat over: the property's text for working hours or
+ * for the night (when nobody is on shift and the chat waits for the morning distribution).
+ */
+export const handoffGuestMessage = async (db: Pick<Database, "select">, propertyId: string, at = new Date()) => {
+  const settings = await inboxSettings(db, propertyId);
+  const [property] = await db.select({ timezone: s.properties.timezone }).from(s.properties).where(eq(s.properties.id, propertyId)).limit(1);
+  const time = new Intl.DateTimeFormat("en-GB", { timeZone: property?.timezone ?? "Asia/Almaty", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(at);
+  const onShift = settings.shiftStart <= settings.shiftEnd ? time >= settings.shiftStart && time < settings.shiftEnd
+    : time >= settings.shiftStart || time < settings.shiftEnd;
+  return (onShift ? settings.handoffMessage : settings.handoffMessageOffHours ?? settings.handoffMessage) ?? DEFAULT_HANDOFF_MESSAGE;
+};
+
 const TERMINAL_LIFECYCLES = ["won", "lost", "closed"];
 
 /**

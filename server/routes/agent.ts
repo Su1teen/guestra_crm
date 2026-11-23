@@ -33,6 +33,7 @@ import type { Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 import { resolveOrCreateExternalCustomer } from "../services/customer-service.js";
 import { ingestGuestInbound } from "../services/guest-inbound.js";
+import { handoffGuestMessage } from "../services/inbox-signals.js";
 import { getAgentContext } from "../services/agent-context-service.js";
 import { assertRoomAvailable, findAvailableUnitsByCategory, AvailabilityConflict } from "../services/availability-service.js";
 import { createAgentOffer, AgentOfferConflict } from "../services/agent-offer-service.js";
@@ -819,7 +820,8 @@ export const createAgentRouter = (db: Database, apiKey: string, config?: AppConf
     if (conversation.automationMode === "human") return writeError(response, 409, "Conversation is owned by a human", { code: "CONVERSATION_HUMAN_OWNED" });
     if (conversation.automationMode === "needs_human" && conversation.handoffReasonCode === input.reasonCode) {
       return response.json({ conversationId: conversation.id, automationMode: conversation.automationMode,
-        reasonCode: conversation.handoffReasonCode, handoffRequestedAt: conversation.handoffRequestedAt, duplicate: true });
+        reasonCode: conversation.handoffReasonCode, handoffRequestedAt: conversation.handoffRequestedAt, duplicate: true,
+        guestMessage: await handoffGuestMessage(db, conversation.propertyId) });
     }
     const timestamp = now();
     const [updated] = await db.update(s.conversations).set({ automationMode: "needs_human",
@@ -831,7 +833,9 @@ export const createAgentRouter = (db: Database, apiKey: string, config?: AppConf
     response.json({ conversationId: updated.id, automationMode: updated.automationMode,
       reasonCode: updated.handoffReasonCode, handoffNote: updated.handoffNote,
       requestedAction: updated.requestedAction, handoffRequestedAt: updated.handoffRequestedAt,
-      priority: input.priority, duplicate: false });
+      priority: input.priority, duplicate: false,
+      // The agent sends exactly this text and stops; the chat waits in the pool for a person.
+      guestMessage: await handoffGuestMessage(db, updated.propertyId) });
   });
 
   router.post("/stay-context", async (request, response) => {

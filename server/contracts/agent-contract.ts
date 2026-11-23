@@ -227,7 +227,9 @@ export const AgentGuestRequestSchema = z.object({ ...agentOptionalConversationFi
 });
 export const AgentHandoffSchema = z.object({ ...agentConversationFields,
   reasonCode: z.enum(["custom_discount", "refund_or_payment_issue", "complaint_or_conflict", "uncertain_intent",
-    "unavailable_nonstandard_solution", "corporate_or_event_complex", "guest_requested_human", "unsupported_action"]),
+    "unavailable_nonstandard_solution", "corporate_or_event_complex", "guest_requested_human", "unsupported_action",
+    // Decisions only staff make: barter and complimentary stays, corporate client terms.
+    "barter", "complimentary", "corporate_client"]),
   summary: z.string().trim().max(1000).optional(), requestedAction: z.string().trim().max(500).optional(),
   priority: z.enum(["low", "medium", "high", "urgent"]).default("medium") });
 export const AgentStayContextSchema = z.object({ ...agentConversationFields });

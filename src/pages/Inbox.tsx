@@ -57,6 +57,9 @@ const handoffReasonLabels: Record<string, string> = {
   unavailable_nonstandard_solution: "Нужна индивидуальная помощь",
   corporate_or_event_complex: "Запрос для группы или мероприятия",
   guest_requested_human: "Гость просит сотрудника",
+  barter: "Бартер — решает сотрудник",
+  complimentary: "Комплимент — решает сотрудник",
+  corporate_client: "Корпоративный клиент",
   unsupported_action: "Нужна помощь сотрудника",
 };
 
