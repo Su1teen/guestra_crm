@@ -261,7 +261,8 @@ const seedCommissions = async (database: Database, managers: { id: string }[]) =
       links.push({ crmReservationId: copy.id, pmsReservationId: stay.pmsReservationId });
     }
     if (!copy) continue;
-    const manager = managers[stay.manager! % managers.length]!.id;
+    // Spread the closed stays over however many managers the property has, not only the manifest slots.
+    const manager = managers[(stay.manager! + Number(stay.confirmationNumber.replace(/\D/g, "") || 0)) % managers.length]!.id;
     const leadId = `lead_demo_${propertyId}_${stay.confirmationNumber}`;
     const cancelled = ["cancelled", "no_show"].includes(stay.status);
     await database.insert(s.leads).values({ id: leadId, code: `D-${stay.confirmationNumber}`, guestId: copy.guestId, propertyId: propertyId!, source: "manual",
