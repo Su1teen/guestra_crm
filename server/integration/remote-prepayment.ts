@@ -63,15 +63,20 @@ export async function readRemotePrepayments(db:Pick<Database,"select">,pms:PmsCl
   return {reservationId,enabled:read.enabled===true,mode:read.mode??null,requests:Array.isArray(read.requests)?read.requests:[]};
 }
 
-/** Guest-facing text that carries the invoice: amount, deadline, link. */
+/**
+ * Guest-facing text for the invoice: amount, number and deadline. A live invoice arrives in the guest's Kaspi app
+ * by itself, so the chat carries no link. In test mode nothing reaches Kaspi: the text says so and carries the test page link.
+ */
 export function remotePrepaymentText(view:RemotePrepaymentView,propertyName:string|null|undefined,timezone?:string|null) {
   const amount=Number(view.amount).toLocaleString("ru-RU");
   const deadline=view.optionUntil?new Intl.DateTimeFormat("ru-RU",{timeZone:timezone??"Asia/Almaty",day:"numeric",month:"long",hour:"2-digit",minute:"2-digit"})
     .format(new Date(view.optionUntil)):null;
+  const test=view.mode==="test";
   return [`Для подтверждения бронирования в ${propertyName??"нашем отеле"} просим внести предоплату ${amount} ₸.`,
-    `Счёт отправлен в приложение Kaspi на номер ${view.phone}.`,
+    test?`Тестовый счёт на номер ${view.phone}: в Kaspi он не приходит, деньги не списываются.`
+      :`Счёт на эту сумму пришёл в приложение Kaspi на номер ${view.phone} — откройте Kaspi и подтвердите оплату.`,
     deadline?`Оплатите, пожалуйста, до ${deadline}.`:null,
-    view.payUrl?`Ссылка на оплату: ${view.payUrl}`:null].filter(Boolean).join("\n");
+    test&&view.payUrl?`Тестовая оплата: ${view.payUrl}`:null].filter(Boolean).join("\n");
 }
 
 /** Whether CRM sent a Kaspi invoice for this request (then the paid confirmation goes to the chat). */
