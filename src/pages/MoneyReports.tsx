@@ -316,17 +316,18 @@ const MoneyReports = () => {
         {params.report === "manager" && result?.columns && <ManagerReport result={result} show={show} compare={params.compareLastYear} />}
 
         {dayView && <>
-          {show("kpis") && <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-5">
+          {show("kpis") && <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             <StatCard label="Итого поступило" value={formatTenge(dayView.totals.total)} />
             <StatCard label="Предоплаты" value={formatTenge(dayView.totals.prepayments)} hint="по будущим заездам" />
             <StatCard label="Оплаты проживающих" value={formatTenge(dayView.totals.stayPayments)} hint="и доплаты" />
-            <StatCard label="Штрафы / возвраты" value={`${formatTenge(dayView.totals.penalties)} / ${formatTenge(dayView.totals.refunds)}`} />
+            <StatCard label="Штрафы" value={formatTenge(dayView.totals.penalties)} hint="удержанная предоплата" />
+            <StatCard label="Возвраты" value={dayView.totals.refunds ? `−${formatTenge(dayView.totals.refunds)}` : formatTenge(0)} />
             <StatCard label="Новых броней" value={String(dayView.totals.newBookings)} />
           </div>}
           {show("chart") && dayView.rows.length > 1 && <SectionCard title="Поступления по периодам" className="print:hidden"><div className="h-56">
             <ResponsiveContainer><BarChart data={dayView.rows.map((r) => ({ name: groupLabel(r.key, params.grouping), total: r.total }))}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="name" fontSize={11} /><YAxis fontSize={11} tickFormatter={(v) => `${Math.round(v / 1000)}к`} />
-              <Tooltip formatter={(value: number) => formatTenge(value)} /><Bar dataKey="total" name="Итого поступило" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+              <Tooltip formatter={(value: number) => formatTenge(value)} /><Bar dataKey="total" name="Итого поступило" fill="#4C6EF5" radius={[4, 4, 0, 0]} />
             </BarChart></ResponsiveContainer></div></SectionCard>}
           {show("table") && <SectionCard title="Поступления денежных средств" description="Отменённые брони не учитываются; удержанная предоплата — в «Штрафах». Нажмите строку, чтобы увидеть брони.">
             <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-sm tabular-nums">
