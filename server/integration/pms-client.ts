@@ -12,16 +12,24 @@ export class PmsClient {
       throw new IntegrationError("VERIFIED_PROPERTY_MAPPING_REQUIRED",403);
     return mapping;
   }
+  /** The PMS integration key of this property (keys are issued per property), else the shared key. */
+  keyFor(propertyId:string) {
+    let keys:Record<string,unknown>={};
+    try {keys=JSON.parse(this.config.PMS_CONNECT_KEYS ?? "{}") as Record<string,unknown>;} catch {throw new IntegrationError("PMS_NOT_CONFIGURED",503,true);}
+    const own=keys[propertyId];
+    return typeof own==="string"&&own.length>=16?own:this.config.PMS_CONNECT_KEY;
+  }
   async call(propertyId:string,path:string,method="GET",body?:unknown,query:Record<string,string>={}) {
     const mapping=this.mapping(propertyId);
-    if(!this.config.PMS_CONNECT_URL || !this.config.PMS_CONNECT_KEY) throw new IntegrationError("PMS_NOT_CONFIGURED",503,true);
+    const key=this.keyFor(propertyId);
+    if(!this.config.PMS_CONNECT_URL || !key) throw new IntegrationError("PMS_NOT_CONFIGURED",503,true);
     const url=new URL(this.config.PMS_CONNECT_URL.replace(/\/$/,"")+"/"+path.replace(/^\//,""));
     if(url.username||url.password || (url.protocol!=="https:" && !(this.config.INTEGRATION_ENVIRONMENT==="test" &&
         url.protocol==="http:" && ["localhost","127.0.0.1","[::1]"].includes(url.hostname))))
       throw new IntegrationError("UNSAFE_PMS_URL",503);
     if(method==="GET") for(const [k,v] of Object.entries({propertyId:mapping.pmsPropertyId,...query})) url.searchParams.set(k,v);
     const serialized=body!==undefined?JSON.stringify(body):undefined;
-    const headers:Record<string,string>={"Content-Type":"application/json","x-api-key":this.config.PMS_CONNECT_KEY};
+    const headers:Record<string,string>={"Content-Type":"application/json","x-api-key":key};
     if(method!=="GET"&&this.config.PMS_COMMAND_SECRET) {
       const timestamp=String(Math.floor(Date.now()/1000));headers["x-guestra-command-time"]=timestamp;
       headers["x-guestra-command-signature"]=createHmac("sha256",this.config.PMS_COMMAND_SECRET)

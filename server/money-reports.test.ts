@@ -79,4 +79,30 @@ describe("money reports in CRM", () => {
     expect(ok.body.details[0].manager).not.toBe(GUESTRA_ROW);
     await request(app([])).get("/money-reports/day-by-day?propertyId=les_borovoe&from=2027-02-01&to=2027-02-28").expect(403);
   });
+  it("passes the business date to the manager report and the period to outlet revenue", async () => {
+    const calls: string[] = [];
+    const pms = { mapping: () => ({}), call: async (_p: string, path: string, _m: string, _b: unknown, query: Record<string, string>) => {
+      calls.push(`${path}?${new URLSearchParams(query)}`); return { columns: {}, outlets: [] };
+    } };
+    const a = express();
+    a.use((req, _res, next) => { (req as unknown as { access: unknown }).access = { userId: "u1", employeeId: managerId, permissions: new Set(["reports.team"]), propertyIds: new Set(["les_borovoe"]) }; next(); });
+    a.use(createMoneyReportsRouter(db, config, pms as never));
+    await request(a).get("/money-reports/manager?propertyId=les_borovoe&from=2027-02-10&to=2027-02-10").expect(200);
+    await request(a).get("/money-reports/outlets?propertyId=les_borovoe&from=2027-02-01&to=2027-02-28").expect(200);
+    expect(calls).toEqual(["v2/reports/manager?date=2027-02-10", "v2/reports/outlets?from=2027-02-01&to=2027-02-28"]);
+  });
+
+  it("lets only the owner change a saved report template", async () => {
+    const app = (userId: string) => {
+      const a = express(); a.use(express.json());
+      a.use((req, _res, next) => { (req as unknown as { access: unknown }).access = { userId, employeeId: managerId, permissions: new Set(["reports.team"]), propertyIds: new Set(["les_borovoe"]) }; next(); });
+      a.use(createMoneyReportsRouter(db, config, { mapping: () => ({}), call: async () => ({}) } as never));
+      return a;
+    };
+    const created = await request(app("owner")).post("/report-templates").send({ reportKey: "outlets", name: "Бар за неделю", params: { preset: "last-week" }, propertyIds: ["les_borovoe"] }).expect(201);
+    const changed = await request(app("owner")).patch(`/report-templates/${created.body.id}`).send({ params: { preset: "month", departments: ["fnb"] } }).expect(200);
+    expect(changed.body).toMatchObject({ name: "Бар за неделю", visibility: "me", params: { preset: "month", departments: ["fnb"] } });
+    await request(app("someone")).patch(`/report-templates/${created.body.id}`).send({ name: "Чужой" }).expect(404);
+    await request(app("owner")).delete(`/report-templates/${created.body.id}`).expect(200);
+  });
 });
