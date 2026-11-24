@@ -182,12 +182,18 @@ const removeLegacyChats = async (database: Database) => {
   const legacy = await database.select().from(s.conversations).where(and(eq(s.conversations.propertyId, propertyId), or(
     inArray(s.conversations.channel, ["telegram", "whatsapp", "instagram"]),
     and(eq(s.conversations.channel, "simulator"), or(isNull(s.conversations.externalChatId), notLike(s.conversations.externalChatId, "demo-%"))))));
-  if (!legacy.length) return 0;
+  if (!legacy.length) return { removed: 0, closed: 0 };
   const ids = legacy.map((c) => c.id);
   const messages = await database.select().from(s.messages).where(inArray(s.messages.conversationId, ids));
   writeFileSync(args.get("backup") ?? `crm-legacy-chats-${propertyId}.json`, JSON.stringify({ propertyId, at: new Date().toISOString(), conversations: legacy, messages }, null, 2));
-  await database.delete(s.conversations).where(inArray(s.conversations.id, ids));
-  return legacy.length;
+  let removed = 0;
+  for (const id of ids) {
+    // A chat that took part in integration operations keeps its audit trail: it is closed, not deleted.
+    try { await database.transaction(async (tx) => { await tx.delete(s.conversations).where(and(eq(s.conversations.id, id), eq(s.conversations.propertyId, propertyId!))); }); removed++; }
+    catch { await database.update(s.conversations).set({ status: "closed", unreadCount: 0, closedAt: new Date().toISOString(), closeResult: "archived" })
+      .where(and(eq(s.conversations.id, id), eq(s.conversations.propertyId, propertyId!))); }
+  }
+  return { removed, closed: ids.length - removed };
 };
 
 const seedChats = async (database: Database) => {
@@ -283,7 +289,7 @@ const seedCommissions = async (database: Database, managers: { id: string }[]) =
 
 try {
   const managers = await ensureManagers(db);
-  const removed = args.get("remove-legacy-chats") === "true" ? await removeLegacyChats(db) : 0;
+  const removed = args.get("remove-legacy-chats") === "true" ? await removeLegacyChats(db) : null;
   const chats = await seedChats(db);
   const commissions = await seedCommissions(db, managers);
   const team = await db.select({ count: sql<number>`count(*)::int` }).from(s.employeeProperties).where(eq(s.employeeProperties.propertyId, propertyId));
