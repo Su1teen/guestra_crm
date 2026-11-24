@@ -4,7 +4,7 @@ import {getAgentContext} from "../services/agent-context-service.js";
 import {integrationProjections} from "./schema.js";
 
 /** Commercial context stays local; operational facts come only from verified PMS reads. */
-export async function getIntegratedContext(db:Pick<Database,"select">,conversationId:string,customerId:string) {
+export async function getIntegratedContext(db:Pick<Database,"select">,conversationId:string,customerId:string,remotePayments=false) {
   const context=await getAgentContext(db,conversationId,customerId);
   if(!context)return null;
   const rows=await db.select().from(integrationProjections).where(and(eq(integrationProjections.propertyId,context.property.id),
@@ -32,6 +32,7 @@ export async function getIntegratedContext(db:Pick<Database,"select">,conversati
   return {...context,lifecycle,operationalAuthority:"guestra_pms",reservation:null,stay:null,folio:null,paymentRequest:null,serviceReservations:[],
     allowedActions:[...actions,...(context.aiReplyAllowed?["search_accommodation","create_pms_offer","book_accommodation",
       ...(current?["amend_accommodation","cancel_accommodation"]:[]),
+      ...(remotePayments && current?.status === "pending" && current.currencyCode === "KZT" && typeof current.requiredDeposit === "string" ? ["create_remote_prepayment"] : []),
       ...(rows.some(row=>row.entityType==="service_booking"&&row.snapshot.status==="scheduled")?["reschedule_service","cancel_service"]:[])]:[])],
     pmsReferences:rows.map(row=>({type:row.entityType,id:row.entityId,revision:row.revision,snapshot:row.snapshot,verifiedAt:row.verifiedAt})),
     synchronization:{source:"authoritative_readback",mayBeStale:true},
