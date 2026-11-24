@@ -70,7 +70,12 @@ describe("Kaspi prepayment for a request booked in PMS", () => {
     const text = remotePrepaymentText(view() as never, "LES Borovoe", "Asia/Almaty").replace(/\s/g, " ");
     expect(text).toContain("22 500 ₸");
     expect(text).toContain("+7 701 ***-**-33");
-    expect(text).toContain("https://qut.kz/pay/inv_ABC");
+    expect(text).toContain("Тестовая оплата: https://qut.kz/pay/inv_ABC");
+    expect(text).toContain("в Kaspi он не приходит");
+    // A live invoice is pushed to the guest's Kaspi app: the chat text carries no link.
+    const live = remotePrepaymentText(view({ mode: "live", payUrl: "https://qut.kz/pay/inv_LIVE" }) as never, "LES Borovoe", "Asia/Almaty");
+    expect(live).not.toContain("qut.kz");
+    expect(live).toContain("пришёл в приложение Kaspi на номер +7 701 ***-**-33");
     expect(text).toMatch(/до 1 октября/);
   });
 

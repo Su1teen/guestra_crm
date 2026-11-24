@@ -55,7 +55,7 @@ export const RemotePrepaymentCard = ({ leadId }: { leadId: string }) => {
     try {
       const result = await apiRequest<{ delivery: { sent: boolean } | null }>(`/api/crm/leads/${encodeURIComponent(leadId)}/remote-prepayment`,
         { method: "POST", body: JSON.stringify({ phone }) });
-      toast({ title: "Счёт отправлен в Kaspi", description: result.delivery?.sent === false ? "Ссылку в чат доставить не удалось — отправьте её вручную." : "Ссылка на оплату отправлена гостю в чат." });
+      toast({ title: "Счёт отправлен в Kaspi", description: result.delivery?.sent === false ? "Сообщение в чат доставить не удалось — напишите гостю вручную." : "Гостю отправлено сообщение о счёте в Kaspi." });
       await load();
     } catch (error) {
       toast({ title: "Счёт не отправлен", description: error instanceof Error ? error.message : String(error), variant: "destructive" });
