@@ -14,6 +14,7 @@ import * as s from "../db/schema.js";
 import * as i from "./schema.js";
 import {PmsClient} from "./pms-client.js";
 import {acceptEvent,projectSnapshot,enqueueOperation,runOperation} from "./service.js";
+import {executeConfirmedAgentAction, hashAgentPayload} from "../services/agent-action-service.js";
 import {getAgentContext} from "../services/agent-context-service.js";
 import {findExternalIdentity,displayExternalIdentityId} from "../services/customer-service.js";
 const key="scoped-integration-test-credential",remoteProperty="10000000-0000-4000-8000-000000000001",remoteTenant="20000000-0000-4000-8000-000000000001";
@@ -40,6 +41,8 @@ beforeAll(async()=>{
    propertyIds:["les_borovoe"],workspaceIds:["studio-test"],scopes:["agent.read","agent.write","integration.read","integration.write","integration.reconcile","events.consume","media.read","media.write","tool:get_context"]}]);
  const migration=await readFile(new URL("../../integration-migrations/0001_cross_database_v2.sql",import.meta.url),"utf8");
  await client.exec(migration);await client.exec(migration);
+ const paymentMigration=await readFile(new URL("../../integration-migrations/0004_remote_prepayment_confirmation.sql",import.meta.url),"utf8");
+ await client.exec(paymentMigration);
  await db.insert(i.integrationDeployment).values({id:true,environment:"test",deploymentId:randomUUID()});
  app=createApp(db,config);
  const result=await request(app).post("/api/integrations/agent/messages/inbound").set("x-crm-api-key",key)
@@ -64,6 +67,29 @@ function fakeRemote(readback:Record<string,unknown>,onBook?:()=>void) {
  }));
 }
 describe("Cross database integration invariants",()=>{
+ it("records one confirmed remote prepayment action and replays it without another operation",async()=>{
+  const propertyId=scope.propertyId;
+  const inbound=await post("/messages/inbound").send({...scope,externalUserId:"prepayment-fixture",
+   externalChatId:"prepayment-fixture",externalMessageId:"prepayment-fixture-phone",text:"+7 700 000 00 00"}).expect(201);
+  const conversationId=inbound.body.context.conversation.id;
+  const customerId=inbound.body.context.customer.id;
+  const reservationId=randomUUID();
+  const payload={reservationId,phone:"77000000000",phoneMessageId:inbound.body.messageId,expectedAmount:"110.00"};
+  const actionType="create_remote_prepayment" as const;
+  const proposalMessageId=randomUUID(),confirmationMessageId=randomUUID();
+  const now=Date.now();
+  await db.insert(s.messages).values([
+   {id:proposalMessageId,conversationId,direction:"out",senderType:"ai",text:"Выставить тестовый счёт?",deliveryStatus:"sent",
+    sentAt:new Date(now-1000).toISOString(),metadata:{proposedAction:{actionType,payload,payloadHash:hashAgentPayload(payload),expiresAt:new Date(now+60000).toISOString()}}},
+   {id:confirmationMessageId,conversationId,direction:"in",senderType:"contact",text:"Да, выставляйте счёт",
+    sentAt:new Date(now).toISOString()},
+  ]);
+  const input={propertyId,conversationId,customerId,channel:"simulator",actionType,proposalMessageId,confirmationMessageId,payload,allowedActions:[actionType]};
+  const operation=vi.fn(async()=>({reservationId}));
+  await expect(executeConfirmedAgentAction(db,input,operation)).resolves.toEqual({result:{reservationId},duplicate:false});
+  await expect(executeConfirmedAgentAction(db,input,operation)).resolves.toEqual({result:{reservationId},duplicate:true});
+  expect(operation).toHaveBeenCalledTimes(1);
+ });
  it("signs only clean, owned, short lived media references and denies workspace and origin substitution",async()=>{
   const input={...scope,conversationId,externalChatId:"cross-chat",externalMessageId:"media-owned-message",text:"Голосовое сообщение",
    attachments:[{kind:"audio",externalFileId:"voice-test",mimeType:"audio/ogg",fileName:"voice.ogg",fileSize:2000}]};
