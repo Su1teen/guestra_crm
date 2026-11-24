@@ -17,7 +17,9 @@ export const principalRegistry = pgTable("integration_principal_registry", {
 const bootstrapAudit = pgTable("integration_bootstrap_audit", { principalId: text("principal_id").notNull(), action: text("action").notNull() });
 const mappingKeys = ["crmPropertyId", "crmTenantId", "pmsPropertyId", "pmsTenantId", "environment"] as const;
 const scopes = new Set(["integration.read", "integration.write", "integration.reconcile", "events.read", "events.consume", "media.read", "media.write", "agent.read", "agent.write", "inspector.read", "inbox.read", "inbox.handoff", "inbox.write", "email.inbound", "sandbox.setup",
-  ...Object.values(AGENT_TOOL_DESCRIPTORS).map(tool => "tool:" + tool.name), ...AgentConfirmationActionSchema.options.map(action=>"tool:"+action)]);
+  ...Object.values(AGENT_TOOL_DESCRIPTORS).map(tool => "tool:" + tool.name), ...AgentConfirmationActionSchema.options.map(action=>"tool:"+action),
+  // Granted to existing principals by the first Kaspi invoice version; principals are immutable, so the scope stays known.
+  "tool:create_remote_prepayment"]);
 export async function bootstrapRegistry(db: Database, config: AppConfig) {
   const principals = principalSchema.array().parse(JSON.parse(config.CRM_INTEGRATION_PRINCIPALS ?? "[]"));
   if (new Set(principals.map(p => p.id)).size !== principals.length || new Set(principals.map(p => p.keyHash)).size !== principals.length)
