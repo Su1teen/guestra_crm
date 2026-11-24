@@ -11,7 +11,8 @@
  *    (customer → conversation → message), with the assistant's replies; cases the assistant hands over
  *    wait in the pool and are distributed evenly between the managers on the line.
  * 3. Commissions: a won request with its closing manager for each PMS demo stay a manager closed (manifest
- *    from the PMS demo script), attached to the stay's CRM copy made by the PMS sync.
+ *    from the PMS demo script), attached to the stay's CRM copy made by the PMS sync. With stay sync off,
+ *    --create-missing-stays makes that copy and --links writes the PMS links to add for it.
  * 4. Optionally removes the old seeded messenger chats (backed up to JSON first).
  * Everything it creates is marked as demo (ids start with demo / res_demo) and is replaced on re-run.
  */
@@ -243,8 +244,22 @@ const seedCommissions = async (database: Database, managers: { id: string }[]) =
     .from(s.reservations).where(and(eq(s.reservations.propertyId, propertyId), inArray(s.reservations.externalReservationId, stays.map((stay) => stay.pmsReservationId))));
   const byPms = new Map(synced.map((row) => [row.external!, row]));
   let attached = 0;
+  const links: { crmReservationId: string; pmsReservationId: string }[] = [];
+  const [property] = await database.select().from(s.properties).where(eq(s.properties.id, propertyId));
   for (const stay of stays) {
-    const copy = byPms.get(stay.pmsReservationId);
+    let copy = byPms.get(stay.pmsReservationId);
+    if (!copy && args.get("create-missing-stays") === "true") {
+      // Stay sync is off: a CRM copy of the stay, linked back from PMS by the links file (see --links).
+      copy = { id: `res_demo_${stay.confirmationNumber}`, guestId: `guest_demo_${propertyId}_${stay.confirmationNumber}`, external: stay.pmsReservationId };
+      await database.insert(s.guests).values({ id: copy.guestId, organizationId: property!.organizationId, firstName: stay.guest.firstName, lastName: stay.guest.lastName,
+        fullName: `${stay.guest.firstName} ${stay.guest.lastName}`, phone: stay.guest.phone, normalizedPhone: stay.guest.phone.replace(/\D/g, ""), preferredPropertyId: propertyId }).onConflictDoNothing();
+      await database.insert(s.guestProperties).values({ guestId: copy.guestId, propertyId: propertyId! }).onConflictDoNothing();
+      await database.insert(s.reservations).values({ id: copy.id, code: stay.confirmationNumber, propertyId: propertyId!, bookerCustomerId: copy.guestId, roomTypeSnapshot: stay.roomType,
+        source: "pms", status: ["cancelled", "no_show"].includes(stay.status) ? "cancelled" : stay.status === "checked_out" ? "completed" : "confirmed",
+        arrivalAt: `${stay.arrival}T09:00:00.000Z`, departureAt: `${stay.departure}T07:00:00.000Z`, adults: stay.adults, children: stay.children,
+        externalReservationId: stay.pmsReservationId, externalConfirmationNumber: stay.confirmationNumber, confirmedAt: stay.createdAt, createdAt: stay.createdAt }).onConflictDoNothing();
+      links.push({ crmReservationId: copy.id, pmsReservationId: stay.pmsReservationId });
+    }
     if (!copy) continue;
     const manager = managers[stay.manager! % managers.length]!.id;
     const leadId = `lead_demo_${propertyId}_${stay.confirmationNumber}`;
@@ -258,7 +273,8 @@ const seedCommissions = async (database: Database, managers: { id: string }[]) =
     await database.update(s.reservations).set({ requestId: leadId }).where(and(eq(s.reservations.id, copy.id), eq(s.reservations.propertyId, propertyId)));
     attached++;
   }
-  return { managed: stays.length, attached, notSyncedYet: stays.length - attached };
+  if (args.get("links")) writeFileSync(args.get("links")!, JSON.stringify({ crmPropertyId: propertyId, links }, null, 1));
+  return { managed: stays.length, attached, created: links.length, notSyncedYet: stays.length - attached };
 };
 
 try {
