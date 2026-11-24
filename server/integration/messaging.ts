@@ -11,7 +11,6 @@ import {requireScope,requireTool} from "./security.js";
 import {hashAgentPayload} from "../services/agent-action-service.js";
 import {AgentConfirmationActionSchema} from "../contracts/agent-contract.js";
 import type {identity} from "./router.js";
-import { validateRemotePrepaymentProposal } from "./remote-prepayment.js";
 
 /** Preparing never delivers. Existing outbound/result acknowledges actual transport delivery. */
 export function registerV2Messaging(router:Router,db:Database,pms:PmsClient,resolve:typeof identity) {
@@ -32,19 +31,9 @@ export function registerV2Messaging(router:Router,db:Database,pms:PmsClient,reso
         deliveryStatus:existing.deliveryStatus,duplicate:true,proposedAction:existing.metadata.proposedAction??null});
     }
     let expiresAt=new Date(Date.now()+300000).toISOString();
-    let messageText = input.text;
     if(input.proposedAction) {
       const action=input.proposedAction,payload=action.payload;
-      if (action.actionType === "create_remote_prepayment") {
-        const { payload, reservation } = await validateRemotePrepaymentProposal(db, pms, scope, action.payload);
-        if (typeof reservation.optionUntil === "string") {
-          const deadline = Date.parse(reservation.optionUntil);
-          if (!Number.isFinite(deadline) || deadline <= Date.now()) throw new IntegrationError("REMOTE_PREPAYMENT_OPTION_UNAVAILABLE");
-          expiresAt = new Date(Math.min(Date.parse(expiresAt), deadline)).toISOString();
-        }
-        const amount = Number(payload.expectedAmount).toLocaleString("ru-RU");
-        messageText = `Выставить тестовый счёт на предоплату ${amount} ₸ на номер, который заканчивается на ${payload.phone.slice(-4)}? Подтвердите, пожалуйста.`;
-      } else if(action.actionType==="book_accommodation") {
+      if(action.actionType==="book_accommodation") {
         const offerId=z.string().min(1).parse(payload.offerId);
         const [offer]=await db.select().from(s.offers).where(and(eq(s.offers.id,offerId),eq(s.offers.propertyId,input.propertyId),eq(s.offers.guestId,scope.customer.id))).limit(1);
         const [mapping]=await db.select().from(i.integrationMappings).where(and(eq(i.integrationMappings.propertyId,input.propertyId),
@@ -89,7 +78,7 @@ export function registerV2Messaging(router:Router,db:Database,pms:PmsClient,reso
       const timestamp=new Date().toISOString(),proposedAction=input.proposedAction?{...input.proposedAction,
         payloadHash:hashAgentPayload(input.proposedAction.payload),expiresAt}:null;
       const [message]=await tx.insert(s.messages).values({id:"message_"+randomUUID(),conversationId:conversation.id,direction:"out",
-        senderType:"ai",text:messageText,sentAt:timestamp,deliveryStatus:"pending",idempotencyKey:key,
+        senderType:"ai",text:input.text,sentAt:timestamp,deliveryStatus:"pending",idempotencyKey:key,
         metadata:{source:"agent_integration_v2",requestPayloadHash:hash,...(proposedAction?{proposedAction}: {})}}).returning();
       for(const {attachment} of media)await tx.insert(s.messageAttachments).values({...attachment,id:"attachment_"+randomUUID(),
         messageId:message.id,createdAt:timestamp,updatedAt:timestamp});

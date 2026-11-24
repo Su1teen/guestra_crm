@@ -14,7 +14,6 @@ import {AgentAccommodationBookSchema,AgentContextRequestSchema,AgentConfirmation
 import {AgentActionError,executeConfirmedAgentAction,hashAgentPayload} from "../services/agent-action-service.js";
 import {findExternalIdentity} from "../services/customer-service.js";
 import {registerV2Messaging} from "./messaging.js";
-import { registerRemotePrepayment } from "./remote-prepayment.js";
 import {getIntegratedContext} from "./context.js";
 import {registerV2Media} from "./media.js";
 import {registerSandbox} from "./sandbox.js";
@@ -22,6 +21,11 @@ import {registerV2Inbox} from "./inbox.js";
 const identityFields={channel:z.enum(["simulator","telegram","whatsapp","instagram"]).default("telegram"),
   externalUserId:z.string().min(1),propertyId:z.string().min(1),conversationId:z.string().min(1)};
 const quoteSchema=z.object({...identityFields,requestId:z.string().min(1),roomTypeId:z.string().uuid(),ratePlanId:z.string().uuid(),idempotencyKey:z.string().min(1).max(120)});
+/** Prepayment PMS will ask for this quote (whole tenge, as the Kaspi invoice), 0 when PMS sets none. */
+function prepaymentOf(pricing:Record<string,unknown>) {
+  const amount=Number((pricing.prepayment as {amount?:unknown}|undefined)?.amount);
+  return Number.isFinite(amount)&&amount>0?Math.ceil(amount):0;
+}
 export async function identity(db:Pick<Database,"select">,input:{channel:string;externalUserId:string;propertyId:string;conversationId?:string}) {
   const [property]=await db.select().from(s.properties).where(eq(s.properties.id,input.propertyId)).limit(1);
   const contact=await findExternalIdentity(db,input.channel,input.propertyId,input.externalUserId);
@@ -58,7 +62,6 @@ export function createIntegrationV2Router(db:Database,config:AppConfig) {
     next();
   });
   registerV2Messaging(router,db,pms,identity);
-  registerRemotePrepayment(router,db,pms,identity);
   registerV2Media(router,db,config,identity);
   registerSandbox(router,db,config,pms);
   registerV2Inbox(router,db,config,pms);
@@ -95,15 +98,11 @@ export function createIntegrationV2Router(db:Database,config:AppConfig) {
     // Legacy CRM UI money columns are integral KZT. Never round accepted money silently.
     const total=Number(pricing.totalAmount);
     if(pricing.currency!=="KZT" || !Number.isSafeInteger(total)||total<0||total>2147483647)throw new IntegrationError("CRM_MONEY_PRECISION_UNSUPPORTED");
-    const paymentTerms = z.object({ amount:z.string().regex(/^\d+(\.\d{1,2})?$/u) }).nullish().parse(pricing.sandboxPrepayment);
-    const deposit = Number(paymentTerms?.amount ?? 0);
-    if (!Number.isSafeInteger(deposit) || deposit < 0 || deposit > total)
-      throw new IntegrationError("CRM_MONEY_PRECISION_UNSUPPORTED");
     const offer=await db.transaction(async tx=>{
       const id="offer_"+randomUUID(),timestamp=new Date().toISOString();
       const [created]=await tx.insert(s.offers).values({id,code:"PMS-"+id.slice(-8),leadId:lead.id,guestId:scope.customer.id,propertyId:input.propertyId,
         externalQuoteId,roomType:String(pricing.roomTypeName),checkIn:lead.checkIn,checkOut:lead.checkOut,adults:lead.adults,children:lead.children,
-        nights:Number(pricing.nights),total,deposit,ownerId:lead.ownerId,status:"draft",expiresAt:String(pricing.expiresAt),createdAt:timestamp,updatedAt:timestamp}).onConflictDoNothing().returning();
+        nights:Number(pricing.nights),total,deposit:Math.min(prepaymentOf(pricing),total),ownerId:lead.ownerId,status:"draft",expiresAt:String(pricing.expiresAt),createdAt:timestamp,updatedAt:timestamp}).onConflictDoNothing().returning();
       if(!created)throw new IntegrationError("QUOTE_RETRY_REQUIRED",503,true);
       await tx.update(s.leads).set({totalAmount:total,roomAmount:total,updatedAt:timestamp})
         .where(and(eq(s.leads.id,lead.id),eq(s.leads.propertyId,input.propertyId),eq(s.leads.guestId,scope.customer.id)));
@@ -289,7 +288,7 @@ export function createIntegrationV2Router(db:Database,config:AppConfig) {
     const query=AgentContextRequestSchema.extend({conversationId:z.string().min(1)}).parse(request.query),scope=await identity(db,query);
     const projections=await db.select().from(i.integrationProjections).where(and(eq(i.integrationProjections.propertyId,query.propertyId),eq(i.integrationProjections.customerId,scope.customer.id)));
     response.json({customerId:scope.customer.id,conversationId:scope.conversation!.id,automationMode:scope.conversation!.automationMode,
-      context:await getIntegratedContext(db,scope.conversation!.id,scope.customer.id, config.INTEGRATION_ENVIRONMENT === "sandbox" && scope.conversation?.channel === "simulator"),
+      context:await getIntegratedContext(db,scope.conversation!.id,scope.customer.id),
       aiReplyAllowed:scope.conversation!.automationMode==="ai",operationalAuthority:"guestra_pms",projections:projections.map(p=>({type:p.entityType,id:p.entityId,revision:p.revision,snapshot:p.snapshot,verifiedAt:p.verifiedAt}))});
   });
   router.get("/v2/inspector",requireScope("inspector.read"),async(request,response)=>{

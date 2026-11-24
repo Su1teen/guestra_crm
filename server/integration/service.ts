@@ -8,6 +8,8 @@ import {IntegrationError,IntegrationEventSchema,type IntegrationEvent} from "./c
 import {PmsClient} from "./pms-client.js";
 import {mirrorPmsEntity,staffSyncEnabled} from "./staff-sync.js";
 import { recordLeadClosed } from "../services/attribution.js";
+import {remotePrepaymentSent} from "./remote-prepayment.js";
+import {sendConversationMessage} from "../services/outbound-messaging.js";
 type Tx=Pick<Database,"select"|"insert"|"update"|"execute">;
 export async function verifiedMapping(tx:Tx,input:typeof i.integrationMappings.$inferInsert) {
   const where=and(eq(i.integrationMappings.propertyId,input.propertyId),eq(i.integrationMappings.sourceSystem,input.sourceSystem),
@@ -56,6 +58,7 @@ export async function projectSnapshot(tx:Tx,pms:PmsClient,propertyId:string,cust
     target:[i.integrationProjections.propertyId,i.integrationProjections.remotePropertyId,i.integrationProjections.entityType,i.integrationProjections.entityId],
     set:{revision,snapshot,verifiedAt:timestamp},setWhere:sql`${i.integrationProjections.revision}<${revision} and ${i.integrationProjections.customerId}=${customerId}`,
   });
+  let confirmationMessageId:string|undefined;
   if(snapshot.entityType==="reservation") {
     const context=snapshot.integrationContext as Record<string,unknown>|undefined;
     if(context?.sourceSystem==="guestra_crm"&&context.customerId!==customerId)throw new IntegrationError("ORIGIN_MISMATCH");
@@ -75,6 +78,19 @@ export async function projectSnapshot(tx:Tx,pms:PmsClient,propertyId:string,cust
       if(lead.requestLifecycle!==lifecycle)await tx.insert(s.requestLifecycleHistory).values({id:"pms_lifecycle_"+randomUUID(),leadId:lead.id,
         fromStatus:lead.requestLifecycle,toStatus:lifecycle,source:"pms_projection",reason:"Verified PMS "+String(snapshot.status),changedAt:timestamp});
       if(lifecycle==="won")await recordLeadClosed(tx,lead.id,null,timestamp);
+      // Paid Kaspi invoice sent from this chat: the guest hears back once, in the same chat.
+      if(lead.stage==="payment_pending"&&stage==="confirmed"&&await remotePrepaymentSent(tx,propertyId,lead.id)) {
+        const [conversation]=await tx.select().from(s.conversations).where(and(eq(s.conversations.leadId,lead.id),eq(s.conversations.propertyId,propertyId))).limit(1);
+        if(conversation) {
+          const name=customer.fullName?.split(/\s+/)[0];
+          const dates=[snapshot.checkIn,snapshot.checkOut].map(value=>new Date(String(value)+"T00:00:00Z").toLocaleDateString("ru-RU",{timeZone:"UTC"})).join("–");
+          const text=`Здравствуйте${name?", "+name:""}! Предоплата получена, бронь ${String(snapshot.confirmationNumber??"")} в ${property.name} подтверждена: ${dates}. Ждём вас!`.replace(/\s+/g," ").trim();
+          const [message]=await tx.insert(s.messages).values({id:"message_"+randomUUID(),conversationId:conversation.id,direction:"out",text,sentAt:timestamp,
+            senderType:"system",deliveryStatus:"pending",idempotencyKey:`pms-reservation:${String(snapshot.id)}:prepayment-confirmed`,
+            metadata:{kind:"confirmation",pmsReservationId:snapshot.id}}).onConflictDoNothing().returning();
+          if(message)confirmationMessageId=message.id;
+        }
+      }
     }
     if(context?.sourceSystem==="guestra_crm"&&typeof context.offerId==="string") {
       await tx.update(s.offers).set({status:snapshot.status==="cancelled"?"cancelled":"accepted",updatedAt:timestamp})
@@ -84,7 +100,7 @@ export async function projectSnapshot(tx:Tx,pms:PmsClient,propertyId:string,cust
     }
   }
   // Projections never create local inventory, folio, payment or release AI ownership.
-  return {applied:true};
+  return {applied:true,...(confirmationMessageId?{confirmationMessageId}:{})};
 }
 export async function runOperation(db:Database,pms:PmsClient,propertyId:string,operationId:string) {
   const [row]=await db.select().from(i.integrationOperations).where(and(eq(i.integrationOperations.propertyId,propertyId),eq(i.integrationOperations.id,operationId))).limit(1);
@@ -193,6 +209,12 @@ export async function consumeEvent(db:Database,pms:PmsClient,propertyId:string,e
       await tx.update(i.integrationInbox).set({status:"applied",lastError:null}).where(and(eq(i.integrationInbox.propertyId,propertyId),eq(i.integrationInbox.eventId,event.eventId)));
       return outcome;
     });
+    if(outcome.confirmationMessageId) {
+      const config=pms.config;
+      try {await sendConversationMessage(db,outcome.confirmationMessageId,{webhookUrl:config.AGENT_OUTBOUND_WEBHOOK_URL,webhookToken:config.AGENT_OUTBOUND_WEBHOOK_TOKEN,
+        whatsappWebhookUrl:config.WHATSAPP_OUTBOUND_WEBHOOK_URL,whatsappWebhookToken:config.WHATSAPP_OUTBOUND_WEBHOOK_TOKEN});}
+      catch(error) {console.warn("Prepayment confirmation not delivered",{propertyId,code:(error as Error).message.slice(0,200)});}
+    }
     await keepPending();
     return outcome;
   }catch(error) {

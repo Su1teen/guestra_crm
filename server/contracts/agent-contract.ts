@@ -26,7 +26,7 @@ export const AGENT_TOOLS = AgentToolSchema.options;
 export type AgentTool = z.infer<typeof AgentToolSchema>;
 
 export const AgentConfirmationActionSchema = z.enum([
-  "book_accommodation", "book_service", "reschedule_service", "cancel_service", "extend_stay", "amend_accommodation", "cancel_accommodation", "create_remote_prepayment",
+  "book_accommodation", "book_service", "reschedule_service", "cancel_service", "extend_stay", "amend_accommodation", "cancel_accommodation",
 ]);
 export type AgentConfirmationAction = z.infer<typeof AgentConfirmationActionSchema>;
 
@@ -274,7 +274,6 @@ export const isExplicitConfirmation = (text: string, actionType?: AgentConfirmat
   const normalized = normalizeConfirmationText(text);
   const general = new Set(["да", "подтверждаю", "давайте", "хорошо", "согласен", "согласна", "я согласен", "я согласна", "yes", "i confirm"]);
   const actionPhrases: Record<AgentConfirmationAction, string[]> = {
-    create_remote_prepayment: ["да выставляйте счёт", "да выставляйте счет", "выставляйте счёт", "выставляйте счет", "да выставляйте", "иә", "шот жіберіңіз"],
     book_accommodation: ["да бронируйте", "хорошо бронируйте", "подтверждаю бронь", "бронируйте", "оформляйте бронь", "оформляйте"],
     book_service: ["да бронируйте", "хорошо записывайте", "подтверждаю запись", "записывайте", "бронируйте"],
     reschedule_service: ["да перенесите", "подтверждаю перенос", "перенесите"],

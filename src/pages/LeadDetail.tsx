@@ -29,6 +29,7 @@ import { ServiceReservationDialog } from "@/components/crm/ServiceReservationDia
 import { GuestRecognitionDialog } from "@/components/crm/GuestRecognitionDialog";
 import { RequestGuestSnapshot } from "@/components/crm/RequestGuestSnapshot";
 import { CommercialLifecyclePanel } from "@/components/crm/CommercialLifecyclePanel";
+import { RemotePrepaymentCard } from "@/components/crm/RemotePrepaymentCard";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
@@ -118,6 +119,7 @@ const LeadDetail = () => {
     addLeadItem,
     updateLeadItem,
     removeLeadItem,
+    dataMode,
   } = useCrm();
 
   const [note, setNote] = useState("");
@@ -417,6 +419,8 @@ const LeadDetail = () => {
       />
 
       <CommercialLifecyclePanel lead={lead} conversation={conversation} reservation={reservation} folio={folio} />
+
+      {dataMode === "database" && <RemotePrepaymentCard leadId={lead.id} />}
 
       {bookedServices.length > 0 && <SectionCard title="Забронированные услуги"><div className="space-y-2">{bookedServices.map((service) =>
         <button type="button" key={service.id} className="flex w-full items-center justify-between rounded-lg border p-3 text-left text-sm hover:bg-secondary" onClick={() => setSelectedServiceId(service.id)}>
