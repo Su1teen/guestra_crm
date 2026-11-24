@@ -10,7 +10,7 @@ import { accessOf, assertProperty, AccessDenied, type Access } from "../auth/acc
 import { PmsClient } from "../integration/pms-client.js";
 
 const period = z.object({ propertyId: z.string().min(1), from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
-export const REPORT_KEYS = ["day-by-day", "commissions", "management"] as const;
+export const REPORT_KEYS = ["day-by-day", "commissions", "management", "manager", "outlets"] as const;
 /** Sales without a manager are shown on this row, without commission. */
 export const GUESTRA_ROW = "Оформлено через Guestra";
 
@@ -88,6 +88,12 @@ export const createMoneyReportsRouter = (db: Database, config: AppConfig, pms: P
       const base = await fromPms(propertyId, "commission-base", from, to);
       return response.json({ report, from, to, propertyId, ...(await commissionsByManager(db, access, propertyId, base)) });
     }
+    if (report === "manager") {
+      // One business date: day, month and year to date with last year. The period end is the date.
+      pms.mapping(propertyId);
+      return response.json({ report, ...(await pms.call(propertyId, "v2/reports/manager", "GET", undefined, { date: to }) as any) });
+    }
+    if (report === "outlets") return response.json({ report, ...(await fromPms(propertyId, "outlets", from, to)) });
     const data = await fromPms(propertyId, report === "day-by-day" ? "day-by-day" : "management", from, to);
     if (report === "day-by-day") {
       const managers = await managersOf(db, propertyId, (data.details ?? []).map((d: any) => d.crmReservationId).filter(Boolean));
@@ -111,6 +117,18 @@ export const createMoneyReportsRouter = (db: Database, config: AppConfig, pms: P
     if (body.visibility === "management" && !access.permissions.has("reports.team")) throw new AccessDenied("Шаблон для руководства сохраняет руководитель");
     const [row] = await db.insert(s.reportTemplates).values({ id: `report_template_${randomUUID()}`, ...body, ownerUserId: access.userId }).returning();
     response.status(201).json(row);
+  });
+
+  /** The owner edits a template: name, settings, audience or properties. */
+  router.patch("/report-templates/:id", async (request, response) => {
+    const access = accessOf(request);
+    const body = templateBody.partial().parse(request.body);
+    for (const id of body.propertyIds ?? []) assertProperty(access, id);
+    if (body.visibility === "management" && !access.permissions.has("reports.team")) throw new AccessDenied("Шаблон для руководства сохраняет руководитель");
+    const [row] = await db.update(s.reportTemplates).set({ ...body, updatedAt: new Date().toISOString() } as any)
+      .where(and(eq(s.reportTemplates.id, request.params.id), eq(s.reportTemplates.ownerUserId, access.userId))).returning();
+    if (!row) return response.status(404).json({ error: "Шаблон не найден" });
+    response.json(row);
   });
 
   router.delete("/report-templates/:id", async (request, response) => {

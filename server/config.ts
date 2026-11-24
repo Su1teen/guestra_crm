@@ -16,6 +16,8 @@ const productionSchema = z.object({
   CRM_INTEGRATION_PRINCIPALS: z.string().optional(),
   PMS_CONNECT_URL: z.string().url().optional(),
   PMS_CONNECT_KEY: z.string().min(16).optional(),
+  /** JSON {crmPropertyId: key}: PMS issues one integration key per property; PMS_CONNECT_KEY is the fallback. */
+  PMS_CONNECT_KEYS: z.string().optional(),
   PMS_COMMAND_SECRET: z.string().min(32).optional(),
   PMS_PROPERTY_MAPPINGS: z.string().optional(),
   PMS_EVENT_SECRET: z.string().min(32).optional(),
