@@ -102,7 +102,7 @@ export function createIntegrationV2Router(db:Database,config:AppConfig) {
       const id="offer_"+randomUUID(),timestamp=new Date().toISOString();
       const [created]=await tx.insert(s.offers).values({id,code:"PMS-"+id.slice(-8),leadId:lead.id,guestId:scope.customer.id,propertyId:input.propertyId,
         externalQuoteId,roomType:String(pricing.roomTypeName),checkIn:lead.checkIn,checkOut:lead.checkOut,adults:lead.adults,children:lead.children,
-        nights:Number(pricing.nights),total,deposit:prepaymentOf(pricing),ownerId:lead.ownerId,status:"draft",expiresAt:String(pricing.expiresAt),createdAt:timestamp,updatedAt:timestamp}).onConflictDoNothing().returning();
+        nights:Number(pricing.nights),total,deposit:Math.min(prepaymentOf(pricing),total),ownerId:lead.ownerId,status:"draft",expiresAt:String(pricing.expiresAt),createdAt:timestamp,updatedAt:timestamp}).onConflictDoNothing().returning();
       if(!created)throw new IntegrationError("QUOTE_RETRY_REQUIRED",503,true);
       await tx.update(s.leads).set({totalAmount:total,roomAmount:total,updatedAt:timestamp})
         .where(and(eq(s.leads.id,lead.id),eq(s.leads.propertyId,input.propertyId),eq(s.leads.guestId,scope.customer.id)));
