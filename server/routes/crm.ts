@@ -2032,7 +2032,8 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
     if (error instanceof AccessDenied) return response.status(403).json({ error: error.message });
     if (error instanceof z.ZodError) return response.status(400).json({ error: "Некорректные данные", issues: error.issues });
     if (error instanceof IntegrationError) return response.status(error.status).json({ error: error.code === "VERIFIED_PROPERTY_MAPPING_REQUIRED"
-      ? "Объект не связан с PMS: отчёты по деньгам строятся по данным PMS" : error.code === "PMS_NOT_CONFIGURED" ? "PMS не подключена" : REMOTE_PAYMENT_ERRORS[error.code] ?? "PMS не ответила, попробуйте ещё раз", code: error.code });
+      ? "Объект не связан с PMS: отчёты по деньгам строятся по данным PMS" : error.code === "PMS_NOT_CONFIGURED" ? "PMS не подключена"
+      : error.code === "CURRENCY_MISMATCH" ? "В PMS за этот период есть операции в другой валюте; отчёт не складывает разные валюты. Исправьте эти операции в PMS или выберите другой период" : REMOTE_PAYMENT_ERRORS[error.code] ?? "PMS не ответила, попробуйте ещё раз", code: error.code });
     next(error);
   });
 
