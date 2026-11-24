@@ -32,6 +32,10 @@ export class PmsClient {
       ...(serialized!==undefined ? {body:serialized}:{}),signal:AbortSignal.timeout(10000),redirect:"error"}); }
     catch {throw new IntegrationError("PMS_UNAVAILABLE",503,true);}
     if(!response.ok) {
+      // Remote prepayment answers carry their own stable codes; the agent and the manager act on them.
+      const payload=await response.clone().json().catch(()=>undefined) as {code?:unknown;message?:unknown}|undefined;
+      const own=[payload?.code,(payload?.message as {code?:unknown}|undefined)?.code].find(value=>typeof value==="string"&&/^REMOTE_PAYMENT_[A-Z_]+$/.test(value)) as string|undefined;
+      if(own)throw new IntegrationError(own,response.status>=500||response.status===429?503:response.status===404?404:409,own==="REMOTE_PAYMENT_PROVIDER_UNCERTAIN"||own==="REMOTE_PAYMENT_PROVIDER_LIMIT");
       if(response.status===404) throw new IntegrationError("PMS_REFERENCE_NOT_FOUND",404);
       let code="PMS_OPERATION_REJECTED";
       try {const payload=await response.json();const text=JSON.stringify(payload);

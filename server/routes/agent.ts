@@ -6,7 +6,8 @@ import { principalRateLimit } from "../integration/security.js";
 import { resolveRegisteredPrincipal } from "../integration/registry.js";
 import { integrationReadiness } from "../integration/readiness.js";
 import { requireScope } from "../integration/security.js";
-import { createIntegrationV2Router } from "../integration/router.js";
+import { createIntegrationV2Router, identity as integrationIdentity } from "../integration/router.js";
+import { invoicePhone, remotePrepaymentText, sendRemotePrepayment } from "../integration/remote-prepayment.js";
 import { IntegrationError } from "../integration/contract.js";
 import {getIntegratedContext} from "../integration/context.js";
 import { PmsClient } from "../integration/pms-client.js";
@@ -317,6 +318,24 @@ export const createAgentRouter = (db: Database, apiKey: string, config?: AppConf
         totals: read.totals, stays: (read.stays ?? []).map((stay) => ({ arrivalDate: stay.arrivalDate, departureDate: stay.departureDate,
           status: stay.status, roomType: stay.roomType ?? null, adults: stay.adults, children: stay.children })) });
     } catch { response.json({ ...empty, source: "unavailable" }); }
+  });
+  /**
+   * Sends the guest a Kaspi invoice for the prepayment of the stay booked in this chat. PMS decides the amount
+   * and confirms the booking itself when the money arrives. The phone is the one the guest gave, else the
+   * WhatsApp number of the chat. `guestText` carries the amount, the deadline and the link for the reply.
+   */
+  router.post("/remote-prepayment", async (request, response) => {
+    const input = z.object({ propertyId: z.string().trim().min(1), channel: AgentChannelSchema.default("telegram"),
+      externalUserId: z.string().trim().min(1), conversationId: z.string().trim().min(1),
+      phone: z.string().trim().max(40).optional(), expectedAmount: z.string().regex(/^[1-9]\d{0,9}\.00$/).optional() }).parse(request.body);
+    if (config?.CRM_PMS_INTEGRATION_ENABLED !== "true") return writeError(response, 409, "Remote prepayment needs the PMS integration", { code: "PMS_V2_REQUIRED" });
+    const scope = await integrationIdentity(db, input);
+    if (!scope.conversation?.leadId) return writeError(response, 409, "No booking in this chat yet", { code: "RESERVATION_NOT_FOUND" });
+    const phone = invoicePhone({ phone: input.phone, channel: input.channel, externalUserId: input.externalUserId, customerPhone: scope.customer.phone });
+    if (!phone) return writeError(response, 422, "Ask the guest for the Kaspi phone number", { code: "PHONE_REQUIRED" });
+    const result = await sendRemotePrepayment(db, new PmsClient(config), { propertyId: input.propertyId, leadId: scope.conversation.leadId,
+      customerId: scope.customer.id, conversationId: input.conversationId, phone, source: "agent", requestedBy: "ai_agent", expectedAmount: input.expectedAmount });
+    response.status(201).json({ ...result, guestText: remotePrepaymentText(result, scope.property.name, scope.property.timezone) });
   });
   router.get("/accommodations/options", async (request, response) => {
     const query = AgentAccommodationOptionsQuerySchema.parse(request.query);

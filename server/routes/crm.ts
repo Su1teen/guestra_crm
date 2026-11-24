@@ -18,6 +18,7 @@ import { createTemplatesRouter } from "./templates.js";
 import { IntegrationError } from "../integration/contract.js";
 import { createMoneyReportsRouter } from "./money-reports.js";
 import { createKnowledgeRouter } from "./knowledge.js";
+import { createRemotePrepaymentRouter } from "./remote-prepayment.js";
 import { createPmsViewsRouter } from "./pms-views.js";
 import { AccessDenied, accessMiddleware, accessOf, assertPermission, resourceGuard } from "../auth/access.js";
 import {
@@ -47,6 +48,24 @@ import { planPreArrivalMessages } from "../services/payment-service.js";
 import { deliverScheduledMessage, ScheduledMessageConflict } from "../services/scheduled-outbound.js";
 
 const now = () => new Date().toISOString();
+/** What a manager reads when a Kaspi invoice cannot be sent. */
+const REMOTE_PAYMENT_ERRORS: Record<string, string> = {
+  RESERVATION_NOT_FOUND: "Сначала оформите бронь в PMS: счёт выставляется на предварительную бронь",
+  REMOTE_PAYMENT_DISABLED: "Оплата через Kaspi для этого объекта не включена",
+  REMOTE_PAYMENT_INVALID_PHONE: "Нужен казахстанский мобильный номер вида +7 7XX XXX XX XX",
+  REMOTE_PAYMENT_NOT_KASPI_CUSTOMER: "Этот номер не клиент Kaspi: уточните у гостя другой номер",
+  REMOTE_PAYMENT_NOT_AWAITING_PREPAYMENT: "Бронь не ждёт предоплату (уже подтверждена или отменена)",
+  REMOTE_PAYMENT_OPTION_EXPIRED: "Срок опции истёк: продлите опцию или оформите бронь заново",
+  REMOTE_PAYMENT_ALREADY_COVERED: "Предоплата уже внесена",
+  REMOTE_PAYMENT_ALREADY_PAID: "Предыдущий счёт только что оплачен",
+  REMOTE_PAYMENT_AMOUNT_CHANGED: "Сумма к оплате изменилась: обновите карточку",
+  REMOTE_PAYMENT_PROVIDER_DISCONNECTED: "Кассир Kaspi отключён у провайдера: переподключите его в кабинете",
+  REMOTE_PAYMENT_PROVIDER_LIMIT: "Достигнут лимит тарифа провайдера оплаты",
+  REMOTE_PAYMENT_PROVIDER_UNCERTAIN: "Провайдер оплаты не ответил: попробуйте ещё раз через минуту",
+  REMOTE_PAYMENT_OPEN_INVOICE: "Предыдущий счёт ещё не отозван: попробуйте через минуту",
+  REMOTE_PAYMENT_PROVIDER_REJECTED: "Провайдер оплаты отклонил счёт",
+  REMOTE_PAYMENT_CURRENCY_UNSUPPORTED: "Kaspi принимает только тенге",
+};
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const leadPatchSchema = z.object({
   roomType: z.string().nullable().optional(), checkIn: z.string().datetime().nullable().optional(),
@@ -2007,12 +2026,13 @@ export const createCrmRouter = (db: Database, config: Pick<AppConfig, "CRM_INTEG
   router.use(createMoneyReportsRouter(db, config as AppConfig));
   router.use(createKnowledgeRouter(db));
   router.use(createPmsViewsRouter(db, config as AppConfig));
+  router.use(createRemotePrepaymentRouter(db, config as AppConfig));
 
   router.use((error: unknown, _request: import("express").Request, response: import("express").Response, next: import("express").NextFunction) => {
     if (error instanceof AccessDenied) return response.status(403).json({ error: error.message });
     if (error instanceof z.ZodError) return response.status(400).json({ error: "Некорректные данные", issues: error.issues });
     if (error instanceof IntegrationError) return response.status(error.status).json({ error: error.code === "VERIFIED_PROPERTY_MAPPING_REQUIRED"
-      ? "Объект не связан с PMS: отчёты по деньгам строятся по данным PMS" : error.code === "PMS_NOT_CONFIGURED" ? "PMS не подключена" : "PMS не ответила, попробуйте ещё раз", code: error.code });
+      ? "Объект не связан с PMS: отчёты по деньгам строятся по данным PMS" : error.code === "PMS_NOT_CONFIGURED" ? "PMS не подключена" : REMOTE_PAYMENT_ERRORS[error.code] ?? "PMS не ответила, попробуйте ещё раз", code: error.code });
     next(error);
   });
 

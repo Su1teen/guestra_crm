@@ -21,6 +21,11 @@ import {registerV2Inbox} from "./inbox.js";
 const identityFields={channel:z.enum(["simulator","telegram","whatsapp","instagram"]).default("telegram"),
   externalUserId:z.string().min(1),propertyId:z.string().min(1),conversationId:z.string().min(1)};
 const quoteSchema=z.object({...identityFields,requestId:z.string().min(1),roomTypeId:z.string().uuid(),ratePlanId:z.string().uuid(),idempotencyKey:z.string().min(1).max(120)});
+/** Prepayment PMS will ask for this quote (whole tenge, as the Kaspi invoice), 0 when PMS sets none. */
+function prepaymentOf(pricing:Record<string,unknown>) {
+  const amount=Number((pricing.prepayment as {amount?:unknown}|undefined)?.amount);
+  return Number.isFinite(amount)&&amount>0?Math.ceil(amount):0;
+}
 export async function identity(db:Pick<Database,"select">,input:{channel:string;externalUserId:string;propertyId:string;conversationId?:string}) {
   const [property]=await db.select().from(s.properties).where(eq(s.properties.id,input.propertyId)).limit(1);
   const contact=await findExternalIdentity(db,input.channel,input.propertyId,input.externalUserId);
@@ -97,7 +102,7 @@ export function createIntegrationV2Router(db:Database,config:AppConfig) {
       const id="offer_"+randomUUID(),timestamp=new Date().toISOString();
       const [created]=await tx.insert(s.offers).values({id,code:"PMS-"+id.slice(-8),leadId:lead.id,guestId:scope.customer.id,propertyId:input.propertyId,
         externalQuoteId,roomType:String(pricing.roomTypeName),checkIn:lead.checkIn,checkOut:lead.checkOut,adults:lead.adults,children:lead.children,
-        nights:Number(pricing.nights),total,deposit:0,ownerId:lead.ownerId,status:"draft",expiresAt:String(pricing.expiresAt),createdAt:timestamp,updatedAt:timestamp}).onConflictDoNothing().returning();
+        nights:Number(pricing.nights),total,deposit:prepaymentOf(pricing),ownerId:lead.ownerId,status:"draft",expiresAt:String(pricing.expiresAt),createdAt:timestamp,updatedAt:timestamp}).onConflictDoNothing().returning();
       if(!created)throw new IntegrationError("QUOTE_RETRY_REQUIRED",503,true);
       await tx.update(s.leads).set({totalAmount:total,roomAmount:total,updatedAt:timestamp})
         .where(and(eq(s.leads.id,lead.id),eq(s.leads.propertyId,input.propertyId),eq(s.leads.guestId,scope.customer.id)));
