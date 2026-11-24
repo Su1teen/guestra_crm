@@ -19,7 +19,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { hash } from "bcryptjs";
-import { and, eq, inArray, like, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, like, notLike, or, sql } from "drizzle-orm";
 import { createDatabase, type Database } from "../db/client.js";
 import * as s from "../db/schema.js";
 import { distributePool } from "../services/distribution.js";
@@ -65,8 +65,8 @@ const BOROVOE: Scenario[] = [
     ["ai", "Здравствуйте, Гульнара! Вижу вашу бронь Glass House на 26–27 декабря, оплата пока не поступила. Передаю менеджеру, он проверит платёж и вернётся к вам.", 94]] },
   { key: "cancellation", guest: { firstName: "Данияр", lastName: "Оспанов", phone: "+7 707 555 12 04" }, handoff:
     { reasonCode: "refund_or_payment_issue", summary: "Отмена брони менее чем за 24 часа до заезда: по условиям предоплата удерживается. Гость просит перенести даты.", priority: "high" }, turns: [
-    ["guest", "Добрый вечер. Нам нужно отменить бронь на завтра, ребёнок заболел. Деньги вернёте?", 300],
-    ["ai", "Добрый вечер, Данияр, сочувствую. По условиям вашей брони при отмене менее чем за 24 часа до заезда предоплата не возвращается. Могу передать менеджеру просьбу перенести даты — так предоплата сохранится.", 299],
+    ["guest", "Здравствуйте. Нам нужно отменить бронь на завтра, ребёнок заболел. Деньги вернёте?", 300],
+    ["ai", "Здравствуйте, Данияр, сочувствую. По условиям вашей брони при отмене менее чем за 24 часа до заезда предоплата не возвращается. Могу передать менеджеру просьбу перенести даты — так предоплата сохранится.", 299],
     ["guest", "Да, пожалуйста, давайте перенос.", 290],
     ["ai", "Передал менеджеру, он свяжется с вами в течение 15 минут.", 289]] },
   { key: "corporate", guest: { firstName: "Алина", lastName: "Жумабаева", phone: "+7 708 555 12 05" }, handoff:
@@ -90,8 +90,8 @@ const BOROVOE: Scenario[] = [
     ["guest", "На 20:00.", 410],
     ["ai", "Записал баню и чан на 20:00, оплата добавится к счёту номера A-103.", 409]] },
   { key: "complaint", guest: { firstName: "Ольга", lastName: "Смирнова", phone: "+7 700 555 12 10" }, handoff:
-    { reasonCode: "complaint_or_conflict", summary: "Гостья в Glass House жалуется на холод в домике ночью. Нужна проверка отопления сейчас.", priority: "urgent" }, turns: [
-    ["guest", "Добрый вечер, у нас в домике очень холодно, батареи еле тёплые. С нами ребёнок!", 25],
+    { reasonCode: "complaint_or_conflict", summary: "Гостья в Glass House жалуется на холод в домике. Нужна проверка отопления сейчас.", priority: "urgent" }, turns: [
+    ["guest", "Здравствуйте, у нас в домике очень холодно, батареи еле тёплые. С нами ребёнок!", 25],
     ["ai", "Ольга, простите за неудобство! Срочно передаю дежурному менеджеру — к вам подойдут в ближайшие минуты.", 24]] },
   { key: "discount", guest: { firstName: "Тимур", lastName: "Карибаев", phone: "+7 701 555 12 11" }, handoff:
     { reasonCode: "custom_discount", summary: "Гость отдыхает третий раз, просит скидку на A-Frame 2–5 января.", priority: "low" }, turns: [
@@ -118,8 +118,8 @@ const ASTANA: Scenario[] = [
     ["guest", "Здравствуйте, у нас годовщина свадьбы 20 декабря. Хочу Люкс и какой-нибудь комплимент для жены.", 130],
     ["ai", "Здравствуйте, Руслан, поздравляем! Люкс на 20 декабря свободен — 165 000 ₸ за ночь. Комплимент согласует менеджер, передаю ему ваш запрос.", 129]] },
   { key: "noise", guest: { firstName: "Елена", lastName: "Ким", phone: "+7 700 555 22 04" }, handoff:
-    { reasonCode: "complaint_or_conflict", summary: "Номер 207: шум из соседнего номера после 23:00. Гостья просит переселить.", priority: "urgent" }, turns: [
-    ["guest", "Уже полночь, а в соседнем номере очень шумно. Можно меня переселить?", 20],
+    { reasonCode: "complaint_or_conflict", summary: "Номер 207: шум из соседнего номера. Гостья просит переселить.", priority: "urgent" }, turns: [
+    ["guest", "В соседнем номере очень шумно, не можем уснуть. Можно меня переселить?", 20],
     ["ai", "Елена, простите! Передаю дежурному менеджеру, он решит вопрос прямо сейчас.", 19]] },
   { key: "parking", guest: { firstName: "Олжас", lastName: "Нургалиев", phone: "+7 708 555 22 05" }, handoff:
     { reasonCode: "ai_unsure", summary: "Гость спрашивает про подземный паркинг и зарядку для электромобиля — нет данных.", priority: "low" }, turns: [
@@ -178,7 +178,10 @@ const ensureManagers = async (database: Database) => {
 };
 
 const removeLegacyChats = async (database: Database) => {
-  const legacy = await database.select().from(s.conversations).where(and(eq(s.conversations.propertyId, propertyId), inArray(s.conversations.channel, ["telegram", "whatsapp", "instagram"])));
+  // Seeded messenger chats and old simulator test chats; the demo chats of this script are recreated below.
+  const legacy = await database.select().from(s.conversations).where(and(eq(s.conversations.propertyId, propertyId), or(
+    inArray(s.conversations.channel, ["telegram", "whatsapp", "instagram"]),
+    and(eq(s.conversations.channel, "simulator"), or(isNull(s.conversations.externalChatId), notLike(s.conversations.externalChatId, "demo-%"))))));
   if (!legacy.length) return 0;
   const ids = legacy.map((c) => c.id);
   const messages = await database.select().from(s.messages).where(inArray(s.messages.conversationId, ids));
